@@ -1,0 +1,1107 @@
+/* Gallery Navigator — 視覺化導覽器樣式 */
+
+.gn-root {
+  position: relative;
+  padding: 0;
+  height: 100%;
+  flex: 1 1 auto;        /* 父層是 flex 直向時，確實撐滿整個檢視高度（手機底部工具列才會貼底） */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+/* 細捲軸（macOS overlay 風） */
+.gn-tree-scroll::-webkit-scrollbar, .gn-main::-webkit-scrollbar,
+.gn-pin-right::-webkit-scrollbar, .gn-todo-list::-webkit-scrollbar { width: 9px; height: 9px; }
+.gn-tree-scroll::-webkit-scrollbar-thumb, .gn-main::-webkit-scrollbar-thumb,
+.gn-pin-right::-webkit-scrollbar-thumb, .gn-todo-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-normal) 20%, transparent);
+  border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
+}
+.gn-tree-scroll::-webkit-scrollbar-thumb:hover, .gn-main::-webkit-scrollbar-thumb:hover,
+.gn-pin-right::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-normal) 38%, transparent); background-clip: padding-box;
+}
+
+/* 工具列：頂部實體列，分左右兩段（左＝資料夾工具，對齊左欄；右＝卡片工具，靠右） */
+.gn-bar {
+  flex: none;
+  display: flex; align-items: center;
+  width: 100%; margin: 0; padding: 6px 8px 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
+}
+.gn-bar-group {
+  display: flex; align-items: center; gap: 2px;
+  background: transparent; border: none; box-shadow: none; padding: 0;
+}
+.gn-bar-group:empty { display: none; }
+/* 左段（資料夾工具）：寬度由 JS 對齊左欄，右緣一條分隔線標出欄界 */
+.gn-bar-group:first-child {
+  border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent);
+  padding-right: 8px; margin-right: 8px;
+}
+/* 右段（卡片工具）：填滿右側、靠右 */
+.gn-bar-group:last-child { flex: 1; justify-content: flex-end; }
+.gn-btn {
+  flex: none;
+  width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  transition: background .12s, color .12s;
+}
+.gn-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.gn-btn:active { transform: scale(.94); }
+.gn-btn svg { width: 20px; height: 20px; }
+/* 表頭「含子資料夾」小標 */
+.gn-head-flat {
+  margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; vertical-align: middle;
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  color: var(--interactive-accent);
+}
+/* 切換鈕開啟狀態（如攤平） */
+.gn-btn-on {
+  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+  color: var(--interactive-accent);
+}
+.gn-btn-on:hover { background: color-mix(in srgb, var(--interactive-accent) 26%, transparent); color: var(--interactive-accent); }
+.gn-crumbs {
+  flex: 1;
+  display: flex; align-items: center; gap: 4px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  min-width: 80px;
+}
+.gn-crumb { cursor: pointer; color: var(--text-muted); padding: 2px 4px; border-radius: 5px; }
+.gn-crumb:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.gn-crumb.gn-crumb-target { color: var(--text-on-accent); background: var(--interactive-accent); }
+.gn-sep { color: var(--text-faint); }
+.gn-zoom { width: 90px; margin-right: 12px; accent-color: var(--interactive-accent); cursor: pointer; }
+
+/* 區段標題 */
+.gn-section {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 2px 2px 10px;
+}
+.gn-section-title { font-size: 12px; font-weight: 600; color: var(--text-muted); letter-spacing: .04em; }
+.gn-section-hint { font-size: 10px; color: var(--text-faint); }
+.gn-eye {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+}
+.gn-eye:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.gn-eye-on { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
+
+/* 兩欄容器：左資料夾樹 + 可拖曳分隔桿 + 右筆記牆 */
+.gn-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+.gn-tree {
+  flex: 0 0 232px;
+  display: flex; flex-direction: column; min-height: 0;
+  overflow: hidden;
+  padding-bottom: 10px;   /* 懸浮工具列置中，不會蓋到最左欄，貼近底部即可 */
+  border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent);
+}
+.gn-tree-scroll {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 8px 10px 8px 6px;
+}
+/* 可拖曳分隔桿：平常只露細線，hover 變主題色 */
+.gn-split-handle { flex: 0 0 9px; align-self: stretch; cursor: col-resize; position: relative; }
+.gn-split-handle::before {
+  content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  transform: translateX(-50%); background: transparent; transition: background .15s;
+}
+.gn-split-handle:hover::before, .gn-split-handle:active::before { background: var(--interactive-accent); width: 3px; }
+/* 分隔線上的收合小圓鈕（hover 分隔線 / 側欄時浮出） */
+.gn-split-toggle {
+  position: absolute; top: 44px; left: 50%; transform: translateX(-50%);
+  width: 20px; height: 20px; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; cursor: pointer;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  box-shadow: 0 1px 3px rgba(0,0,0,.14);
+  opacity: 0; transition: opacity .12s, background .12s, color .12s;
+}
+.gn-split-toggle svg { width: 13px; height: 13px; }
+.gn-split-toggle:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.gn-tree:hover ~ .gn-split-handle .gn-split-toggle,
+.gn-split-handle:hover .gn-split-toggle { opacity: 1; }
+.is-mobile .gn-split-toggle { display: none; }
+.gn-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 14px 16px 16px;
+}
+.gn-main-head {
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--text-normal);
+  margin: 2px 4px 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 待辦按鈕徽章 */
+.gn-todo-btn { position: relative; }
+.gn-todo-badge {
+  position: absolute; top: -3px; right: -3px;
+  min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box;
+  font-size: 9px; line-height: 15px; text-align: center; font-weight: 700;
+  border-radius: 999px; background: var(--interactive-accent); color: var(--text-on-accent);
+}
+/* 待辦浮動面板 */
+.gn-todo-pop {
+  position: fixed; z-index: 9999;
+  width: 300px; max-height: 62vh; overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px; padding: 8px 12px 12px;
+  box-shadow: 0 6px 22px rgba(0,0,0,.16);
+}
+
+/* 舊：左樹上方固定待辦區（面板沿用其內部樣式） */
+.gn-todo {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--background-primary);
+  padding: 2px 4px 8px 0;
+  margin-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+}
+.gn-todo-head { display: flex; align-items: center; gap: 5px; padding: 2px 2px 4px; cursor: pointer; }
+.gn-todo-head:hover .gn-todo-title { color: var(--text-normal); }
+.gn-todo-caret { flex: none; display: flex; align-items: center; color: var(--text-faint); }
+.gn-todo-caret svg { width: 12px; height: 12px; }
+.gn-todo-title {
+  font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.gn-todo-count {
+  font-family: var(--font-monospace, ui-monospace, monospace);
+  font-size: 10px; line-height: 1.6;
+  color: var(--text-on-accent); background: var(--interactive-accent);
+  border-radius: 999px; padding: 0 6px;
+}
+.gn-todo-gear { margin-left: auto; display: flex; color: var(--text-faint); cursor: pointer; }
+.gn-todo-gear:hover { color: var(--text-normal); }
+.gn-todo-gear svg { width: 14px; height: 14px; }
+.gn-todo-list { display: flex; flex-direction: column; gap: 1px; max-height: 32vh; overflow-y: auto; }
+.gn-todo-item {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 3px 4px;
+  padding-left: calc(4px + var(--td-depth, 0) * 16px);   /* 依層級縮排 */
+  border-radius: 6px; cursor: pointer;
+}
+.gn-todo-item:hover { background: var(--background-modifier-hover); }
+.gn-todo-check {
+  flex: none; width: 14px; height: 14px; margin-top: 1px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--text-muted); border-radius: 4px; cursor: pointer;
+  color: var(--text-on-accent);
+}
+.gn-todo-check:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }
+.gn-todo-check svg { width: 11px; height: 11px; }
+.gn-todo-text {
+  flex: 1; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-normal);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* 已完成：打勾方框 + 刪除線淡化 */
+.gn-todo-done .gn-todo-check {
+  background: var(--interactive-accent); border-color: var(--interactive-accent);
+}
+.gn-todo-done .gn-todo-check:hover { background: var(--interactive-accent); }
+.gn-todo-done .gn-todo-text { text-decoration: line-through; color: var(--text-faint); }
+.gn-todo-empty, .gn-todo-none {
+  font-size: 11px; color: var(--text-faint); padding: 4px; cursor: pointer;
+}
+.gn-todo-empty { display: flex; align-items: center; gap: 5px; }
+.gn-todo-empty-ic { display: flex; }
+.gn-todo-empty-ic svg { width: 13px; height: 13px; }
+.gn-todo-empty:hover { color: var(--text-normal); }
+
+/* 巢狀資料夾樹：每列 caret + 縮圖 + 名稱 + 數量，縮排依 --gn-depth */
+.gn-tnode {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  padding-left: calc(4px + var(--gn-depth, 0) * 15px);
+  margin: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-normal);
+  user-select: none;
+  transition: background .12s, box-shadow .12s;
+}
+.gn-tnode:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
+/* 選取：主題色淡底圓角膠囊（透明側欄也清楚） */
+.gn-tsel, .gn-tsel:hover {
+  background: color-mix(in srgb, var(--interactive-accent) 15%, transparent);
+  box-shadow: none;
+}
+.gn-tnode:focus, .gn-tnode:focus-visible { outline: none; }   /* 選取以 gn-tsel 呈現，不要預設焦點框 */
+.gn-tsel .gn-tname { font-weight: 600; }
+/* 巢狀左側引導線（參考 2 的連接線） */
+.gn-tchild::before {
+  content: ''; position: absolute; top: 0; bottom: 0;
+  left: calc(4px + (var(--gn-depth) - 1) * 15px + 7px);
+  width: 1px; background: color-mix(in srgb, var(--text-normal) 13%, transparent);
+}
+.gn-thidden { opacity: .5; }
+.gn-thidden:hover { opacity: 1; }
+.gn-tdragging { opacity: .4; }
+.gn-tmove { background: var(--interactive-accent) !important; box-shadow: inset 0 0 0 1px var(--interactive-accent); }
+.gn-tmove .gn-tname, .gn-tmove .gn-tcount { color: var(--text-on-accent); }
+/* 同層排序落點：上緣 / 下緣一條主題色線 */
+.gn-tbefore { box-shadow: inset 0 2px 0 0 var(--interactive-accent); }
+.gn-tafter { box-shadow: inset 0 -2px 0 0 var(--interactive-accent); }
+
+.gn-tcaret {
+  flex: none;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.gn-tcaret svg { width: 18px; height: 18px; color: inherit; }
+.is-mobile .gn-tcaret { width: 28px; height: 28px; }
+.is-mobile .gn-tcaret svg { width: 22px; height: 22px; }
+.gn-tcaret:hover { color: var(--text-normal); }
+/* 展開中的資料夾：圖示 + 名稱上強調色，一眼可辨（同原生檔案總管） */
+.gn-topen .gn-tthumb { color: var(--interactive-accent); }
+.gn-topen > .gn-tname { color: var(--interactive-accent); font-weight: 600; }
+.gn-topen > .gn-tcaret { color: var(--interactive-accent); }
+.gn-tthumb {
+  flex: none;
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted);
+}
+.gn-tthumb svg { width: 16px; height: 16px; color: inherit; }
+.gn-tname {
+  flex: 1; min-width: 0;
+  font-size: 13px; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 原地改名輸入框（macOS Finder 風格） */
+.gn-tname-input {
+  width: 100%; min-width: 0; box-sizing: border-box;
+  font-size: inherit; line-height: 1.3; font-family: inherit;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--interactive-accent);
+  border-radius: 4px;
+  padding: 1px 5px; margin: -2px 0;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+}
+.gn-tcount {
+  flex: none;
+  font-size: 11px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 筆記卡片牆（JS 瀑布流：卡片由 MasonryLayout 絕對定位） */
+.gn-grid { position: relative; }
+.gn-card {
+  position: absolute;
+  border-radius: 10px; overflow: hidden; cursor: pointer;
+  background: var(--background-secondary);   /* 灰底 */
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  transition: transform .2s cubic-bezier(.2,.7,.2,1), box-shadow .2s;
+}
+.gn-card:hover {
+  transform: scale(1.02) translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0,0,0,.12);
+  z-index: 2;
+}
+.gn-card.gn-card-dragging { opacity: .4; }
+/* 目前開啟的筆記卡：主題色外框 */
+.gn-card-active { box-shadow: 0 0 0 2px var(--interactive-accent), 0 4px 12px rgba(0,0,0,.1); }
+/* 多選中的卡片：粗框 + 微暗 */
+.gn-card-selected { box-shadow: 0 0 0 3px var(--interactive-accent), 0 6px 16px rgba(0,0,0,.18); }
+.gn-card-selected::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); pointer-events: none;
+}
+/* 多選動作列（浮在右欄底部中央） */
+.gn-selbar {
+  position: sticky; bottom: 70px; z-index: 20;
+  margin: 12px auto 0; width: fit-content; max-width: 96%;
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px; border-radius: 999px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 4px 16px rgba(0,0,0,.16);
+}
+.gn-selbar-count { font-size: 12px; font-weight: 600; color: var(--text-normal); padding: 0 8px 0 4px; }
+.gn-selbar-btn {
+  width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+  border-radius: 999px; cursor: pointer; color: var(--text-muted);
+}
+.gn-selbar-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.gn-selbar-btn svg { width: 18px; height: 18px; }
+.gn-selbar-warn:hover { background: var(--background-modifier-error, rgba(220,60,60,.15)); color: var(--text-error); }
+.gn-card img { width: 100%; height: auto; display: block; pointer-events: none; }
+.gn-card img.gn-pdf-thumb { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }   /* PDF 頁面：白底 + 細邊 */
+
+/* 有預覽圖的卡片：圖片在上、資訊在圖片下方，由上而下＝標題 → 日期
+   （DOM 順序是 body 先、img 後，所以用 flex order 排版，動態插入的 og/PDF/Canvas 縮圖也一體適用） */
+/* 灰底卡片：圖片「左／右／上」滿版貼齊卡片邊緣（不留框），圖片**四角都圓**——
+   上緣圓角與卡片同半徑（貼齊外框），下緣圓角則會露出底下的灰底，看起來像圖被切成圓角方塊。 */
+.gn-card.gn-has-img { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.gn-card.gn-has-img > img {
+  order: 1; width: 100%; margin: 0;
+  border-radius: 10px;                        /* 四角圓角；上緣剛好貼合卡片的 10px 外框 */
+}
+/* 文字區塊：hover 時整塊往上滑（把標題推上去、蓋住圖片下緣），內文從下方滑進來。
+   卡片高度由 JS 鎖住 → 版面完全不動，只有卡片內部在滑。 */
+.gn-card.gn-has-img .gn-body {
+  order: 2;                                   /* 資訊排在圖片下方 */
+  display: flex; flex-direction: column;
+  position: relative; z-index: 1;             /* 疊在圖片之上 */
+  background: inherit;                        /* 跟著卡片底色（含右鍵上色過的卡） */
+  pointer-events: auto; opacity: 1;
+  padding: 9px 12px 10px;
+  transition: transform .28s cubic-bezier(.2,.7,.2,1);
+  will-change: transform;
+}
+.gn-card.gn-has-img .gn-title {
+  order: 1;                                   /* 標題 */
+  color: var(--text-normal); text-shadow: none;
+}
+/* 內文預覽：平常不存在於版面，hover（gn-prev-open）才出現 */
+.gn-card.gn-has-img .gn-preview {
+  order: 2;                                   /* 標題之後、日期之前 */
+  display: none;
+  margin-top: 6px;
+  -webkit-line-clamp: 4;                      /* 最多 4 行，滑動距離不會誇張 */
+}
+.gn-card.gn-has-img.gn-prev-open .gn-preview { display: -webkit-box; }
+.gn-card.gn-has-img .gn-date {
+  order: 3;                                   /* 日期一律最後 */
+  margin: 6px 0 0;
+  color: var(--text-faint); text-shadow: none;
+}
+.gn-card.gn-has-img .gn-filetype { display: none; }   /* 有縮圖就不再顯示檔型標籤 */
+/* 有底色的圖片卡：文字改用對比色 */
+.gn-card-colored.gn-has-img .gn-title { color: var(--gn-card-fg); }
+.gn-card-colored.gn-has-img .gn-date { color: color-mix(in srgb, var(--gn-card-fg) 72%, transparent); }
+/* 卡片 hover 按鈕：外連 wiki 關係 */
+.gn-card-btn {
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 999px; cursor: pointer;
+  background: color-mix(in srgb, var(--background-primary) 94%, transparent);   /* 實心，免 blur（省全域重繪） */
+  color: var(--text-normal);
+  opacity: 0; transition: opacity .12s, background .12s, color .12s;
+}
+.gn-card:hover .gn-card-btn { opacity: 1; }
+.gn-card-btn:hover { background: var(--interactive-accent); color: var(--text-on-accent); }
+.gn-card-btn svg { width: 15px; height: 15px; }
+.is-mobile .gn-card-btn { opacity: 1; }   /* 手機沒 hover，常駐顯示 */
+/* 非 md、無封面的檔案：圖示佔位 */
+.gn-fileicon {
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 4 / 3;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+.gn-fileicon svg { width: 36px; height: 36px; }
+.gn-filetype {
+  margin-top: 5px;
+  font-family: var(--font-monospace, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  font-size: 10px; letter-spacing: .12em; color: var(--text-faint);
+}
+/* 所有卡片統一版面（DOM 是 日期 → 標題 → 內文，用 flex order 重排）：
+   標題 → 檔型 → 內文預覽 → 日期（日期一律在最下面） */
+.gn-body { padding: 10px 12px 9px; display: flex; flex-direction: column; }
+.gn-title { order: 1; }
+.gn-filetype { order: 2; }
+.gn-preview { order: 3; }
+.gn-date { order: 4; }
+.gn-date {
+  margin: 7px 0 0;
+  font-size: 10px; letter-spacing: .04em; color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.gn-title {
+  font-size: 14px; font-weight: 700; line-height: 1.3; color: var(--text-normal);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.gn-preview {
+  margin-top: 6px;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-muted);
+  white-space: pre-line; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* 卡片底色（feature 1）：底色 + 對比字色（--gn-card-fg 由 JS 設定） */
+.gn-card-colored .gn-title { color: var(--gn-card-fg); }
+.gn-card-colored .gn-preview,
+.gn-card-colored .gn-date,
+.gn-card-colored .gn-filetype { color: color-mix(in srgb, var(--gn-card-fg) 72%, transparent); }
+
+/* 釘選角標（feature 4） */
+.gn-card-pin {
+  position: absolute; top: 6px; left: 6px; z-index: 4;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 7px; cursor: pointer;
+  background: color-mix(in srgb, var(--interactive-accent) 92%, transparent);
+  color: var(--text-on-accent);
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  transition: background .12s, transform .12s;
+}
+.gn-card-pin:hover { background: var(--text-error, #d9534f); transform: scale(1.08); }
+.gn-card-pin svg { width: 13px; height: 13px; }
+
+.gn-empty { padding: 30px; text-align: center; color: var(--text-muted); }
+
+/* ★ 最愛捷徑區（feature 3） */
+.gn-fav-sec { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent); }
+.gn-fav-head { display: flex; align-items: center; gap: 5px; padding: 2px 6px 4px; cursor: pointer; border-radius: 6px; }
+.gn-fav-head:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
+.gn-fav-caret { display: flex; color: var(--text-faint); }
+.gn-fav-caret svg { width: 14px; height: 14px; }
+.gn-fav-star { display: flex; color: var(--text-muted); }
+.gn-fav-star svg { width: 13px; height: 13px; }
+.gn-fav-title { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--text-muted); }
+.gn-fav-count { font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: auto; }
+.gn-fav-collapsed { padding-bottom: 0; }
+.gn-fav-row .gn-tthumb { color: var(--text-muted); }
+.gn-fav-row .gn-tthumb svg { width: 16px; height: 16px; }
+
+/* 連結牆（右欄）：沿用卡片牆，分「連結 / 反向連結」兩區 */
+.gn-links-head { display: flex; align-items: center; gap: 6px; white-space: normal; }
+.gn-links-title {
+  flex: 1; min-width: 0;
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-normal);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 分區 */
+.gn-links-sec { margin-bottom: 22px; }
+.gn-links-sec:last-child { margin-bottom: 4px; }
+
+/* 分區標頭：小標 + 數量藥丸，下方一條髮絲線 */
+.gn-links-sec-head {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 4px 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text-normal) 10%, transparent);
+}
+.gn-links-sec-icon { display: flex; align-items: center; color: var(--text-muted); }
+.gn-links-sec-icon svg { width: 14px; height: 14px; }
+.gn-links-sec-label {
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  color: var(--text-muted);
+}
+.gn-links-sec-count {
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 3px 7px; border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-normal) 8%, transparent);
+}
+.gn-links-sec-empty {
+  padding: 10px 4px 4px;
+  font-size: 12px; color: var(--text-faint);
+}
+
+
+/* 確認刪除對話框按鈕列 */
+.gn-modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.gn-input { width: 100%; padding: 8px 10px; border-radius: 8px; font-size: 14px; }
+
+
+/* Pinterest 找相似：結果視窗（左原圖 / 右結果） */
+.gn-pin-modal { width: min(1040px, 94vw); }
+/* 標題：小一點、低調，並與下方的原圖／結果拉開距離 */
+.gn-pin-title {
+  margin: 0 0 26px !important;
+  font-size: 13px !important; font-weight: 600; letter-spacing: .04em;
+  color: var(--text-muted);
+}
+/* 手機：標題置中，並把視窗頂端多餘的留白收掉（Obsidian 手機版 modal 上方 padding 很厚） */
+.is-mobile .gn-pin-title {
+  text-align: center;
+  margin: 0 0 18px !important;
+  font-size: 12px !important;
+}
+.is-mobile .gn-pin-modal { padding-top: 10px; }
+.is-mobile .gn-pin-modal .modal-content { padding-top: 0; margin-top: 0; }
+.gn-pin-body { display: flex; gap: 26px; align-items: flex-start; }   /* 原圖與結果區拉開 */
+.gn-pin-orig { flex: 0 0 186px; position: sticky; top: 0; }           /* 原圖小一點 */
+.gn-pin-orig-img {
+  width: 100%; height: auto; display: block; border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.25);
+}
+.gn-pin-orig-name { margin-top: 8px; font-size: 12px; color: var(--text-muted); word-break: break-word; }
+/* 可拖曳分隔桿 */
+.gn-pin-splitter { flex: 0 0 10px; align-self: stretch; cursor: col-resize; position: relative; }
+.gn-pin-splitter::before {
+  content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  transform: translateX(-50%); background: var(--background-modifier-border); border-radius: 2px;
+  transition: background .15s;
+}
+.gn-pin-splitter:hover::before, .gn-pin-splitter:active::before { background: var(--interactive-accent); width: 3px; }
+/* 右：結果捲動區。padding-right 讓捲軸離開圖片（不然滑桿會貼在卡片邊上） */
+.gn-pin-right { flex: 1; min-width: 0; max-height: 72vh; overflow-y: auto; padding-right: 14px; }
+.gn-pin-status { color: var(--text-muted); font-size: 12px; margin: 0 0 8px; }
+/* 主題關鍵字 chips */
+.gn-pin-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.gn-pin-chips:empty { display: none; }
+.gn-pin-chip {
+  font-size: 11px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary); color: var(--text-muted);
+}
+.gn-pin-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+/* JS 瀑布流：結果由 MasonryLayout 絕對定位 */
+.gn-pin-grid { position: relative; }
+/* 無限捲動：載入指示 + 底部哨兵 */
+.gn-pin-more { padding: 4px 0; }
+.gn-pin-loading { text-align: center; font-size: 12px; color: var(--text-faint); padding: 8px 0; }
+.gn-pin-loading:empty { display: none; }
+.gn-pin-sentinel { height: 1px; }
+.gn-pin-cell {
+  position: relative;
+  border-radius: 10px; overflow: hidden; cursor: pointer; background: var(--background-secondary);
+}
+.gn-pin-cell img { width: 100%; height: auto; display: block; }
+
+/* hover 動作列：預覽 / 下載 */
+.gn-pin-actions {
+  position: absolute; inset: 0; display: flex; gap: 14px;
+  align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .15s;
+  background: rgba(0,0,0,.62);              /* hover 時整格壓黑，讓按鈕更跳 */
+}
+.gn-pin-cell:hover .gn-pin-actions,
+.gn-pin-cell-active .gn-pin-actions { opacity: 1; }   /* 手機點格顯示 */
+/* 用 !important 蓋過佈景主題的 modal button 樣式（否則按鈕會被撐滿、變透明） */
+.gn-pin-act {
+  flex: 0 0 auto !important;
+  width: 42px !important; height: 42px !important; min-width: 0 !important;
+  padding: 0 !important; margin: 0 !important; cursor: pointer;
+  display: flex !important; align-items: center; justify-content: center;
+  border: none !important; border-radius: 50% !important;
+  background: #fff !important; color: #111 !important;   /* 一律白底、深色圖示，任何主題都看得到 */
+  box-shadow: 0 2px 10px rgba(0,0,0,.5) !important;
+  transition: transform .12s, color .12s;
+}
+.gn-pin-act:hover { color: var(--interactive-accent) !important; transform: scale(1.12); }
+.gn-pin-act svg { width: 20px !important; height: 20px !important; color: inherit; }
+
+/* 預覽燈箱 */
+.gn-pin-lightbox {
+  position: fixed; inset: 0; z-index: 9999; cursor: zoom-out;
+  background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center;
+}
+.gn-pin-lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.6); }
+
+.is-mobile .gn-pin-body { flex-direction: column; }
+.is-mobile .gn-pin-splitter { display: none; }
+/* 手機：原圖已移進結果捲動區頂端 → 一般區塊、置中、會跟著捲走。縮小並與結果拉開距離 */
+.is-mobile .gn-pin-orig { position: static; width: 40%; margin: 0 auto 26px; }
+.is-mobile .gn-pin-orig-name { margin-top: 6px; text-align: center; font-size: 11px; }
+
+/* GIF 角標（結果是真正的動圖時才出現） */
+.gn-pin-gif-badge {
+  position: absolute; top: 6px; left: 6px; z-index: 3;
+  padding: 1px 6px; border-radius: 5px;
+  font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  background: rgba(0,0,0,.68); color: #fff; pointer-events: none;
+}
+
+/* 手機 / 窄側欄 */
+/* 手機：方案⑤「並排雙欄一起平移」（2026-07-15）
+   左欄 86% + 右欄 100% 並排在 overflow:hidden 的 split 裡；切換＝兩欄「一起」translateX。
+   在左欄時右側露一角卡片牆（看得到右欄資訊），滑過去時兩欄一起移動 —— 有滑動的感覺。
+   前案為什麼失敗、這案為什麼可以：
+     • 捲動切欄（方案①）→ 卡片延遲載入重排，瀏覽器把水平捲動吸回左欄；transform 免疫重排
+     • 整個 split 平移（方案②）→ 當年「一次渲染全部卡片」→ 大 GPU layer lag；
+       現在 renderInChunks 手機初始只有 40 張卡，且平移的是「固定大小的捲動容器」
+       （.gn-main 本身 overflow-y:auto），瀏覽器只光柵化可視區附近，不會合成全部內容
+     • 只動左欄（方案④）→ 右欄原地被「露出」而不是「滑進來」，沒有滑動感（使用者退回）
+   平移量 --gn-shift 由 JS 設成左欄實際寬（px），CSS fallback 86vw。 */
+.is-mobile .gn-split {
+  gap: 0;
+  overflow: hidden;                /* 裁掉滑出畫面的那一欄 */
+}
+.is-mobile .gn-tree {
+  flex: 0 0 86% !important;        /* 左樹寬一點，右側露一角卡片牆 */
+  border-right: none;
+  padding-bottom: 0;               /* 手機工具列在頂部，下方免留白 */
+}
+.is-mobile .gn-main {
+  flex: 0 0 100% !important;       /* 滑到右邊時滿版 */
+  min-width: 0;
+  padding-left: 6px;               /* 手機螢幕窄 → 左右留白壓到最小，卡片才夠寬 */
+  padding-right: 6px;
+}
+/* 兩欄一起平移；手指拖曳中 JS 會用 inline style 蓋掉 transition（跟手），放開才吸附 */
+.is-mobile .gn-tree,
+.is-mobile .gn-main {
+  transition: transform .3s cubic-bezier(.22, .61, .36, 1);
+}
+.is-mobile .gn-split[data-pane="cards"] .gn-tree,
+.is-mobile .gn-split[data-pane="cards"] .gn-main {
+  transform: translateX(calc(-1 * var(--gn-shift, 86vw)));
+}
+/* 手機：卡片底色加深一階。Velocity 抽屜底（--bg-main-inner ≈98%）跟卡片灰底
+   （--background-secondary ≈96.2%）只差 2%，看起來像白色 → 混 6% 前景色，
+   亮色主題變淺灰、深色主題變淺一階，任何主題都看得出是一張卡。
+   右鍵上色的卡是 inline style，不受影響。 */
+.is-mobile .gn-card {
+  background: color-mix(in srgb, var(--text-normal) 6%, var(--background-secondary));
+}
+.is-mobile .gn-tree-scroll, .is-mobile .gn-main { touch-action: pan-y; }   /* 子欄只吃垂直捲動；水平由 JS 接管 */
+.is-mobile .gn-split-handle { display: none; }
+.is-mobile .gn-collapse-btn { display: none; }   /* 手機用滑動切換，不需收合鈕 */
+.is-mobile .gn-tree-scroll { padding-right: 8px; }
+/* 手機：gn-root 本身就是 .view-content，真正的父層是 .workspace-leaf-content。
+   讓父層成為 flex 直向、gn-root 撐滿剩餘高度，底部工具列才會貼底、不留白。 */
+.is-mobile .workspace-leaf-content:has(> .gn-root) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.is-mobile .workspace-leaf-content > .gn-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+/* 手機：導覽工具列固定在「底部」、非漂浮（一般實體列，靠齊左右） */
+.is-mobile .gn-bar {
+  position: absolute;              /* 直接釘在 gn-root 底部，不靠 flex 撐（手機 flex 高度鏈不穩） */
+  left: 0; right: 0; bottom: 0; top: auto;   /* 貼齊畫面底邊；再往下就會戳進抽屜、露出色差 */
+  z-index: 5;
+  width: 100%; max-width: none; margin: 0;
+  padding: 28px 24px 6px;   /* 上方多留白給更長的漸層淡出；左右內距再往內對齊膠囊 */
+  border-radius: 0;
+  border: none;
+  /* 由上到下：透明 → 底色。卡片捲到工具列後面會平順淡出，底部實色不留色差線 */
+  background: linear-gradient(to bottom, transparent 0%, var(--background-secondary) 72%);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  box-shadow: none;
+  justify-content: space-between;
+}
+/* 手機：整個面板背景透明 → 直接用 Obsidian 抽屜底色，消除底邊色差線（也更像原生側邊欄） */
+.is-mobile .gn-root { background: transparent; }
+.is-mobile .gn-split { height: 100%; }   /* 撐滿 gn-root（工具列改絕對定位、不佔 flex 空間） */
+.is-mobile .gn-bar-group:first-child { border-right: none; margin-right: 0; padding-right: 0; }   /* 手機不畫欄界線 */
+.is-mobile .gn-zoom { display: none; }   /* 手機不需縮放滑桿 */
+.is-mobile .gn-tree-scroll, .is-mobile .gn-main { padding-top: 2px; padding-bottom: calc(70px + env(safe-area-inset-bottom)); }   /* 讓內容捲到絕對定位工具列上方，不被擋住 */
+.is-mobile .gn-main-head { margin-top: 0; margin-bottom: 8px; }   /* 右欄標題上方免留白 */
+
+.is-mobile .gn-tnode { padding-top: 9px; padding-bottom: 9px; }   /* 好點一點 */
+.is-mobile .gn-tthumb { width: 22px; height: 22px; }
+.is-mobile .gn-tthumb svg { width: 20px; height: 20px; }
+.is-mobile .gn-tname { font-size: 17px; }                         /* 左欄字再大一點 */
+.is-mobile .gn-tcount { font-size: 12px; }
+.is-mobile .gn-preview { -webkit-line-clamp: 3; font-size: 11px; }
+/* Mini Calendar — 極簡月曆 + agenda */
+.mc-root {
+  padding: 14px 14px 0;
+  height: 100%;
+  display: flex; flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum";
+}
+
+/* 頂部標題列 */
+.mc-head { display: flex; align-items: center; gap: 8px; margin: 4px 2px 14px; }
+.mc-title { display: flex; align-items: baseline; }
+.mc-month { font-size: 22px; font-weight: 700; color: var(--text-normal); letter-spacing: -.01em; }
+.mc-year { font-size: 22px; font-weight: 400; color: var(--text-muted); }
+.mc-head-spacer { flex: 1; }
+/* 控制鈕毛玻璃膠囊（與懸浮工具列同語言） */
+.mc-toolpill {
+  display: flex; align-items: center; gap: 1px;
+  padding: 3px 4px; border-radius: 999px;
+  background: var(--background-secondary);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 45%, transparent);
+  box-shadow: 0 1px 6px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.12);
+}
+.mc-iconbtn {
+  min-width: 28px; height: 28px; padding: 0 3px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); cursor: pointer; transition: background .12s, color .12s, transform .1s;
+}
+.mc-iconbtn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.mc-iconbtn:active { transform: scale(.92); }
+.mc-iconbtn svg { width: 17px; height: 17px; }
+.mc-today-btn { font-size: 12px; font-weight: 600; padding: 0 9px; }
+
+/* 星期列 */
+.mc-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 4px; }
+.mc-weekday { text-align: center; font-size: 11px; font-weight: 600; color: var(--text-faint); letter-spacing: .06em; }
+
+/* 月曆格 */
+.mc-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: 1fr; gap: 2px; }
+.mc-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.mc-cell:hover { background: var(--background-modifier-hover); }
+.mc-num { font-size: 14px; color: var(--text-normal); line-height: 1; }
+.mc-other .mc-num { color: var(--text-faint); }
+.mc-today .mc-num { font-weight: 800; }
+/* 有每日筆記的日子：數字加底線標記 */
+.mc-hasnote .mc-num { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--interactive-accent) 70%, transparent); }
+.mc-selected.mc-hasnote .mc-num { text-decoration-color: rgba(255,255,255,.8); }
+.mc-today { box-shadow: inset 0 0 0 1.5px var(--background-modifier-border-hover, var(--background-modifier-border)); }
+.mc-selected { background: var(--interactive-accent) !important; box-shadow: 0 3px 10px color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
+.mc-selected .mc-num { color: var(--text-on-accent); font-weight: 700; }
+.mc-selected.mc-today { box-shadow: 0 3px 10px color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
+
+/* 事件圓點 */
+.mc-dots { position: absolute; bottom: 5px; display: flex; gap: 3px; }
+.mc-dot { width: 5px; height: 5px; border-radius: 50%; }
+.mc-selected .mc-dot { box-shadow: 0 0 0 1px rgba(255,255,255,.7); }
+
+/* 下方 agenda（bottom sheet 感） */
+.mc-sheet {
+  flex: 1; min-height: 0;
+  margin: 14px 0 0;
+  padding: 14px 0 8px;
+  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
+  display: flex; flex-direction: column;
+}
+.mc-handle { display: none; }   /* 拿掉 bottom sheet 握把 */
+.mc-agenda { flex: 1; overflow-y: auto; }
+
+.mc-hint { color: var(--text-muted); font-size: 13px; padding: 14px 2px; line-height: 1.6; }
+.mc-err { color: var(--text-error); }
+
+/* 當日筆記 */
+.mc-notes { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 45%, transparent); }
+.mc-notes-head { margin: 0 0 8px; }
+.mc-notes-head2 { margin-top: 14px; }
+.mc-notes-title { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--text-muted); }
+.mc-note {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; margin-bottom: 5px; border-radius: 10px; cursor: pointer;
+  background: var(--background-secondary);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 30%, transparent);
+  transition: background .12s, transform .1s, box-shadow .12s;
+}
+.mc-note:hover { background: var(--background-modifier-hover); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.mc-note-icon { display: flex; flex: none; color: var(--text-muted); }
+.mc-note-icon svg { width: 15px; height: 15px; }
+.mc-note-name { flex: 1; font-size: 13px; color: var(--text-normal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-note-time { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.mc-notes-add {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px; border-radius: 10px; cursor: pointer; color: var(--text-muted); font-size: 13px;
+  border: 1px dashed color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+  transition: background .12s, color .12s;
+}
+.mc-notes-add:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+
+.mc-dayhead { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 12px; }
+.mc-dayname { font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--text-normal); }
+.mc-daynum { font-size: 12px; font-weight: 700; color: var(--text-faint); }
+
+/* 全天事件藥丸 */
+.mc-allday { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.mc-allday-pill {
+  position: relative;
+  font-size: 12px; font-weight: 600; color: var(--text-normal);
+  padding: 4px 12px 4px 18px; border-radius: 999px;
+  background: color-mix(in srgb, var(--mc-c) 16%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--mc-c) 24%, transparent);
+}
+.mc-allday-pill::before {
+  content: ''; position: absolute; left: 8px; top: 6px; bottom: 6px;
+  width: 3px; border-radius: 3px; background: var(--mc-c);
+}
+
+/* 時間軸 */
+.mc-timeline { position: relative; margin-left: 2px; }
+.mc-hourline { position: absolute; left: 42px; right: 0; height: 1px; background: color-mix(in srgb, var(--text-normal) 8%, transparent); }
+.mc-hourlabel {
+  position: absolute; left: 0; width: 36px; text-align: right;
+  font-size: 10px; color: var(--text-faint); transform: translateY(-6px);
+  font-variant-numeric: tabular-nums;
+}
+.mc-nowline { position: absolute; left: 42px; right: 0; height: 2px; background: var(--color-red, #e5484d); z-index: 3; }
+.mc-nowline::before { content: ''; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d); }
+
+.mc-events { position: absolute; left: 48px; right: 2px; top: 0; bottom: 0; }
+.mc-block {
+  position: absolute; overflow: hidden;
+  padding: 3px 7px 3px 11px; border-radius: 9px;
+  background: color-mix(in srgb, var(--mc-c) 16%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--mc-c) 28%, transparent);
+  box-shadow: 0 1px 3px rgba(0,0,0,.07);
+}
+/* 左側色條：內縮成一條線，上下留白、自身圓角，不被卡片圓角吃掉 */
+.mc-block::before {
+  content: ''; position: absolute; left: 4px; top: 4px; bottom: 4px;
+  width: 3px; border-radius: 3px; background: var(--mc-c);
+}
+.mc-btime { font-size: 10px; color: var(--text-muted); line-height: 1.2; font-variant-numeric: tabular-nums; }
+.mc-btitle { font-size: 12.5px; font-weight: 600; color: var(--text-normal); line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-bsub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 手機微調 */
+.is-mobile .mc-month, .is-mobile .mc-year { font-size: 24px; }
+.is-mobile .mc-num { font-size: 15px; }
+
+/* ===================== 搜尋列 ===================== */
+/* 放在 .gn-root 底下（不在 .gn-main 內）：
+   1) rerenderMain() 只清 .gn-main → 輸入框不重建 → 打字不失焦
+   2) .gn-main 有頂部淡出遮罩，放進去會被 mask 淡掉看不見 */
+.gn-search-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
+}
+
+.gn-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-normal);
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+}
+.gn-search-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+.gn-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+.gn-search-clear {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.gn-search-clear:hover { background: color-mix(in srgb, var(--text-normal) 8%, transparent); }
+
+/* 手機：.gn-root 已頂到螢幕最上緣（見 phone-sidebar-no-white-top.css），
+   所以搜尋列自己要避開狀態列 */
+.is-mobile .gn-search-row {
+  padding-top: calc(env(safe-area-inset-top) + 8px);
+}
+
+/* ⚠️ 搜尋列出現時，取消 .gn-main / .gn-tree-scroll 的 safe-area 內距，
+   否則安全區會被算「兩次」（搜尋列一次 + 捲動容器一次）→ 空白爆增。
+   選擇器權重要贏過 CSS 片段裡的 `.is-mobile .gn-main`（(0,2,0) + !important）。 */
+.is-mobile .gn-root:has(> .gn-search-row) .gn-main,
+.is-mobile .gn-root:has(> .gn-search-row) .gn-tree-scroll {
+  padding-top: 8px !important;
+  --gn-top-fade: 16px;   /* 上方已有搜尋列，長淡出沒必要 */
+}
+
+/* ===== 搜尋命中高亮 ===== */
+.gn-hit {
+  color: inherit;
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0 1px;
+  background: color-mix(in srgb, var(--text-accent) 30%, transparent);
+  /* 換行時每一段都要有底色，否則只有第一行被塗到 */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* （已移除舊的圖片卡高亮覆寫：卡片文字不再是「疊在圖上的白字」，
+    現在標題／日期落在卡片灰底上，直接沿用上面的 accent 高亮即可） */
+
+/* ===== 工具列「⋯ 更多」浮動面板（單層：排序 chips / 卡片大小滑桿 / 攤平 / 重新整理） =====
+   用自訂面板而不是 Obsidian 的 Menu —— Menu 只吃選項列，塞不進真的滑桿，也會被迫多開一層子選單。 */
+.gn-more-pop {
+  position: fixed; z-index: 9999;
+  width: 250px; padding: 10px 12px 12px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .16);
+}
+.gn-more-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 2px 2px 6px;
+}
+.gn-more-label + .gn-zoom { margin-bottom: 4px; }
+/* 排序：一排可點的膠囊（單層，不用再開子選單） */
+.gn-more-sorts { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+.gn-more-chip {
+  font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary); color: var(--text-muted);
+  transition: background .12s, color .12s, border-color .12s;
+}
+.gn-more-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+.gn-more-chip-on {
+  background: var(--interactive-accent); border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+/* 卡片大小滑桿：面板內滿寬 */
+.gn-more-pop .gn-zoom { width: 100%; margin: 0 0 2px; }
+.gn-more-sep {
+  height: 1px; margin: 10px 0 8px;
+  background: color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+}
+/* 一般列（攤平 / 重新整理） */
+.gn-more-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: 7px; cursor: pointer;
+  color: var(--text-normal); font-size: 13px;
+}
+.gn-more-row:hover, .gn-more-row:active { background: var(--background-modifier-hover); }
+.gn-more-icon { display: flex; align-items: center; color: var(--text-muted); }
+.gn-more-icon svg { width: 16px; height: 16px; }
+.gn-more-text { flex: 1; }
+.gn-more-check { display: flex; align-items: center; color: var(--interactive-accent); }
+.gn-more-check svg { width: 15px; height: 15px; }
+.gn-more-row-on .gn-more-icon, .gn-more-row-on .gn-more-text { color: var(--interactive-accent); }
+/* 手機：面板加寬、列高加大好按 */
+.is-mobile .gn-more-pop { width: min(300px, 88vw); }
+.is-mobile .gn-more-row { padding: 11px 8px; font-size: 14px; }
+.is-mobile .gn-more-chip { font-size: 12px; padding: 5px 11px; }
+
+/* 「更多」面板：標籤篩選區 */
+.gn-more-label { display: flex; align-items: center; justify-content: space-between; }
+.gn-more-clear {
+  font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none;
+  color: var(--text-faint); cursor: pointer; padding: 0 2px;
+}
+.gn-more-clear:hover { color: var(--interactive-accent); }
+/* 排序改成清單列後，第一個 label 不用上邊距；標籤區的 label 要拉開一點 */
+.gn-more-pop .gn-more-label + .gn-more-row { margin-top: 0; }
+.gn-more-pop .gn-more-row + .gn-more-label { margin-top: 10px; }
+/* 表頭的「篩選中」小標（點一下清除） */
+.gn-head-tag {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+.gn-head-tag:hover { background: color-mix(in srgb, var(--interactive-accent) 34%, transparent); }
+
+/* 「更多」面板：標籤膠囊區 —— 標籤多時限高 + 捲動（沿用細捲軸樣式）
+   上下各一條灰線：明確標出「這是一個被裁切的捲動區」，膠囊切一半時才不會像壞掉 */
+.gn-more-tags {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  max-height: 120px; overflow-y: auto; overscroll-behavior: contain;
+  margin-bottom: 12px;
+  padding: 8px 4px 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
+}
+.gn-more-tags::-webkit-scrollbar { width: 9px; }
+.gn-more-tags::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-normal) 20%, transparent);
+  border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
+}
+.gn-more-tags::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-normal) 38%, transparent); background-clip: padding-box;
+}
+.gn-more-tags::-webkit-scrollbar-track { background: transparent; }
+.gn-more-tags .gn-more-chip { align-self: flex-start; }
+.is-mobile .gn-more-tags { max-height: 150px; }
+
+/* ===== 設定頁：依功能分組，標題用左對齊的 H2（正常字色，不吃主題的彩色 heading） ===== */
+.gn-settings .gn-set-h {
+  margin: 26px 0 4px;
+  padding: 0;
+  text-align: left;
+  font-size: 1.15em;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-normal) !important;   /* 蓋掉主題對 h2 的著色 */
+  border: none;
+}
+/* 第一組緊貼頂端，不要多一截空白 */
+.gn-settings .gn-set-h:first-child { margin-top: 4px; }
+/* 分組之間拉一條細線，視覺上更好切 */
+.gn-settings .gn-set-h:not(:first-child) {
+  padding-top: 22px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.gn-settings .gn-set-desc {
+  margin: 0 0 10px;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+/* 分批渲染的哨兵（捲到它就補下一批卡片）——本身不佔視覺空間 */
+.gn-wall-sentinel { height: 1px; margin-top: 8px; }
+
+
+/* ===== 懸浮搜尋（GnSearchModal，Spotlight 風）===== */
+.gn-search-modal .gn-search-sug {
+  display: flex; flex-direction: row; align-items: center; gap: 10px;
+  padding: 8px 6px;
+}
+.gn-search-sug-txt {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.gn-search-sug-thumb {
+  flex: 0 0 auto;
+  width: 46px; height: 46px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--background-secondary);   /* 載入中先墊底色，不閃白 */
+}
+.gn-search-sug-title {
+  font-weight: 600; font-size: 14px;
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0;
+}
+.gn-search-sug-ext {
+  flex: 0 0 auto;
+  font-size: 9px; font-weight: 700; letter-spacing: .04em;
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px; padding: 0 4px; line-height: 1.5;
+}
+.gn-search-sug-path {
+  font-size: 11px; color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gn-search-sug-snippet {
+  font-size: 12px; line-height: 1.45; color: var(--text-muted);
+  overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}

@@ -1,0 +1,11 @@
+# 執行期資料（含使用者私人設定：ICS 網址等）—— 絕不進 repo
+data.json
+og-cache/
+linkcard-cache.json
+linkcard-images/
+
+# 備份與暫存
+*.bak*
+_backup*
+.DS_Store
+node_modules/
