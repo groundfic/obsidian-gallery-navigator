@@ -206,8 +206,7 @@ class PinterestModal extends Modal {
   // 開外部連結：桌機走 electron，手機退回 window.open
   openExternal(url) {
     if (!url) return;
-    try { require('electron').shell.openExternal(url); }
-    catch (e) { try { window.open(url, '_blank'); } catch (er) {} }
+    window.open(url, '_blank');   // Obsidian 攔截外部網址 → 系統瀏覽器（桌機手機皆可，免 electron）
   }
   pinUrl(p) {
     return p.id ? 'https://www.pinterest.com/pin/' + p.id + '/' : (p.link || p.tracked_link || '');
@@ -617,8 +616,18 @@ function itemFromFile(app, f) {
 // 自訂資料夾圖示：闔起＝實心填滿（明顯關閉）、展開＝線框開啟（明顯打開），差異大、不依賴 lucide
 const FOLDER_CLOSED_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>';
 const FOLDER_OPEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>';
+
+// SVG 常數 → DOM（不用 innerHTML：上架審查會標記，且 DOMParser 同樣快）
+function setSvg(el, svg) {
+  el.textContent = '';
+  try {
+    const node = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    if (node && node.nodeName === 'svg') el.appendChild(document.importNode(node, true));
+  } catch (e) {}
+}
+
 function setFolderIcon(el, open) {
-  el.innerHTML = open ? FOLDER_OPEN_SVG : FOLDER_CLOSED_SVG;
+  setSvg(el, open ? FOLDER_OPEN_SVG : FOLDER_CLOSED_SVG);
 }
 
 function iconForExt(ext) {
@@ -1478,7 +1487,9 @@ class GalleryView extends ItemView {
   revealInSystem(file) {
     try {
       const full = this.app.vault.adapter.getFullPath(file.path);
-      require('electron').shell.showItemInFolder(full);
+      // app.showInFolder：Obsidian 內建（核心「在系統檔案總管顯示」用的同一支），免 require electron
+      if (typeof this.app.showInFolder === 'function') this.app.showInFolder(file.path);
+      else throw new Error('showInFolder unavailable');
     } catch (e) {
       new Notice(t('Cannot reveal in system explorer: {{msg}}', { msg: e && e.message ? e.message : e }));
     }
@@ -4074,7 +4085,7 @@ class GalleryPlugin extends Plugin {
     this.registerEvent(this.app.vault.on('delete', (f) => this.search.onFileDeleted(f)));
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.search.onFileRenamed(f, old)));
 
-    this.addCommand({
+    if (this.state.devMode) this.addCommand({
       id: 'gn-search-test',
       name: t('Search: test query'),
       callback: async () => {
@@ -4103,7 +4114,7 @@ class GalleryPlugin extends Plugin {
 
     // PDF 內文：借 text-extractor 擷取（它有持久快取，只需要跑一次；之後建索引就會自動吃到）
     // 診斷：手機點資料夾沒跳右欄時，用這個指令看實際數值
-    this.addCommand({
+    if (this.state.devMode) this.addCommand({
       id: 'gn-diagnose-mobile-scroll',
       name: t('Diagnose: mobile pane switching'),
       callback: () => {
@@ -4175,7 +4186,7 @@ class GalleryPlugin extends Plugin {
         const a = this.app.vault.adapter;
         if (a && typeof a.getFullPath === 'function') {
           menu.addItem((i) => i.setTitle(t('Reveal in system explorer')).setIcon('folder-open')
-            .onClick(() => { try { require('electron').shell.showItemInFolder(a.getFullPath(file.path)); } catch (e) {} }));
+            .onClick(() => { try { if (typeof this.app.showInFolder === 'function') this.app.showInFolder(file.path); } catch (e) {} }));
         }
         menu.addSeparator();
         menu.addItem((i) => i.setTitle(t('Delete image')).setIcon('trash').setWarning(true)

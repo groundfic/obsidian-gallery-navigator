@@ -12,7 +12,7 @@ try {
     state: require('@codemirror/state'),
   };
 } catch (e) {
-  console.log('[LCP] CodeMirror modules unavailable, Live Preview cards disabled');
+  console.warn('[LCP] CodeMirror modules unavailable, Live Preview cards disabled');
 }
 
 /* ============ 常數 ============ */
@@ -109,6 +109,16 @@ const PENCIL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const THREADS_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.509 5.467l-2.04.569c-1.104-3.96-3.898-5.984-8.304-6.015-2.91.022-5.11.936-6.54 2.717C4.307 6.504 3.616 8.914 3.589 12c.027 3.086.718 5.496 2.057 7.164 1.43 1.783 3.631 2.698 6.54 2.717 2.623-.02 4.358-.631 5.8-2.045 1.647-1.613 1.618-3.593 1.09-4.798-.31-.71-.873-1.3-1.634-1.75-.192 1.352-.622 2.446-1.284 3.272-.886 1.102-2.14 1.704-3.73 1.79-1.202.065-2.361-.218-3.259-.801-1.063-.689-1.685-1.74-1.752-2.964-.065-1.19.408-2.285 1.33-3.082.88-.76 2.119-1.207 3.583-1.291a13.853 13.853 0 0 1 3.02.142c-.126-.742-.375-1.332-.75-1.757-.513-.586-1.308-.883-2.359-.89h-.029c-.844 0-1.992.232-2.721 1.32L7.734 7.847c.98-1.454 2.568-2.256 4.478-2.256h.044c3.194.02 5.097 1.975 5.287 5.388.108.046.216.094.321.142 1.49.7 2.58 1.761 3.154 3.07.797 1.82.871 4.79-1.548 7.158-1.85 1.81-4.094 2.628-7.277 2.65Zm1.003-11.69c-.242 0-.487.007-.739.021-1.836.103-2.98.946-2.916 2.143.067 1.256 1.452 1.839 2.784 1.767 1.224-.065 2.818-.543 3.086-3.71a10.5 10.5 0 0 0-2.215-.221z"/></svg>';
 
 const GLOBE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm-.354 14.933A7 7 0 0 1 1.02 8.73h2.49c.08 1.7.46 3.2 1.02 4.34a6.97 6.97 0 0 1-2.884 1.863zM1.02 7.27A7 7 0 0 1 7.646 1.07v2.07c-1.52.18-2.82 2.1-3.14 4.13H1.02zm6.626 7.663V12.5c1.18-.13 2.22-1.54 2.62-3.5H7.646zm0-3.933V7.27h2.62c-.4-1.96-1.44-3.37-2.62-3.5V5.5zm1.354-6.933A7 7 0 0 1 14.98 7.27h-2.49c-.08-1.7-.46-3.2-1.02-4.34a6.97 6.97 0 0 1 2.884-1.863zM8.354 1.07A7 7 0 0 1 14.98 8.73h-2.49c-.32-2.03-1.62-3.95-4.136-4.13V1.07zm-2.626 12.93v2.433a6.97 6.97 0 0 1-2.884-1.863c.56-1.14.94-2.64 1.02-4.34h2.49c-.4 1.96-1.44 3.37-2.62 3.5z"/></svg>';
+
+
+/* SVG 常數 → DOM（不用 innerHTML：上架審查會標記） */
+function setSvgEl(el, svg) {
+  el.textContent = '';
+  try {
+    const node = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    if (node && node.nodeName === 'svg') el.appendChild(document.importNode(node, true));
+  } catch (e) {}
+}
 
 /* ============ 共享狀態 ============ */
 
@@ -359,7 +369,7 @@ async function fetchGenericMeta(url) {
       }
       if (best.title !== hostname && best.image) break;
     } catch (e) {
-      console.log('[LCP] fetch failed:', e.message);
+      console.warn('[LCP] fetch failed:', e.message);
     }
   }
 
@@ -390,7 +400,7 @@ async function fetchMetaPlatform(url) {
       if (data.thumbnail_url) base.image = data.thumbnail_url;
     }
   } catch (e) {
-    console.log('[LCP] oEmbed failed:', e.message);
+    console.warn('[LCP] oEmbed failed:', e.message);
   }
 
   if (base.image) return base;
@@ -431,7 +441,7 @@ async function fetchMetaPlatform(url) {
         return base;
       }
     } catch (e) {
-      console.log('[LCP] Threads HTML fetch failed:', e.message);
+      console.warn('[LCP] Threads HTML fetch failed:', e.message);
     }
   }
 
@@ -567,7 +577,7 @@ async function fetchImageAsDataUri(imageUrl, pageUrl) {
     }
     return dataUri;
   } catch (e) {
-    console.log('[LCP] image fetch failed:', e.message);
+    console.warn('[LCP] image fetch failed:', e.message);
     return '';
   }
 }
@@ -709,7 +719,7 @@ function buildOpenButton(url) {
   const btn = document.createElement('div');
   btn.className = 'lcp-open-btn';
   btn.setAttribute('aria-label', 'Open link');
-  btn.innerHTML = EXTLINK_SVG;
+  setSvgEl(btn, EXTLINK_SVG);
   const open = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -756,7 +766,7 @@ function buildDomainRow(hostname) {
   fav.onerror = () => {
     const span = document.createElement('span');
     span.className = 'lcp-favicon lcp-favicon--fallback';
-    span.innerHTML = GLOBE_SVG;
+    setSvgEl(span, GLOBE_SVG);
     fav.replaceWith(span);
   };
   row.appendChild(fav);
@@ -875,7 +885,7 @@ async function renderCard(wrap, url, meta, opts = {}) {
     head.appendChild(nm);
     const lg = document.createElement('span');
     lg.className = 'lcp-thread-logo';
-    lg.innerHTML = THREADS_SVG;
+    setSvgEl(lg, THREADS_SVG);
     head.appendChild(lg);
     const txt = document.createElement('div');
     txt.className = 'lcp-thread-text';
@@ -1037,7 +1047,7 @@ function buildLivePreviewExtension() {
       const editBtn = document.createElement('div');
       editBtn.className = 'lcp-open-btn';
       editBtn.setAttribute('aria-label', 'Edit URL');
-      editBtn.innerHTML = PENCIL_SVG;
+      setSvgEl(editBtn, PENCIL_SVG);
       const onEdit = (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1193,7 +1203,7 @@ class LinkCardModule {
           await this.saveCache();
           new Notice(t('Link cards: moved {{n}} images from data.json to images/', { n }), 6000);
         }
-      } catch (e) { console.log('[LCP] migrate failed:', e.message); }
+      } catch (e) { console.warn('[LCP] migrate failed:', e.message); }
     }, 1500);
 
 
@@ -1267,7 +1277,7 @@ class LinkCardModule {
           const insertPos = { line: cursor.line, ch: editor.getLine(cursor.line).length };
           editor.replaceRange('\n' + meta.description, insertPos);
         } catch (e) {
-          console.log('[LCP] paste insert failed:', e.message);
+          console.warn('[LCP] paste insert failed:', e.message);
         }
       }, 100);
     });
@@ -1408,7 +1418,7 @@ class LinkCardModule {
               };
               renderCard(sk, url, fallback, { canvas: true });
             } catch (e2) {}
-            console.log('[LCP] canvas render failed:', e && e.message);
+            console.warn('[LCP] canvas render failed:', e && e.message);
           });
       }
     } catch (e) {}
