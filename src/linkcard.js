@@ -106,6 +106,8 @@ const EXTLINK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 
 const PENCIL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
 
+const THREADS_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.509 5.467l-2.04.569c-1.104-3.96-3.898-5.984-8.304-6.015-2.91.022-5.11.936-6.54 2.717C4.307 6.504 3.616 8.914 3.589 12c.027 3.086.718 5.496 2.057 7.164 1.43 1.783 3.631 2.698 6.54 2.717 2.623-.02 4.358-.631 5.8-2.045 1.647-1.613 1.618-3.593 1.09-4.798-.31-.71-.873-1.3-1.634-1.75-.192 1.352-.622 2.446-1.284 3.272-.886 1.102-2.14 1.704-3.73 1.79-1.202.065-2.361-.218-3.259-.801-1.063-.689-1.685-1.74-1.752-2.964-.065-1.19.408-2.285 1.33-3.082.88-.76 2.119-1.207 3.583-1.291a13.853 13.853 0 0 1 3.02.142c-.126-.742-.375-1.332-.75-1.757-.513-.586-1.308-.883-2.359-.89h-.029c-.844 0-1.992.232-2.721 1.32L7.734 7.847c.98-1.454 2.568-2.256 4.478-2.256h.044c3.194.02 5.097 1.975 5.287 5.388.108.046.216.094.321.142 1.49.7 2.58 1.761 3.154 3.07.797 1.82.871 4.79-1.548 7.158-1.85 1.81-4.094 2.628-7.277 2.65Zm1.003-11.69c-.242 0-.487.007-.739.021-1.836.103-2.98.946-2.916 2.143.067 1.256 1.452 1.839 2.784 1.767 1.224-.065 2.818-.543 3.086-3.71a10.5 10.5 0 0 0-2.215-.221z"/></svg>';
+
 const GLOBE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm-.354 14.933A7 7 0 0 1 1.02 8.73h2.49c.08 1.7.46 3.2 1.02 4.34a6.97 6.97 0 0 1-2.884 1.863zM1.02 7.27A7 7 0 0 1 7.646 1.07v2.07c-1.52.18-2.82 2.1-3.14 4.13H1.02zm6.626 7.663V12.5c1.18-.13 2.22-1.54 2.62-3.5H7.646zm0-3.933V7.27h2.62c-.4-1.96-1.44-3.37-2.62-3.5V5.5zm1.354-6.933A7 7 0 0 1 14.98 7.27h-2.49c-.08-1.7-.46-3.2-1.02-4.34a6.97 6.97 0 0 1 2.884-1.863zM8.354 1.07A7 7 0 0 1 14.98 8.73h-2.49c-.32-2.03-1.62-3.95-4.136-4.13V1.07zm-2.626 12.93v2.433a6.97 6.97 0 0 1-2.884-1.863c.56-1.14.94-2.64 1.02-4.34h2.49c-.4 1.96-1.44 3.37-2.62 3.5z"/></svg>';
 
 /* ============ 共享狀態 ============ */
@@ -821,8 +823,13 @@ async function renderCard(wrap, url, meta, opts = {}) {
      小圖 → 緊湊卡（縮圖在右）
      無圖 → 純文字卡
      Canvas ＋ icon 類圖 → icon 卡（主色鋪滿、icon 置中） */
+  /* Threads 貼文：og:image 只有作者頭像（2026-07-17 兩種 UA 實測皆同），沒有「貼文截圖」
+     可抓 → 學 iMessage：用 title + description（貼文全文，含換行）自己排出文字卡。 */
+  const isThreadPost = /(^|\.)threads\.(net|com)$/.test(meta.hostname || '') && !!(meta.description || '').trim();
   let layout;
-  if (opts.canvas) {
+  if (isThreadPost) {
+    layout = 'thread';        // Canvas 內也用 Threads 版型（否則 hero 會是大頭貼）
+  } else if (opts.canvas) {
     layout = src ? (iconLike ? 'canvas-icon' : 'canvas') : 'canvas-text';
   } else if (!src) {
     layout = 'text';
@@ -839,7 +846,53 @@ async function renderCard(wrap, url, meta, opts = {}) {
   const body = document.createElement('div');
   body.className = 'lcp-body';
 
-  if (layout === 'large') {
+  if (layout === 'thread') {
+    /* Threads 貼文卡（仿官方 embed / iMessage 預覽）：
+       作者列（頭像＋帳號＋右上 Threads 標誌）→ 貼文全文 → 底部灰帶（標題＋網域） */
+    wrap.className = 'lcp-card lcp-card--thread';
+    /* og:image 三種可能（2026-07-17 以 51 筆快取實測歸納）：
+       路徑含 -19/ ＝ 作者頭像 → 放作者列
+       路徑含 -15/ ＝ 貼文照片 → 放內文下方完整顯示
+       static.cdninstagram rsrc.php ＝ Threads logo 佔位圖 → 不顯示 */
+    const rawImg = meta.image || '';
+    const imgKind = /rsrc\.php|static\.cdninstagram/.test(rawImg) ? 'none'
+      : /\/t\d+[\d.-]*-19\//.test(rawImg) ? 'avatar'
+      : (src ? 'photo' : 'none');
+    const head = document.createElement('div');
+    head.className = 'lcp-thread-head';
+    if (src && imgKind === 'avatar') {
+      const av = document.createElement('img');
+      av.className = 'lcp-thread-avatar';
+      av.src = src;
+      av.onerror = () => av.remove();
+      head.appendChild(av);
+    }
+    const nm = document.createElement('div');
+    nm.className = 'lcp-thread-name';
+    // 「Threads 上的 Nanako Tsai（@nyanako0129）」→ 抽出帳號 nyanako0129；抽不到退回整串
+    const hm = /[（(]\s*@([\w.]+)\s*[）)]/.exec(meta.title || '');
+    nm.textContent = hm ? hm[1] : (meta.title || meta.hostname);
+    head.appendChild(nm);
+    const lg = document.createElement('span');
+    lg.className = 'lcp-thread-logo';
+    lg.innerHTML = THREADS_SVG;
+    head.appendChild(lg);
+    const txt = document.createElement('div');
+    txt.className = 'lcp-thread-text';
+    txt.textContent = meta.description;  // 貼文全文；CSS pre-wrap 保留換行 + line-clamp 限行數
+    body.appendChild(buildTitle(meta));
+    body.appendChild(buildDomainRow(meta.hostname));
+    if (src && imgKind === 'photo') {
+      const ph = document.createElement('div');
+      ph.className = 'lcp-thread-photo';
+      ph.style.backgroundImage = 'url("' + src + '")';
+      if (dims && dims.w && dims.h) ph.style.aspectRatio = dims.w + ' / ' + dims.h;
+      wrap.append(head, txt, ph, body);
+    } else {
+      wrap.append(head, txt, body);
+    }
+
+  } else if (layout === 'large') {
     wrap.className = 'lcp-card lcp-card--large';
     const hero = document.createElement('div');
     hero.className = 'lcp-hero' + (portrait ? ' lcp-hero--portrait' : '');

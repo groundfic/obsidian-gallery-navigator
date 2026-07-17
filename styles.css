@@ -1108,6 +1108,21 @@
 }
 
 
+/* ===== 刪除確認：附件勾選清單 ===== */
+.gn-confirm-extra { margin: 4px 0 10px; }
+.gn-confirm-extra-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; }
+.gn-confirm-extra-list {
+  margin-top: 6px; max-height: 140px; overflow-y: auto;
+  padding: 6px 10px; border-radius: 8px;
+  background: var(--background-secondary);
+}
+.gn-confirm-extra-item {
+  font-size: 11.5px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1.7;
+}
+
+
 /* ════════════ 2. Image Peek ════════════ */
 /* Quick Peek — Quick Look 式圖片預覽 */
 
@@ -2259,6 +2274,62 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .lcp-card--large .lcp-hero--portrait {
   aspect-ratio: 1 / 1; /* 直向圖裁方形：保留更多內容、卡片不過長 */
   background-position: center top; /* 截圖類內容重點通常在上方 */
+}
+/* ============ Threads 貼文卡（仿官方 embed / iMessage 預覽，三段式） ============
+   作者列（頭像＋帳號＋右上 Threads 標誌）→ 貼文全文 → 底部灰帶（標題＋網域） */
+.lcp-card--thread .lcp-thread-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 14px 16px 0;
+}
+.lcp-card--thread .lcp-thread-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  object-fit: cover; flex: 0 0 auto;
+  background: var(--background-secondary);
+}
+.lcp-card--thread .lcp-thread-name {
+  flex: 1; min-width: 0;
+  font-weight: 700; font-size: 14px; letter-spacing: -0.01em;
+  color: var(--text-normal);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lcp-card--thread .lcp-thread-logo {
+  flex: 0 0 auto; display: flex; align-items: center;
+  color: var(--text-normal); opacity: .85;
+}
+.lcp-card--thread .lcp-thread-logo svg { width: 17px; height: 17px; }
+.lcp-card--thread .lcp-thread-text {
+  /* ⚠️ 用 margin 不用 padding：line-clamp 裁在 content box、overflow 裁在 padding box，
+     若給 padding-bottom，被截斷的下一行會在內距區露出半行字（出格） */
+  margin: 10px 16px 14px;
+  font-size: 14px; line-height: 1.6; letter-spacing: .01em;
+  color: var(--text-normal);
+  white-space: pre-wrap;                 /* 保留貼文換行 */
+  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical;
+  overflow: hidden;                      /* 預覽不用全文：純文字貼文最多 6 行 */
+}
+/* 有照片的貼文：文字讓位給照片，最多 3 行 */
+.lcp-card--thread:has(.lcp-thread-photo) .lcp-thread-text { -webkit-line-clamp: 3; }
+/* 貼文照片（-15/ 系）：內縮圓角、依實際比例顯示，過長截頂 */
+.lcp-card--thread .lcp-thread-photo {
+  margin: 0 16px 14px;
+  border-radius: 10px;
+  background-size: cover;
+  background-position: center top;
+  background-color: var(--background-secondary);
+  max-height: 400px;
+}
+/* 沒有 aspect-ratio（缺 dims）時給個保底高度 */
+.lcp-card--thread .lcp-thread-photo:not([style*="aspect-ratio"]) { height: 240px; }
+
+/* 底部灰帶：沿用 body（標題＋網域列），墊深一階 + 髮絲線，貼齊參考圖 */
+.lcp-card--thread .lcp-body {
+  background: color-mix(in srgb, var(--text-normal) 5%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+  padding: 9px 16px 10px;
+}
+.lcp-card--thread .lcp-body .lcp-title {
+  font-size: 12.5px; font-weight: 650;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .lcp-card--large .lcp-body {
   padding: 10px 12px 11px;

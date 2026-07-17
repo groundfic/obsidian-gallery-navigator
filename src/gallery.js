@@ -804,20 +804,33 @@ class FolderSuggest extends FuzzySuggestModal {
 /* ===== 確認刪除對話框 ===== */
 
 class ConfirmModal extends Modal {
-  constructor(app, message, onConfirm) {
+  // extra（可選）：{ label, items: string[], checked } → 顯示勾選框＋檔案清單，
+  // onConfirm 會收到勾選狀態（既有呼叫端不接參數，不受影響）
+  constructor(app, message, onConfirm, extra) {
     super(app);
     this.message = message;
     this.onConfirm = onConfirm;
+    this.extra = extra || null;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.createEl('p', { text: this.message });
+    let chk = null;
+    if (this.extra && this.extra.items && this.extra.items.length) {
+      const box = contentEl.createDiv('gn-confirm-extra');
+      const lab = box.createEl('label', { cls: 'gn-confirm-extra-label' });
+      chk = lab.createEl('input', { type: 'checkbox' });
+      chk.checked = this.extra.checked !== false;
+      lab.createSpan({ text: ' ' + this.extra.label });
+      const list = box.createDiv('gn-confirm-extra-list');
+      for (const p of this.extra.items) list.createDiv({ cls: 'gn-confirm-extra-item', text: p });
+    }
     const btns = contentEl.createDiv('gn-modal-btns');
     const cancel = btns.createEl('button', { text: t('Cancel') });
     cancel.onclick = () => this.close();
     const ok = btns.createEl('button', { text: t('Delete') });
     ok.addClass('mod-warning');
-    ok.onclick = () => { this.close(); this.onConfirm(); };
+    ok.onclick = () => { const withExtra = !!(chk && chk.checked); this.close(); this.onConfirm(withExtra); };
   }
   onClose() { this.contentEl.empty(); }
 }
@@ -1472,20 +1485,58 @@ class GalleryView extends ItemView {
   }
 
   // 刪除（移到垃圾桶，依 Obsidian 設定），先跳確認框
+  // 這則筆記引用的附件（非 md：圖片/PDF/影音…），且**沒有被其他筆記引用**（孤兒）。
+  // 刪筆記時這些附件會變成沒人用的檔案 → 給使用者選擇一併移到垃圾桶。
+  orphanAttachmentsOf(file) {
+    if (!(file instanceof TFile) || file.extension !== 'md') return [];
+    const mc = this.app.metadataCache;
+    const cache = mc.getFileCache(file);
+    if (!cache) return [];
+    const raws = [...(cache.embeds || []), ...(cache.links || [])];
+    const res = mc.resolvedLinks || {};
+    const seen = new Set();
+    const out = [];
+    for (const r of raws) {
+      const lp = String(r.link || '').split('#')[0].split('|')[0].trim();
+      if (!lp) continue;
+      const f = mc.getFirstLinkpathDest(lp, file.path);
+      if (!(f instanceof TFile) || f.extension === 'md' || seen.has(f.path)) continue;
+      seen.add(f.path);
+      let used = false;
+      for (const src of Object.keys(res)) {
+        if (src !== file.path && res[src] && res[src][f.path]) { used = true; break; }
+      }
+      if (!used) out.push(f);
+    }
+    return out;
+  }
+
   confirmDelete(item) {
     const isFolder = item instanceof TFolder;
     const msg = isFolder
       ? t('Delete folder "{{name}}" and all its contents? (moves to trash)', { name: item.name })
       : t('Delete "{{name}}"? (moves to trash)', { name: item.name });
-    new ConfirmModal(this.app, msg, async () => {
+    const orphans = isFolder ? [] : this.orphanAttachmentsOf(item);
+    const extra = orphans.length ? {
+      label: t('Also delete {{n}} attachment(s) not referenced by any other note', { n: orphans.length }),
+      items: orphans.map((f) => f.path),
+      checked: true,
+    } : null;
+    new ConfirmModal(this.app, msg, async (withExtra) => {
       try {
         await this.app.fileManager.trashFile(item);
-        new Notice(t('Moved to trash: {{name}}', { name: item.name }));
+        let n = 0;
+        if (withExtra) {
+          for (const f of orphans) { try { await this.app.fileManager.trashFile(f); n++; } catch (e) {} }
+        }
+        new Notice(n
+          ? t('Moved to trash: {{name}} (+{{n}} attachments)', { name: item.name, n })
+          : t('Moved to trash: {{name}}', { name: item.name }));
         this.render();
       } catch (e) {
         new Notice(t('Delete failed: {{msg}}', { msg: e && e.message ? e.message : e }));
       }
-    }).open();
+    }, extra).open();
   }
 
   // 把元素設成「拖入即搬移到 targetPath」的落點
@@ -1765,7 +1816,10 @@ class GalleryView extends ItemView {
       }
       // 抓網頁 HTML → 解析 og:image
       const res = await requestUrl({ url, method: 'GET', throw: false });
-      const imgUrl = ogImageFrom(res && res.text, url);
+      let imgUrl = ogImageFrom(res && res.text, url);
+      // Meta 系（Threads/IG）og:image 過濾：-19/ 是作者頭像、rsrc.php 是 logo 佔位圖，
+      // 都不是內容、不配當卡片封面 → 記 null（-15/ 的貼文照片照常使用）
+      if (imgUrl && (/rsrc\.php|static\.cdninstagram/.test(imgUrl) || /\/t\d+[\d.-]*-19\//.test(imgUrl))) imgUrl = null;
       if (!imgUrl) { idx[file.path] = { url, file: null }; plugin.saveOgIndex(); return; }
       // 下載圖片位元組 → 存進 og-cache/
       const ir = await requestUrl({ url: imgUrl, method: 'GET', throw: false });
@@ -3931,6 +3985,25 @@ class GnSearchIndex {
     const qCount = new Map();
     for (const t of qtoks) qCount.set(t, (qCount.get(t) || 0) + 1);
 
+    // 前綴展開：拉丁/數字 token（≥2 字）額外比對「以它開頭」的索引詞——
+    // 打「032」就命中「032c」、打「mag」就命中「magazine」（中文本來就有 bigram 兜底，
+    // 英數沒有 → 以前一定要整個詞打完才搜得到）。展開詞打 0.7 折權重，
+    // 精確命中永遠排前面；每個前綴最多展開 24 個詞，太氾濫的前綴自然被擋住。
+    const qWeight = new Map();
+    for (const tk of qCount.keys()) qWeight.set(tk, 1);
+    for (const tk of [...qCount.keys()]) {
+      if (!/^[a-z0-9_]{2,}$/.test(tk)) continue;
+      let added = 0;
+      for (const key of this.inv.keys()) {
+        if (added >= 24) break;
+        if (key.length > tk.length && key.startsWith(tk) && !qCount.has(key)) {
+          qCount.set(key, 1);
+          qWeight.set(key, 0.7);
+          added++;
+        }
+      }
+    }
+
     const N = Math.max(1, this.live);
     const k1 = 1.2, b = 0.75;         // BM25 標準參數
     const scores = new Map();
@@ -3942,11 +4015,12 @@ class GnSearchIndex {
       // 出現在 >60% 文件的詞（「的」「是」…）沒有鑑別力，跳過：既拖慢又污染排名
       if (df > N * 0.6) continue;
       const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
+      const w = qWeight.get(t) || 1;
       for (let i = 0; i < arr.length; i += 2) {
         const id = arr[i], freq = arr[i + 1];
         const d = this.docs[id];
         if (!d) continue;               // 墓碑：已刪除或已被新版本取代
-        const s = idf * (freq * (k1 + 1)) / (freq + k1 * (1 - b + b * d.len / this.avgLen)) * qn;
+        const s = idf * (freq * (k1 + 1)) / (freq + k1 * (1 - b + b * d.len / this.avgLen)) * qn * w;
         scores.set(id, (scores.get(id) || 0) + s);
       }
     }

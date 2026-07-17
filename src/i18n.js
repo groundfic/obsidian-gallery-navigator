@@ -147,6 +147,8 @@ const ZH_TW = {
   'Move to which folder…': '移動到哪個資料夾…', 'vault root': '根目錄',
   'Pick a to-do note…': '選擇待辦筆記…', 'Untitled': '未命名',
   'Failed to create: {{msg}}': '建立失敗：{{msg}}',
+  'Also delete {{n}} attachment(s) not referenced by any other note': '連同刪除 {{n}} 個未被其他筆記引用的附件',
+  'Moved to trash: {{name}} (+{{n}} attachments)': '已移到垃圾桶：{{name}}（＋{{n}} 個附件）',
   // ── 更多面板 ──
   'Sort': '排序', 'Tags in this folder': '本資料夾的標籤', 'Clear': '清除', 'Card size': '卡片大小',
   'Flatten: include all subfolders': '攤平：含所有子資料夾',
