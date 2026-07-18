@@ -13,16 +13,20 @@
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-/* 細捲軸（macOS overlay 風） */
+/* 細捲軸（macOS overlay 風）：平常「隱形」，捲動中（JS 掛 .gn-scrolling）才浮現 */
 .gn-tree-scroll::-webkit-scrollbar, .gn-main::-webkit-scrollbar,
 .gn-pin-right::-webkit-scrollbar, .gn-todo-list::-webkit-scrollbar { width: 9px; height: 9px; }
 .gn-tree-scroll::-webkit-scrollbar-thumb, .gn-main::-webkit-scrollbar-thumb,
 .gn-pin-right::-webkit-scrollbar-thumb, .gn-todo-list::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-normal) 20%, transparent);
+  background: transparent;                 /* 預設隱形 */
   border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
+  transition: background .25s;
 }
-.gn-tree-scroll::-webkit-scrollbar-thumb:hover, .gn-main::-webkit-scrollbar-thumb:hover,
-.gn-pin-right::-webkit-scrollbar-thumb:hover {
+.gn-scrolling::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-normal) 22%, transparent);
+  background-clip: padding-box;
+}
+.gn-scrolling::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text-normal) 38%, transparent); background-clip: padding-box;
 }
 
@@ -31,23 +35,22 @@
   flex: none;
   display: flex; align-items: center;
   width: 100%; margin: 0; padding: 6px 8px 6px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
+  /* 底邊線已移除（2026-07-18 使用者要求，乾淨無框） */
 }
 .gn-bar-group {
   display: flex; align-items: center; gap: 2px;
   background: transparent; border: none; box-shadow: none; padding: 0;
 }
 .gn-bar-group:empty { display: none; }
-/* 左段（資料夾工具）：寬度由 JS 對齊左欄，右緣一條分隔線標出欄界 */
+/* 左段（資料夾工具）：寬度由 JS 對齊左欄（欄界分隔線已移除，2026-07-18） */
 .gn-bar-group:first-child {
-  border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent);
   padding-right: 8px; margin-right: 8px;
 }
 /* 右段（卡片工具）：填滿右側、靠右 */
 .gn-bar-group:last-child { flex: 1; justify-content: flex-end; }
 .gn-btn {
   flex: none;
-  width: 36px; height: 36px;
+  width: 28px; height: 28px;   /* 2026-07-18 縮小點擊範圍（手機另外維持 36px） */
   display: flex; align-items: center; justify-content: center;
   border-radius: 10px;
   cursor: pointer;
@@ -58,7 +61,9 @@
 }
 .gn-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
 .gn-btn:active { transform: scale(.94); }
-.gn-btn svg { width: 20px; height: 20px; }
+.gn-btn svg { width: 16px; height: 16px; }   /* 與資料夾樹圖示（.gn-tthumb svg 16px）同尺寸（2026-07-18） */
+.is-mobile .gn-btn svg { width: 20px; height: 20px; }   /* 手機同 .is-mobile .gn-tthumb svg */
+.is-mobile .gn-btn { width: 36px; height: 36px; }        /* 手機維持大點擊範圍 */
 /* 表頭「含子資料夾」小標 */
 .gn-head-flat {
   margin-left: 8px; padding: 1px 7px; border-radius: 999px;
@@ -66,12 +71,12 @@
   background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
   color: var(--interactive-accent);
 }
-/* 切換鈕開啟狀態（如攤平） */
+/* 切換鈕開啟狀態（如攤平）：灰底 + 正常字色，不用主題色（2026-07-18） */
 .gn-btn-on {
-  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
-  color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--text-normal) 10%, transparent);
+  color: var(--text-normal);
 }
-.gn-btn-on:hover { background: color-mix(in srgb, var(--interactive-accent) 26%, transparent); color: var(--interactive-accent); }
+.gn-btn-on:hover { background: color-mix(in srgb, var(--text-normal) 15%, transparent); color: var(--text-normal); }
 .gn-crumbs {
   flex: 1;
   display: flex; align-items: center; gap: 4px;
@@ -103,7 +108,7 @@
   border: 1px solid var(--background-modifier-border);
 }
 .gn-eye:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.gn-eye-on { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
+.gn-eye-on { color: var(--text-normal); background: color-mix(in srgb, var(--text-normal) 10%, transparent); border-color: transparent; }   /* 灰底開關（2026-07-18） */
 
 /* 兩欄容器：左資料夾樹 + 可拖曳分隔桿 + 右筆記牆 */
 .gn-split {
@@ -263,12 +268,8 @@
 }
 .gn-tnode:focus, .gn-tnode:focus-visible { outline: none; }   /* 選取以 gn-tsel 呈現，不要預設焦點框 */
 .gn-tsel .gn-tname { font-weight: 600; }
-/* 巢狀左側引導線（參考 2 的連接線） */
-.gn-tchild::before {
-  content: ''; position: absolute; top: 0; bottom: 0;
-  left: calc(4px + (var(--gn-depth) - 1) * 15px + 7px);
-  width: 1px; background: color-mix(in srgb, var(--text-normal) 13%, transparent);
-}
+/* 巢狀左側引導線：已移除（2026-07-18 使用者要求，靠縮排即可辨識層級）。
+   想要回來 → 還原 .gn-tchild::before（1px 直線，left 依 --gn-depth 縮排定位）。 */
 .gn-thidden { opacity: .5; }
 .gn-thidden:hover { opacity: 1; }
 .gn-tdragging { opacity: .4; }
@@ -290,9 +291,8 @@
 .is-mobile .gn-tcaret svg { width: 22px; height: 22px; }
 .gn-tcaret:hover { color: var(--text-normal); }
 /* 展開中的資料夾：圖示 + 名稱上強調色，一眼可辨（同原生檔案總管） */
-.gn-topen .gn-tthumb { color: var(--interactive-accent); }
-.gn-topen > .gn-tname { color: var(--interactive-accent); font-weight: 600; }
-.gn-topen > .gn-tcaret { color: var(--interactive-accent); }
+/* 展開中的資料夾：只加粗、不染主題色（2026-07-18 使用者要求；配色留給資料夾自訂色） */
+.gn-topen > .gn-tname { font-weight: 600; }
 .gn-tthumb {
   flex: none;
   width: 18px; height: 18px;
@@ -487,9 +487,12 @@
 .gn-fav-head:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
 .gn-fav-caret { display: flex; color: var(--text-faint); }
 .gn-fav-caret svg { width: 14px; height: 14px; }
-.gn-fav-star { display: flex; color: var(--text-muted); }
-.gn-fav-star svg { width: 13px; height: 13px; }
-.gn-fav-title { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--text-muted); }
+.gn-fav-star { flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
+.gn-fav-star svg { width: 16px; height: 16px; }   /* 與 .gn-tthumb 的資料夾圖示同尺寸（2026-07-18） */
+.is-mobile .gn-fav-star { width: 22px; height: 22px; }
+.is-mobile .gn-fav-star svg { width: 20px; height: 20px; }   /* 手機同 .is-mobile .gn-tthumb */
+.gn-fav-title { font-size: 13px; font-weight: 600; color: var(--text-muted); }   /* 與 .gn-tname 同字級（2026-07-18） */
+.is-mobile .gn-fav-title { font-size: 17px; }   /* 手機同 .is-mobile .gn-tname */
 .gn-fav-count { font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: auto; }
 .gn-fav-collapsed { padding-bottom: 0; }
 .gn-fav-row .gn-tthumb { color: var(--text-muted); }

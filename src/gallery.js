@@ -927,7 +927,7 @@ class GalleryView extends ItemView {
 
   getViewType() { return VIEW_TYPE; }
   getDisplayText() { return 'Gallery Navigator'; }
-  getIcon() { return 'layout-grid'; }
+  getIcon() { return 'egg'; }   // 🥚（2026-07-18 使用者欽點）
 
   async onOpen() {
     this.render();
@@ -1853,6 +1853,15 @@ class GalleryView extends ItemView {
     } catch (e) { /* 靜默：保留無圖，下次可再試 */ }
   }
 
+  // macOS overlay 捲軸：捲動中才顯示（掛 .gn-scrolling，停止 700ms 後移除淡出）
+  wireOverlayScrollbar(el) {
+    el.addEventListener('scroll', () => {
+      if (!el.hasClass('gn-scrolling')) el.addClass('gn-scrolling');
+      clearTimeout(el._gnSbT);
+      el._gnSbT = setTimeout(() => el.removeClass('gn-scrolling'), 700);
+    }, { passive: true });
+  }
+
   // ── 左欄捲動位置記憶（資料夾/標籤各記一份，存進 data.json 跨工作階段） ──
   // 為何需要：render() 會 contentEl.empty() 重建左欄，treeScroll.empty() 也會把內容高度歸零，
   // 兩者都讓 scrollTop 被夾回 0 → 點資料夾就「跳回頂端」。
@@ -2138,6 +2147,8 @@ class GalleryView extends ItemView {
     const splitter = split.createDiv('gn-split-handle');
     const main = split.createDiv('gn-main');
     this._split = split; this._main = main;   // 供手機「點資料夾 → 跳右欄」使用
+    this.wireOverlayScrollbar(treeScroll);    // overlay 捲軸：捲動才浮現
+    this.wireOverlayScrollbar(main);
     if (treeHidden) { tree.style.display = 'none'; splitter.style.display = 'none'; }
 
     // 手機：方案⑤ 並排雙欄一起平移（左欄 86% + 右欄 100%，兩欄同步 translateX）
@@ -4057,7 +4068,7 @@ class GalleryPlugin extends Plugin {
     this.registerView(VIEW_TYPE, (leaf) => new GalleryView(leaf, this));
     this.registerView(CAL_VIEW_TYPE, (leaf) => new CalendarView(leaf, this));
 
-    this.addRibbonIcon('layout-grid', 'Gallery Navigator', () => this.activateView());
+    this.addRibbonIcon('egg', 'Gallery Navigator', () => this.activateView());   // 🥚
     this.addRibbonIcon('calendar', 'Mini Calendar', () => this.activateCalendar());
 
     this.addCommand({
