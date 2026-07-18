@@ -2051,6 +2051,7 @@ class GalleryView extends ItemView {
     const bar = root.createDiv('gn-bar');
     const barL = bar.createDiv('gn-bar-group');   // 左：對應左側資料夾樹
     const barR = bar.createDiv('gn-bar-group');   // 右：對應右側卡片牆
+    this._barTitle = barR.createDiv('gn-bar-title');   // 右段左側＝目前資料夾標題（Finder 風，2026-07-18）
 
     /* ===== 搜尋（全文，中文 ICU 斷詞 + bigram；結果直接呈現為卡牆）===== */
     // 搜尋鈕 → 開「懸浮搜尋」（GnSearchModal）；搜尋牆顯示中（Shift+↵ 進來的）→ 變成關閉搜尋
@@ -2102,11 +2103,17 @@ class GalleryView extends ItemView {
     }
     // 桌機：左段寬度對齊左欄（+9 補分隔桿）；收合時用自然寬（保留展開鈕）
     const isMobileUI = document.body.classList.contains('is-mobile');
-    const syncBarL = (w) => { if (!isMobileUI) barL.style.flex = '0 0 ' + w + 'px'; };
+    const syncBarL = (w) => {
+      if (isMobileUI) return;
+      barL.style.flex = '0 0 ' + w + 'px';
+      // 分界推到「樹寬 + 分隔桿 9px」＝右欄起點，灰色涵蓋分隔桿區，不留白縫
+      root.style.setProperty('--gn-treew', (w + 9) + 'px');
+    };
     // 搜尋時預設收起左欄（搜尋結果是全 vault，資料夾樹沒意義）；
     // 但搜尋中仍可用收合鈕手動展開（this._searchTreeOpen 當覆寫，不寫進 data.json）
     const treeHidden = this._searchOn ? !this._searchTreeOpen : !!state.treeCollapsed;
     if (!isMobileUI && !treeHidden) syncBarL(state.treeWidth || 232);
+    if (!isMobileUI && treeHidden) root.style.setProperty('--gn-treew', '-1px');   // 左欄收合 → 整塊主底色（-1px：連交界線一起滑出畫面）
 
     // 左：收合 / 展開資料夾面板
     const collapseBtn = barL.createDiv('gn-btn gn-collapse-btn');
@@ -2315,8 +2322,8 @@ class GalleryView extends ItemView {
     rootRow.style.setProperty('--gn-depth', '0');
     rootRow.toggleClass('gn-tsel', !this.path);
     rootRow.createSpan('gn-tcaret');
-    setFolderIcon(rootRow.createSpan('gn-tthumb gn-tthumb-home'), true);
-    rootRow.createSpan('gn-tname').setText('Yaoting');
+    setIcon(rootRow.createSpan('gn-tthumb gn-tthumb-home'), 'home');   // 根目錄＝家（2026-07-18）
+    rootRow.createSpan('gn-tname').setText(this.app.vault.getName());  // 動態 vault 名（原本寫死 Yaoting）
     rootRow.onclick = () => this.navigate('');
     this.wireMoveTarget(rootRow, '', 'gn-tmove');
 
@@ -2520,6 +2527,7 @@ class GalleryView extends ItemView {
   // 右欄內容的分派。抽出來是為了讓搜尋打字時能「只重繪右欄」——
   // 若每次打字都跑整個 render()，輸入框會被重建 → 立刻失焦，根本沒法打字。
   renderMainContent(main, zoom) {
+    if (this._barTitle) this._barTitle.empty();   // 各檢視自己填；連結牆等自帶表頭者留空
     const state = this.plugin.state;
     if (this._searchQ) { this.renderSearchWall(main, zoom); return; }
     const gf = this.graphFocus ? this.app.vault.getAbstractFileByPath(this.graphFocus) : null;
@@ -2903,31 +2911,6 @@ class GalleryView extends ItemView {
     return { grid, masonry };
   }
 
-  // hover 展開內文（桌機限定）：
-  // 卡片高度先「鎖」在原本的值 → 版面完全不動；顯示內文後量出溢出的量，
-  // 把整個文字區塊往上滑同樣的距離 → 標題被推上去（蓋住圖片下緣）、內文從下方滑進來、日期仍在底部。
-  wireHoverPreview(card) {
-    if (document.body.classList.contains('is-mobile')) return;   // 手機沒有 hover
-    card.addEventListener('mouseenter', () => {
-      const prev = card._prevEl;
-      if (!prev || !prev.isConnected) return;
-      if (!card.hasClass('gn-has-img')) return;     // 只有圖片卡需要滑（純文字卡本來就看得到內文）
-      if (!prev.textContent) return;                // 內文還沒載入 / 空筆記 → 不動作
-      const body = card.querySelector('.gn-body');
-      if (!body) return;
-      card.style.height = card.offsetHeight + 'px'; // ① 鎖住原本高度
-      card.addClass('gn-prev-open');                // ② 內文進版面（body 變高，但卡片高度已鎖）
-      const delta = card.scrollHeight - card.clientHeight;   // ③ 溢出的量＝要往上滑的距離
-      body.style.transform = delta > 0 ? 'translateY(-' + delta + 'px)' : '';
-    });
-    card.addEventListener('mouseleave', () => {
-      const body = card.querySelector('.gn-body');
-      if (body) body.style.transform = '';
-      card.removeClass('gn-prev-open');
-      card.style.height = '';
-    });
-  }
-
   // 建一張卡片（原 renderNoteWall 內的邏輯，抽出來讓各區共用）
   // opts: { skipPreview }
   makeCard(grid, masonry, it, opts) {
@@ -2972,11 +2955,7 @@ class GalleryView extends ItemView {
       img.src = it.src;
       img.loading = 'lazy';
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
-      // md 封面卡也載入內文預覽，但平常隱藏、**hover 才展開**（CSS 控制）
-      if (isMd && !skipPreview) {
-        const prev = body.createDiv('gn-preview');
-        card._prevEl = prev; card._prevFile = it.file;   // 捲到才讀檔（同無封面卡）
-      }
+      // 圖片卡不顯示內文（2026-07-18 使用者移除 hover 內文功能，也省下讀檔）
     } else if (!isMd) {
       // 非 md 且無封面 → 檔型圖示卡；Canvas 抓內部圖、PDF 渲染第一頁當縮圖
       body.createDiv('gn-filetype').setText(it.ext.toUpperCase());
@@ -3070,7 +3049,6 @@ class GalleryView extends ItemView {
     // 有延遲工作（內文預覽 / 連結圖 / PDF 縮圖）→ 掛觀察器，捲到附近才載入
     if (card._prevFile || card._ogFile || card._pdfFile) this._ogObserver.observe(card);
 
-    this.wireHoverPreview(card);   // hover → 內文往上滑（卡片高度不變）
     masonry.add(card);
     return card;
   }
@@ -3083,9 +3061,27 @@ class GalleryView extends ItemView {
     // 攤平模式（全域開關）：遞迴顯示該資料夾底下所有子孫筆記
     const flatten = !filesOverride && folder && this.plugin.state.flattenFolders;
 
-    const headText = headOverride || (folder && folder.path && folder.path !== '/' ? folder.path : 'Yaoting');
-    const head = container.createDiv('gn-main-head');
-    head.setText(headText);
+    const headText = headOverride || (folder && folder.path && folder.path !== '/' ? folder.path : this.app.vault.getName());
+    const useBarTitle = this._barTitle && !document.body.classList.contains('is-mobile');
+    const head = useBarTitle ? this._barTitle : container.createDiv('gn-main-head');
+    if (useBarTitle) head.empty();
+    if (!headOverride && folder) {
+      // 麵包屑（2026-07-18）：vault 名 + 各層資料夾皆可點擊跳轉；斜線灰色、間隔加寬
+      const crumbs = head.createDiv('gn-bar-crumbs');
+      const segs = folder.path && folder.path !== '/' ? folder.path.split('/') : [];
+      const rootEl = crumbs.createSpan({ cls: 'gn-crumb2' + (segs.length ? '' : ' gn-crumb2-cur'), text: this.app.vault.getName() });
+      rootEl.onclick = () => this.navigate('');
+      let acc = '';
+      segs.forEach((seg, i) => {
+        crumbs.createSpan({ cls: 'gn-crumb2-sep', text: '/' });
+        acc = acc ? acc + '/' + seg : seg;
+        const p = acc;
+        const el = crumbs.createSpan({ cls: 'gn-crumb2' + (i === segs.length - 1 ? ' gn-crumb2-cur' : ''), text: seg });
+        el.onclick = () => this.navigate(p);
+      });
+    } else {
+      head.createSpan({ cls: 'gn-bar-title-text', text: headText });
+    }
     if (flatten) head.createSpan({ cls: 'gn-head-flat', text: t('Including subfolders') });
     // 標籤篩選中 → 表頭掛上小標（點一下即清除），免得忘了自己開著篩選
     const tagFilterOn = !filesOverride && this._tagFilter && this._tagFilter.size;

@@ -2,6 +2,14 @@
 
 .gn-root {
   position: relative;
+  /* 雙欄底色直接畫在最外層（2026-07-18）：左欄寬以內＝次底色、以外＝主底色，
+     交界處夾一條 1px 髮絲線（同一個漸層畫的，跟著 --gn-treew 走）。
+     --gn-treew 由 JS（syncBarL）同步左欄實際寬 → 不管內層有什麼 padding/縫隙，
+     色塊永遠連續滿版；treeHidden 時 JS 設 0 → 整塊主底色 */
+  background: linear-gradient(to right,
+    var(--background-secondary) 0 var(--gn-treew, 232px),
+    color-mix(in srgb, var(--background-modifier-border) 60%, transparent) var(--gn-treew, 232px) calc(var(--gn-treew, 232px) + 1px),
+    var(--background-primary) calc(var(--gn-treew, 232px) + 1px));
   padding: 0;
   height: 100%;
   flex: 1 1 auto;        /* 父層是 flex 直向時，確實撐滿整個檢視高度（手機底部工具列才會貼底） */
@@ -30,23 +38,29 @@
 }
 
 /* 工具列：頂部實體列，分左右兩段（左＝資料夾工具，對齊左欄；右＝卡片工具，靠右） */
+/* 工具列（2026-07-18 融入欄位版）：本體零內距零底色，左右兩段各自帶欄位底色——
+   左段＝次底色（同左欄）、右段＝主底色（同右欄），視覺上工具列消失、變成欄位的頂部 */
 .gn-bar {
   flex: none;
-  display: flex; align-items: center;
-  width: 100%; margin: 0; padding: 6px 8px 6px 10px;
-  /* 底邊線已移除（2026-07-18 使用者要求，乾淨無框） */
+  display: flex; align-items: stretch;
+  width: 100%; margin: 0; padding: 0;
 }
 .gn-bar-group {
   display: flex; align-items: center; gap: 2px;
   background: transparent; border: none; box-shadow: none; padding: 0;
 }
 .gn-bar-group:empty { display: none; }
-/* 左段（資料夾工具）：寬度由 JS 對齊左欄（欄界分隔線已移除，2026-07-18） */
+/* 左段（資料夾工具）：寬度由 JS 對齊左欄；底色由 root 的雙欄色塊統一畫，這裡透明 */
 .gn-bar-group:first-child {
-  padding-right: 8px; margin-right: 8px;
+  padding: 6px 8px 6px 10px;
 }
 /* 右段（卡片工具）：填滿右側、靠右 */
-.gn-bar-group:last-child { flex: 1; justify-content: flex-end; }
+.gn-bar-group:last-child {
+  flex: 1; justify-content: flex-end;
+  padding: 6px 8px;
+}
+/* 手機：工具列另有自己的樣式（底部列 + 漸層），左右段不上色 */
+.is-mobile .gn-bar-group { background: transparent; border-right: none; padding: 0; }
 .gn-btn {
   flex: none;
   width: 28px; height: 28px;   /* 2026-07-18 縮小點擊範圍（手機另外維持 36px） */
@@ -121,7 +135,7 @@
   display: flex; flex-direction: column; min-height: 0;
   overflow: hidden;
   padding-bottom: 10px;   /* 懸浮工具列置中，不會蓋到最左欄，貼近底部即可 */
-  border-right: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent);
+  /* 底色由 root 雙欄色塊統一畫；髮絲線移除——灰白交界本身就是分隔線（2026-07-18） */
 }
 .gn-tree-scroll {
   flex: 1; min-height: 0;
@@ -158,6 +172,31 @@
   overflow-y: auto;
   padding: 10px 14px 16px 16px;
 }
+/* 工具列右段的標題（Finder 風，2026-07-18）：左靠、吃掉剩餘寬度把按鈕推右 */
+.gn-bar-title {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding-left: 10px;
+  overflow: hidden; white-space: nowrap;
+}
+.gn-bar-title-text {
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--text-normal);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.is-mobile .gn-bar-title { display: none; }   /* 手機底部工具列放不下，表頭留在牆內 */
+/* 麵包屑（2026-07-18）：各層可點；斜線灰、間隔寬 */
+.gn-bar-crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+.gn-crumb2 {
+  cursor: pointer; white-space: nowrap;
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--text-muted);
+  transition: color .12s;
+}
+.gn-crumb2:hover { color: var(--text-normal); }   /* 純變色，無膠囊底（2026-07-18 簡化） */
+.gn-crumb2-cur { color: var(--text-normal); }
+.gn-crumb2-sep { color: var(--text-faint); margin: 0 8px; font-weight: 400; flex: none; }
+
 .gn-main-head {
   font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
   color: var(--text-normal);
@@ -384,21 +423,13 @@
   background: inherit;                        /* 跟著卡片底色（含右鍵上色過的卡） */
   pointer-events: auto; opacity: 1;
   padding: 9px 12px 10px;
-  transition: transform .28s cubic-bezier(.2,.7,.2,1);
-  will-change: transform;
 }
 .gn-card.gn-has-img .gn-title {
   order: 1;                                   /* 標題 */
   color: var(--text-normal); text-shadow: none;
 }
-/* 內文預覽：平常不存在於版面，hover（gn-prev-open）才出現 */
-.gn-card.gn-has-img .gn-preview {
-  order: 2;                                   /* 標題之後、日期之前 */
-  display: none;
-  margin-top: 6px;
-  -webkit-line-clamp: 4;                      /* 最多 4 行，滑動距離不會誇張 */
-}
-.gn-card.gn-has-img.gn-prev-open .gn-preview { display: -webkit-box; }
+/* 圖片卡不顯示內文（2026-07-18 移除 hover 內文功能；og:image 卡舊留的 preview 也藏起來） */
+.gn-card.gn-has-img .gn-preview { display: none; }
 .gn-card.gn-has-img .gn-date {
   order: 3;                                   /* 日期一律最後 */
   margin: 6px 0 0;
@@ -482,10 +513,13 @@
 
 /* ★ 最愛捷徑區（feature 3） */
 .gn-fav-sec { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent); }
-.gn-fav-head { display: flex; align-items: center; gap: 5px; padding: 2px 6px 4px; cursor: pointer; border-radius: 6px; }
+/* 標題列與資料夾列共用同一套版位（2026-07-18）：左距 19px + 箭頭盒 22px + gap 8px
+   → 星星起點 49px，與 depth-1 資料夾圖示完全對齊 */
+.gn-fav-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; padding-left: 19px; cursor: pointer; border-radius: 8px; }
 .gn-fav-head:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
-.gn-fav-caret { display: flex; color: var(--text-faint); }
-.gn-fav-caret svg { width: 14px; height: 14px; }
+.gn-fav-caret { flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--text-faint); }
+.gn-fav-caret svg { width: 18px; height: 18px; }   /* 同 .gn-tcaret svg */
+.is-mobile .gn-fav-caret { width: 28px; height: 28px; }   /* 同 .is-mobile .gn-tcaret */
 .gn-fav-star { flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
 .gn-fav-star svg { width: 16px; height: 16px; }   /* 與 .gn-tthumb 的資料夾圖示同尺寸（2026-07-18） */
 .is-mobile .gn-fav-star { width: 22px; height: 22px; }
@@ -713,12 +747,38 @@
   justify-content: space-between;
 }
 /* 手機：整個面板背景透明 → 直接用 Obsidian 抽屜底色，消除底邊色差線（也更像原生側邊欄） */
-.is-mobile .gn-root { background: transparent; }
+.is-mobile .gn-root { background: var(--background-primary); }   /* 手機：滑動雙欄，root 單色 */
+.is-mobile .gn-tree { background: var(--background-secondary); }  /* 左欄自帶色（滑動時跟著走） */
 .is-mobile .gn-split { height: 100%; }   /* 撐滿 gn-root（工具列改絕對定位、不佔 flex 空間） */
 .is-mobile .gn-bar-group:first-child { border-right: none; margin-right: 0; padding-right: 0; }   /* 手機不畫欄界線 */
 .is-mobile .gn-zoom { display: none; }   /* 手機不需縮放滑桿 */
 .is-mobile .gn-tree-scroll, .is-mobile .gn-main { padding-top: 2px; padding-bottom: calc(70px + env(safe-area-inset-bottom)); }   /* 讓內容捲到絕對定位工具列上方，不被擋住 */
-.is-mobile .gn-main-head { margin-top: 0; margin-bottom: 8px; }   /* 右欄標題上方免留白 */
+.is-mobile /* 工具列右段的標題（Finder 風，2026-07-18）：左靠、吃掉剩餘寬度把按鈕推右 */
+.gn-bar-title {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding-left: 10px;
+  overflow: hidden; white-space: nowrap;
+}
+.gn-bar-title-text {
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--text-normal);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.is-mobile .gn-bar-title { display: none; }   /* 手機底部工具列放不下，表頭留在牆內 */
+/* 麵包屑（2026-07-18）：各層可點；斜線灰、間隔寬 */
+.gn-bar-crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+.gn-crumb2 {
+  cursor: pointer; white-space: nowrap;
+  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--text-muted);
+  transition: color .12s;
+}
+.gn-crumb2:hover { color: var(--text-normal); }   /* 純變色，無膠囊底（2026-07-18 簡化） */
+.gn-crumb2-cur { color: var(--text-normal); }
+.gn-crumb2-sep { color: var(--text-faint); margin: 0 8px; font-weight: 400; flex: none; }
+
+.gn-main-head { margin-top: 0; margin-bottom: 8px; }   /* 右欄標題上方免留白 */
 
 .is-mobile .gn-tnode { padding-top: 9px; padding-bottom: 9px; }   /* 好點一點 */
 .is-mobile .gn-tthumb { width: 22px; height: 22px; }
