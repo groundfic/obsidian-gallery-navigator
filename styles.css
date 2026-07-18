@@ -8,9 +8,11 @@
      --gn-treew 由 JS（syncBarL）同步左欄實際寬 → 不管內層有什麼 padding/縫隙，
      色塊永遠連續滿版；treeHidden 時 JS 設 0 → 整塊主底色 */
   background: linear-gradient(to right,
-    var(--background-secondary) 0 var(--gn-treew, 232px),
+    var(--ribbon-background, var(--background-secondary-alt, var(--background-secondary))) 0 var(--gn-treew, 232px),
     color-mix(in srgb, var(--background-modifier-border) 60%, transparent) var(--gn-treew, 232px) calc(var(--gn-treew, 232px) + 1px),
-    var(--background-primary) calc(var(--gn-treew, 232px) + 1px));
+    var(--ribbon-background, var(--background-secondary-alt, var(--background-secondary))) calc(var(--gn-treew, 232px) + 1px));
+  /* 左右欄同色＝Obsidian ribbon（快捷按鈕欄）同一顆變數，整塊與主題無縫（2026-07-18）；
+     中間仍夾 1px 分隔線。卡片底色改混 6% 前景色，才不會跟底同色隱形 */
   padding: 0;
   height: 100%;
   flex: 1 1 auto;        /* 父層是 flex 直向時，確實撐滿整個檢視高度（手機底部工具列才會貼底） */
@@ -367,7 +369,9 @@
 .gn-card {
   position: absolute;
   border-radius: 10px; overflow: hidden; cursor: pointer;
-  background: var(--background-secondary);   /* 灰底 */
+  /* 卡片＝主底色混 4% 白（2026-07-18 使用者指定「混亮色」）：
+     亮色主題＝白卡浮在 ribbon 灰底上（elevated）；深色主題＝比底亮一階的深灰卡 */
+  background: color-mix(in srgb, #fff 4%, var(--background-primary));
   box-shadow: 0 1px 3px rgba(0,0,0,.06);
   transition: transform .2s cubic-bezier(.2,.7,.2,1), box-shadow .2s;
 }
@@ -749,7 +753,7 @@
 }
 /* 手機：整個面板背景透明 → 直接用 Obsidian 抽屜底色，消除底邊色差線（也更像原生側邊欄） */
 .is-mobile .gn-root { background: var(--background-primary); }   /* 手機：滑動雙欄，root 單色 */
-.is-mobile .gn-tree { background: var(--background-secondary); }  /* 左欄自帶色（滑動時跟著走） */
+.is-mobile .gn-tree { background: var(--background-primary); }   /* 左欄與 root 同色（2026-07-18 修深色模式灰塊）；滑動覆蓋卡片時仍不透明 */
 .is-mobile .gn-split { height: 100%; }   /* 撐滿 gn-root（工具列改絕對定位、不佔 flex 空間） */
 .is-mobile .gn-bar-group:first-child { border-right: none; margin-right: 0; padding-right: 0; }   /* 手機不畫欄界線 */
 .is-mobile .gn-zoom { display: none; }   /* 手機不需縮放滑桿 */

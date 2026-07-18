@@ -2899,7 +2899,7 @@ class GalleryView extends ItemView {
     const isMobileUI = document.body.classList.contains('is-mobile');
     const minCol = isMobileUI ? 120 : (this.plugin.state.cardWidth || 120);
     const fixedCols = isMobileUI ? (this.plugin.state.mobileCols || 2) : 0;
-    const masonry = new MasonryLayout(grid, { gap: 12, minCol, fixedCols });
+    const masonry = new MasonryLayout(grid, { gap: 16, minCol, fixedCols });   // 2026-07-18 12→16 更透氣
     if (!this._masonries) this._masonries = [];
     this._masonries.push(masonry);
     if (zoom) zoom.oninput = () => {
@@ -2972,8 +2972,9 @@ class GalleryView extends ItemView {
       card._ogFile = it.file;   // 捲到才抓 og:image（持久快取）
     }
 
-    // 外連 wiki 關係按鈕（所有 md 筆記都顯示）
-    if (isMd) {
+    // 外連 wiki 關係按鈕：暫時停用（2026-07-18 使用者要求）。
+    // 連結牆仍可從右鍵選單或其他入口進入；要復原把 false 改回 isMd 即可。
+    if (false && isMd) {
       const lb = card.createDiv('gn-card-btn');
       setIcon(lb, 'link');
       lb.setAttr('title', t('Show linked notes'));
@@ -2983,8 +2984,20 @@ class GalleryView extends ItemView {
     let ndrag = false;
     card.onclick = (e) => {
       if (ndrag) return;
-      if (e.metaKey || e.ctrlKey) { this.toggleSel(it.file.path); this.selAnchor = it.file.path; }
-      else if (e.shiftKey && this.selAnchor) { this.rangeSel(this.selAnchor, it.file.path); }
+      if (e.metaKey || e.ctrlKey) {
+        // 起手第一下複選：把「目前開啟中的那張卡」一併納入——
+        // 使用者的心理模型是「這張＋那張」是同一組動作（Finder 行為，2026-07-18）
+        if (!this.selected.size && this.activePath && this.activePath !== it.file.path
+            && this.cardElsFor(this.activePath).length) {
+          this.toggleSel(this.activePath);
+        }
+        this.toggleSel(it.file.path);
+        this.selAnchor = it.file.path;
+      }
+      else if (e.shiftKey && (this.selAnchor || this.activePath)) {
+        // 範圍選取的錨點：優先用上次複選的卡，沒有就用目前開啟中的卡
+        this.rangeSel(this.selAnchor || this.activePath, it.file.path);
+      }
       else if (this.selected.size) { this.clearSel(); }
       else { this.openNote(it.file, false); }
     };
