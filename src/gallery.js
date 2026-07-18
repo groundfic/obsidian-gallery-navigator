@@ -621,8 +621,13 @@ const FOLDER_OPEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
 function setSvg(el, svg) {
   el.textContent = '';
   try {
-    const node = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
-    if (node && node.nodeName === 'svg') el.appendChild(document.importNode(node, true));
+    // ⚠️ 一定要用 text/html 模式：SVG 常數沒寫 xmlns，XML 模式解析出來的 <svg>
+    //   是「無命名空間元素」，掛上去不會渲染（2026-07-18 圖示消失事故）。
+    //   HTML 解析器會把 <svg> 當外來內容、自動給正確命名空間——跟 innerHTML 行為一致。
+    const node = new DOMParser().parseFromString(svg, 'text/html').body.firstElementChild;
+    if (node && node.tagName && node.tagName.toLowerCase() === 'svg') {
+      el.appendChild(document.importNode(node, true));
+    }
   } catch (e) {}
 }
 

@@ -115,8 +115,11 @@ const GLOBE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 
 function setSvgEl(el, svg) {
   el.textContent = '';
   try {
-    const node = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
-    if (node && node.nodeName === 'svg') el.appendChild(document.importNode(node, true));
+    // ⚠️ text/html 模式：見 gallery.js setSvg 註解（XML 模式無命名空間 → 圖示不渲染）
+    const node = new DOMParser().parseFromString(svg, 'text/html').body.firstElementChild;
+    if (node && node.tagName && node.tagName.toLowerCase() === 'svg') {
+      el.appendChild(document.importNode(node, true));
+    }
   } catch (e) {}
 }
 
