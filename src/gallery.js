@@ -1558,7 +1558,7 @@ class GalleryView extends ItemView {
   // 把元素設成「拖入即搬移到 targetPath」的落點
   wireMoveTarget(el, targetPath, cls) {
     el.addEventListener('dragover', (e) => {
-      if (!this.drag) return;
+      if (!this.drag || this.drag.kind === 'fav') return;   // 最愛排序不是搬移
       e.preventDefault();
       el.addClass(cls);
     });
@@ -1699,6 +1699,47 @@ class GalleryView extends ItemView {
         menu.addItem((i) => i.setTitle(t('Remove from favorites')).setIcon('star-off')
           .onClick(() => this.toggleFavorite(f.type, f.path)));
         return menu;
+      });
+
+      // 拖曳排序（2026-07-18）：跟資料夾樹同一套視覺（上緣＝排前、下緣＝排後）。
+      // f 就是 state.favorites 裡的項目參照 → indexOf 直接定位。
+      row.setAttr('draggable', 'true');
+      row.addEventListener('dragstart', (e) => {
+        this.drag = { kind: 'fav', entry: f };
+        row.addClass('gn-tdragging');
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      });
+      row.addEventListener('dragend', () => {
+        this.drag = null;
+        row.removeClass('gn-tdragging');
+        this.clearDropHints();
+      });
+      const clearFavHints = () => row.removeClass('gn-tbefore', 'gn-tafter');
+      row.addEventListener('dragover', (e) => {
+        const d = this.drag;
+        if (!d || d.kind !== 'fav' || d.entry === f) return;   // 只接受最愛之間互排
+        e.preventDefault();
+        clearFavHints();
+        const r = row.getBoundingClientRect();
+        row.addClass(e.clientY - r.top < r.height / 2 ? 'gn-tbefore' : 'gn-tafter');
+      });
+      row.addEventListener('dragleave', clearFavHints);
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const after = row.hasClass('gn-tafter');
+        clearFavHints();
+        const d = this.drag;
+        if (!d || d.kind !== 'fav' || d.entry === f) return;
+        const list = this.plugin.state.favorites || [];
+        const from = list.indexOf(d.entry);
+        if (from < 0) return;
+        list.splice(from, 1);
+        let to = list.indexOf(f);
+        if (to < 0) { list.splice(from, 0, d.entry); return; }   // 防呆：目標不見了就放回原位
+        if (after) to += 1;
+        list.splice(to, 0, d.entry);
+        this.plugin.saveState();
+        this.refreshTree();
       });
     }
   }
@@ -2410,6 +2451,7 @@ class GalleryView extends ItemView {
         row.addEventListener('dragover', (e) => {
           const d = this.drag;
           if (!d || d.path === it.folder.path) return;   // 拖自己不處理
+          if (d.kind === 'fav') return;                  // 最愛排序只在最愛區內，不當搬移落點
           e.preventDefault();
           clearHints();
           if (d.kind === 'note') { row.addClass('gn-tmove'); return; }   // 筆記只能移入
