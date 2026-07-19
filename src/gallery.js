@@ -6,7 +6,7 @@
  * 核心封面/標籤邏輯移植自 vault 內的 BASE/Code/Collections code.md (js-engine)。
  */
 
-const { Plugin, ItemView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
+const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
 
 const GN_BUILD = '2026-07-17 i18n';   // 手機診斷用：確認 iCloud 同步到的是哪一版
@@ -692,6 +692,27 @@ const CARD_PALETTE = [
   { key: 'c-grey',   label: 'Grey', bg: '#e5e3de', fg: '#2a2a2a' },
 ];
 const CARD_PALETTE_BY_KEY = Object.fromEntries(CARD_PALETTE.map((p) => [p.key, p]));
+
+// 影片連結偵測（2026-07-19 自動影片卡）：限定「影片內容頁」網址，頻道/個人頁不算
+const GN_VIDEO_URL_RE = new RegExp(
+  'https?://(?:www\\.|m\\.|music\\.|v\\.|vm\\.|vt\\.)?(?:' + [
+    'youtube\\.com/(?:watch|shorts|embed)[^\\s)\\]"\'<>]*',   // YouTube 影片頁
+    'youtu\\.be/[^\\s)\\]"\'<>]+',
+    'vimeo\\.com/\\d[^\\s)\\]"\'<>]*',
+    'instagram\\.com/reel/[^\\s)\\]"\'<>]+',                  // IG Reel（/p/ 圖文不算）
+    'douyin\\.com/[^\\s)\\]"\'<>]+',                          // 抖音（v.douyin.com 短連結 / douyin.com/video）
+    'tiktok\\.com/[^\\s)\\]"\'<>]+',                          // TikTok（vm./vt. 短連結）
+    'bilibili\\.com/video/[^\\s)\\]"\'<>]+',                  // B 站
+    'b23\\.tv/[^\\s)\\]"\'<>]+',
+  ].join('|') + ')', 'i');
+
+// 卡片樣式選項（2026-07-18）：[key, i18n label, lucide icon]；null = 預設
+const CARD_STYLES = [
+  [null, 'Default card', 'rectangle-horizontal'],
+  ['todo', 'To-do list card', 'list-checks'],
+  ['video', 'Video card', 'play'],
+  ['book', 'Book card', 'book'],
+];
 // 自動配色用的彩色子集（排除米/灰/黑，讓預設更繽紛）
 const AUTO_KEYS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'pink'];
 function paletteFor(item, colors) {
@@ -1073,8 +1094,31 @@ class GalleryView extends ItemView {
     this.gotoCardsMobile();        // 手機：選完資料夾就滑到右邊的卡片欄
   }
 
-  openNote(file, newTab) {
-    this.app.workspace.openLinkText(file.path, '', !!newTab);
+  async openNote(file, newTab) {
+    // 從畫廊開的筆記「不聚焦編輯器」（2026-07-18）：游標不落在第一行，
+    // Live Preview 的首行嵌入圖片就不會展開成 ![[...]] 原始碼。
+    // 作法：openFile 直接要求不聚焦（eState.focus:false），再於開檔後幾個時間點補 blur
+    // （Obsidian 某些路徑會晚一步搶焦點）→ 不會像先前 120ms 單發那樣「閃一下」。
+    if (this.plugin.state.openUnfocused === false) {   // 設定關閉 → 原生行為
+      this.app.workspace.openLinkText(file.path, '', !!newTab);
+      return;
+    }
+    try {
+      const leaf = this.app.workspace.getLeaf(!!newTab);
+      await leaf.openFile(file, { eState: { focus: false } });
+    } catch (e) {
+      this.app.workspace.openLinkText(file.path, '', !!newTab);   // 萬一 API 變動退回舊路
+    }
+    const blurNow = () => {
+      try {
+        const mv = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (mv && mv.editor && mv.editor.hasFocus && mv.editor.hasFocus()) mv.editor.blur();
+      } catch (e) {}
+    };
+    blurNow();
+    requestAnimationFrame(blurNow);
+    window.setTimeout(blurNow, 60);
+    window.setTimeout(blurNow, 160);
   }
 
   // 這則筆記「連結出去」的 md 筆記（已建立的）
@@ -2574,6 +2618,71 @@ class GalleryView extends ItemView {
   }
 
   // 勾選 / 取消勾選某一行任務（改寫 - [ ] ⇄ - [x]）
+  // 批次指定卡片樣式（右鍵單張 / 多選動作列共用）；null = 還原預設
+  setCardStyle(paths, style) {
+    const map = Object.assign({}, this.plugin.state.cardStyles);
+    for (const p of paths) { if (style) map[p] = style; else delete map[p]; }
+    this.plugin.state.cardStyles = map;
+    this.plugin.saveState();
+    this.rerenderMain();   // 樣式會改卡片結構 → 重建右欄（捲動位置有記憶）
+  }
+
+  // 多選動作列的樣式選單
+  styleSelectedMenu(e) {
+    if (!this.selected.size) return;
+    const menu = new Menu();
+    for (const [key, label, icon] of CARD_STYLES) {
+      menu.addItem((i) => i.setTitle(t(label)).setIcon(icon)
+        .onClick(() => this.setCardStyle([...this.selected], key)));
+    }
+    menu.showAtMouseEvent(e);
+  }
+
+  // 自動影片卡：讀內容找影片連結（cachedRead 有快取，成本極低），
+  // 找到就浮出播放鈕；找不到就什麼都不做（維持原卡）
+  async detectVideoCard(file, card) {
+    try {
+      if (!card.isConnected || card.querySelector('.gn-play')) return;
+      // 優先讀 frontmatter：ig_sync 對影片貼文寫 video: true（IG /p/ 網址分不出圖文/影片，
+      // 只有同步當下的 API 知道）→ 免讀檔、連結直接用 source:
+      const fm = (this.app.metadataCache.getFileCache(file) || {}).frontmatter;
+      let url = null;
+      if (fm && (fm.video === true || fm.video === 'true') && fm.source) url = String(fm.source);
+      if (!url) {
+        const raw = await this.app.vault.cachedRead(file);
+        const m = raw.match(GN_VIDEO_URL_RE);
+        if (!m) return;
+        url = m[0];
+      }
+      if (!card.isConnected) return;
+      const pb = card.createDiv('gn-play');
+      setIcon(pb, 'play');
+      pb.setAttr('title', t('Play video'));
+      pb.onclick = (e) => { e.stopPropagation(); window.open(url, '_blank'); };
+    } catch (e) {}
+  }
+
+  // 待辦卡：載入筆記中的核取方塊（最多 6 條），卡上直接勾、寫回檔案
+  async loadCardTodos(file, el) {
+    try {
+      const raw = await this.app.vault.cachedRead(file);
+      const tasks = parseTasks(raw);
+      el.empty();
+      if (!tasks.length) { el.createDiv({ cls: 'gn-ctodo-none', text: t('No to-dos in this note') }); return; }
+      const MAX = 6;
+      for (const task of tasks.slice(0, MAX)) {
+        const row = el.createDiv('gn-ctodo');
+        row.onclick = (e) => e.stopPropagation();   // 勾選不觸發開啟筆記
+        const chk = row.createEl('input', { type: 'checkbox' });
+        chk.checked = task.done;
+        chk.onclick = (e) => { e.stopPropagation(); this.toggleTask(file, task.line); };
+        row.createSpan({ cls: 'gn-ctodo-text' + (task.done ? ' gn-ctodo-done' : ''), text: task.text });
+      }
+      if (tasks.length > MAX) el.createDiv({ cls: 'gn-ctodo-more', text: '+' + (tasks.length - MAX) });
+      this.relayoutWalls();
+    } catch (e) {}
+  }
+
   async toggleTask(file, lineNo) {
     try {
       const raw = await this.app.vault.read(file);
@@ -2806,9 +2915,10 @@ class GalleryView extends ItemView {
     const mk = (label, icon, fn, warn) => {
       const b = bar.createDiv('gn-selbar-btn' + (warn ? ' gn-selbar-warn' : ''));
       setIcon(b, icon); b.setAttr('title', label);
-      b.onclick = (e) => { e.stopPropagation(); fn(); };
+      b.onclick = (e) => { e.stopPropagation(); fn(e); };
     };
     mk(t('Select all'), 'check-check', () => this.selectAll());
+    mk(t('Card style'), 'shapes', (e) => this.styleSelectedMenu(e));
     mk(t('Copy wiki links (one per line)'), 'link', () => this.copySelectedLinks());
     mk(t('Move to…'), 'folder-input', () => this.moveSelected());
     mk(t('Delete'), 'trash', () => this.deleteSelected(), true);
@@ -2878,6 +2988,8 @@ class GalleryView extends ItemView {
         obs.unobserve(en.target);
         const card = en.target;
         if (card._prevFile && card._prevEl) { this.loadPreview(card._prevFile, card._prevEl); card._prevFile = null; }
+        if (card._todoFile && card._todoEl) { this.loadCardTodos(card._todoFile, card._todoEl); card._todoFile = null; }
+        if (card._vidFile) { this.detectVideoCard(card._vidFile, card); card._vidFile = null; }
         if (card._ogFile) { this.loadLinkPreview(card._ogFile, card); card._ogFile = null; }
         if (card._pdfFile) { this.loadPdfThumb(card._pdfFile, card, card._pdfPh); card._pdfFile = null; }
       }
@@ -2924,7 +3036,9 @@ class GalleryView extends ItemView {
     this._cardEls.get(it.file.path).push(card);
     if (it.file.path === this.activePath) card.addClass('gn-card-active');
     const isMd = it.ext === 'md';
-    const skipPreview = !!o.skipPreview;
+    const cstyle = isMd ? ((this.plugin.state.cardStyles || {})[it.file.path] || null) : null;   // 卡片樣式（2026-07-18）
+    if (cstyle) card.addClass('gn-style-' + cstyle);
+    const skipPreview = !!o.skipPreview || cstyle === 'todo';   // 待辦卡：任務清單取代內文預覽
 
     // 卡片底色（feature 1）：底色 + 對比字色
     const cp = cardColors[it.file.path] && CARD_PALETTE_BY_KEY[cardColors[it.file.path]];
@@ -2947,6 +3061,32 @@ class GalleryView extends ItemView {
     const titleEl = body.createDiv('gn-title');
     if (this._searchQ) gnHighlightInto(titleEl, it.name, gnHighlightTerms(this._searchQ));
     else titleEl.setText(it.name);
+
+    // 自動影片卡（2026-07-19）：未手動指定樣式的 md，捲到時偵測內容有無影片連結
+    if (isMd && !cstyle) card._vidFile = it.file;
+
+    // 待辦卡：卡上直接勾（清單捲到才載入，走既有延遲載入管線）
+    if (cstyle === 'todo') {
+      card._todoEl = body.createDiv('gn-card-todos');
+      card._todoFile = it.file;
+    }
+    // 影片卡：置中播放鈕 → 開啟筆記中第一個 YouTube（退而求其次任一外部）連結
+    if (cstyle === 'video') {
+      const pb = card.createDiv('gn-play');
+      setIcon(pb, 'play');
+      pb.setAttr('title', t('Play video'));
+      pb.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          const raw = await this.app.vault.cachedRead(it.file);
+          const yt = raw.match(/https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)[^\s)\]"'<>]*/);
+          const any = raw.match(/https?:\/\/[^\s)\]"'<>]+/);
+          const u = (yt && yt[0]) || (any && any[0]);
+          if (u) window.open(u, '_blank');
+          else new Notice(t('No video link found in this note'));
+        } catch (err) {}
+      };
+    }
 
     if (it.src) {
       // 有封面 → 圖片在上、標題/日期在下
@@ -3049,6 +3189,19 @@ class GalleryView extends ItemView {
           });
         });
       });
+      // 卡片樣式（2026-07-18）：todo / video / book
+      menu.addItem((i) => {
+        i.setTitle(t('Card style')).setIcon('shapes');
+        const sub = i.setSubmenu();
+        // 顯示「實際生效」的樣式：手動設定優先；沒有手動但已被自動偵測成影片卡
+        // （卡上有播放鈕）→ 打勾「影片卡」而不是「預設」，選單狀態與眼前一致（2026-07-19）
+        const curS = (this.plugin.state.cardStyles || {})[it.file.path]
+          || (card.querySelector('.gn-play') ? 'video' : null);
+        for (const [key, label, icon] of CARD_STYLES) {
+          sub.addItem((si) => si.setTitle(t(label)).setIcon(icon).setChecked(curS === key)
+            .onClick(() => this.setCardStyle([it.file.path], key)));
+        }
+      });
       menu.addSeparator();
       menu.addItem((i) => i.setTitle(t('Copy wiki link')).setIcon('link').onClick(() => copyToClipboard('[[' + it.name + ']]')));
       if (this.canReveal()) {
@@ -3060,7 +3213,7 @@ class GalleryView extends ItemView {
     });
 
     // 有延遲工作（內文預覽 / 連結圖 / PDF 縮圖）→ 掛觀察器，捲到附近才載入
-    if (card._prevFile || card._ogFile || card._pdfFile) this._ogObserver.observe(card);
+    if (card._prevFile || card._ogFile || card._pdfFile || card._todoFile || card._vidFile) this._ogObserver.observe(card);
 
     masonry.add(card);
     return card;
@@ -3595,6 +3748,12 @@ class CalendarSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName(t('Open notes without focusing the editor'))
+      .setDesc(t('Notes opened from the gallery start unfocused, so a first-line image embed stays rendered instead of expanding to markdown. Click into the note to edit as usual.'))
+      .addToggle((tg) => tg.setValue(st.openUnfocused !== false)
+        .onChange((v) => { st.openUnfocused = v; save(); }));
+
+    new Setting(containerEl)
       .setName(t('Pinterest visual search (experimental)'))
       .setDesc(t('Adds a reverse-image search entry to image menus. Uses an unofficial Pinterest endpoint that may stop working at any time; the image you search with is uploaded to Pinterest.'))
       .addToggle((tg) => tg.setValue(!!st.enablePinterest)
@@ -4113,7 +4272,7 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false }, await this.loadData());
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {} }, await this.loadData());
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
 
     this.registerView(VIEW_TYPE, (leaf) => new GalleryView(leaf, this));

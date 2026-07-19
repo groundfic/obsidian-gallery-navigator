@@ -219,6 +219,17 @@ const ZH_TW = {
   'Failed to load image': '圖片載入失敗', 'Image copied': '已複製圖片',
   'Failed to copy image: {{msg}}': '複製圖片失敗：{{msg}}',
   // ── Pinterest 開關 ──
+  'Card style': '卡片樣式',
+  'Default card': '預設卡片',
+  'To-do list card': '待辦清單卡',
+  'Video card': '影片卡',
+  'Book card': '書籍卡',
+  'Play video': '播放影片',
+  'No to-dos in this note': '這則筆記沒有待辦',
+  'No video link found in this note': '這則筆記裡找不到影片連結',
+  'Open notes without focusing the editor': '開啟筆記時不聚焦編輯器',
+  'Notes opened from the gallery start unfocused, so a first-line image embed stays rendered instead of expanding to markdown. Click into the note to edit as usual.':
+    '從畫廊開啟的筆記先不聚焦——首行的嵌入圖片會維持顯示、不展開成 markdown 原始碼。點進內文即可照常編輯。',
   'Pinterest visual search (experimental)': 'Pinterest 找相似（實驗性）',
   'Adds a reverse-image search entry to image menus. Uses an unofficial Pinterest endpoint that may stop working at any time; the image you search with is uploaded to Pinterest.':
     '在圖片選單加入「找相似」（以圖搜圖）。使用 Pinterest 非官方端點，可能隨時失效；搜尋時該張圖片會上傳到 Pinterest。',

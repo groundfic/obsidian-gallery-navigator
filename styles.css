@@ -1189,6 +1189,35 @@
   line-height: 1.7;
 }
 
+/* ===== 卡片樣式（todo / video / book，2026-07-18）===== */
+/* 待辦清單卡：卡上直接勾選 */
+.gn-card-todos { order: 3; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.gn-card.gn-has-img .gn-card-todos { order: 2; }   /* 圖片卡：標題之後、日期之前 */
+.gn-ctodo { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.45; }
+.gn-ctodo input[type="checkbox"] { margin: 0; flex: none; cursor: pointer; }
+.gn-ctodo-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-normal); }
+.gn-ctodo-done { text-decoration: line-through; color: var(--text-faint); }
+.gn-ctodo-more, .gn-ctodo-none { font-size: 11px; color: var(--text-faint); padding-left: 2px; }
+/* 影片卡：置中播放鈕（YouTube 風黑底白箭頭） */
+.gn-play {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .55); color: #fff;
+  z-index: 2; cursor: pointer;
+  transition: transform .12s, background .12s;
+}
+.gn-play:hover { background: rgba(0, 0, 0, .8); transform: translate(-50%, -50%) scale(1.08); }
+.gn-play svg { width: 20px; height: 20px; margin-left: 2px; }
+/* 書籍卡：書封 contain 在白底舞台上（直式書封不裁切、置中浮放） */
+.gn-style-book img {
+  background: #fff;
+  object-fit: contain;
+  aspect-ratio: 3 / 4;
+  padding: 9% 14%;
+  box-sizing: border-box;
+}
+
 
 /* ════════════ 2. Image Peek ════════════ */
 /* Quick Peek — Quick Look 式圖片預覽 */
@@ -2257,10 +2286,12 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 /* ════════════ 3. Link Cards ════════════ */
 /* ============ 基底（Apple 風格） ============ */
 .lcp-card {
-  border: 1px solid var(--background-modifier-border);
+  border: none;   /* 無邊框（2026-07-18 使用者要求，兩外掛同步） */
   border-radius: 12px;
   overflow: hidden;
-  background: var(--background-primary);
+  /* 無邊框後的辨識度：底色混 4% 前景（白底上=淺灰卡、深色=亮一階）+ 極淡陰影 */
+  background: color-mix(in srgb, var(--text-normal) 4%, var(--background-primary));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .05);
   margin: 0.75em 0;
   max-width: 420px;
   font-family: var(--font-interface);
