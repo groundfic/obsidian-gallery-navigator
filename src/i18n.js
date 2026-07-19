@@ -40,6 +40,7 @@ const ZH_TW = {
   'Search notes (full-text popup)': '搜尋筆記（懸浮全文搜尋）',
   'Current: tags (click to switch to folders)': '目前：標籤（點擊切回資料夾）',
   'Current: folders (click to switch to tags)': '目前：資料夾（點擊切到標籤）',
+  'Follow active note': '同步定位（開啟筆記時跳到其資料夾）',
   'Follow active note: on (click to turn off)': '同步定位：開啟筆記時跳到其資料夾（點擊關閉）',
   'Follow active note: off (click to turn on)': '同步定位：關閉（點擊開啟）',
   'Hide hidden folders': '收起被隱藏的資料夾',
@@ -227,6 +228,9 @@ const ZH_TW = {
   'Book card': '書籍卡',
   'Play video': '播放影片',
   'No to-dos in this note': '這則筆記沒有待辦',
+  'Show completed': '顯示已完成',
+  'Hide completed': '隱藏已完成',
+  'All done 🎉': '全部完成 🎉',
   'No video link found in this note': '這則筆記裡找不到影片連結',
   'Open notes without focusing the editor': '開啟筆記時不聚焦編輯器',
   'Notes opened from the gallery start unfocused, so a first-line image embed stays rendered instead of expanding to markdown. Click into the note to edit as usual.':

@@ -1331,6 +1331,21 @@ class GalleryView extends ItemView {
       this.render();
     };
 
+    /* ── 同步定位（2026-07-19 從工具列移入）── */
+    const syncRow = pop.createDiv('gn-more-row');
+    const sIcon = syncRow.createSpan('gn-more-icon');
+    setIcon(sIcon, 'crosshair');
+    syncRow.createSpan('gn-more-text').setText(t('Follow active note'));
+    const syncMark = syncRow.createSpan('gn-more-check');
+    if (state.syncActive) setIcon(syncMark, 'check');
+    syncRow.onclick = () => {
+      state.syncActive = !state.syncActive;
+      this.plugin.saveState();
+      this.closeMorePopover();
+      if (state.syncActive) this.syncToFile(this.app.workspace.getActiveFile());
+      else this.render();
+    };
+
     /* ── 重新整理 ── */
     const refreshRow = pop.createDiv('gn-more-row');
     const rIcon = refreshRow.createSpan('gn-more-icon');
@@ -2201,17 +2216,7 @@ class GalleryView extends ItemView {
       this.render();
     };
 
-    // 左：同步目前開啟的筆記到資料夾樹
-    const syncBtn = barL.createDiv('gn-btn');
-    syncBtn.toggleClass('gn-eye-on', !!state.syncActive);
-    setIcon(syncBtn, 'crosshair');
-    syncBtn.setAttr('title', state.syncActive ? t('Follow active note: on (click to turn off)') : t('Follow active note: off (click to turn on)'));
-    syncBtn.onclick = () => {
-      state.syncActive = !state.syncActive;
-      this.plugin.saveState();
-      if (state.syncActive) this.syncToFile(this.app.workspace.getActiveFile());
-      else this.render();
-    };
+    // 同步定位鈕已移入「⋯ 更多」面板（2026-07-19）
 
     // 左：顯示 / 隱藏資料夾
     if ((state.hiddenFolders || []).length) {
@@ -2667,15 +2672,19 @@ class GalleryView extends ItemView {
     } catch (e) {}
   }
 
-  // 待辦卡：載入筆記中的核取方塊（最多 6 條），卡上直接勾、寫回檔案
+  // 待辦卡（2026-07-19 v3）：顯示全部任務；右下小鈕切換「隱藏已完成 ⇄ 顯示全部」
+  //（篩選狀態每卡獨立、存 data.json 跨裝置同步）
   async loadCardTodos(file, el) {
     try {
       const raw = await this.app.vault.cachedRead(file);
       const tasks = parseTasks(raw);
       el.empty();
       if (!tasks.length) { el.createDiv({ cls: 'gn-ctodo-none', text: t('No to-dos in this note') }); return; }
-      const MAX = 6;
-      for (const task of tasks.slice(0, MAX)) {
+      const hideSet = new Set(this.plugin.state.todoHideDoneCards || []);
+      const hideDone = hideSet.has(file.path);
+      const doneCount = tasks.filter((x) => x.done).length;
+      const shown = hideDone ? tasks.filter((x) => !x.done) : tasks;
+      for (const task of shown) {
         const row = el.createDiv('gn-ctodo');
         row.onclick = (e) => e.stopPropagation();   // 勾選不觸發開啟筆記
         const chk = row.createEl('input', { type: 'checkbox' });
@@ -2683,7 +2692,28 @@ class GalleryView extends ItemView {
         chk.onclick = (e) => { e.stopPropagation(); this.toggleTask(file, task.line); };
         row.createSpan({ cls: 'gn-ctodo-text' + (task.done ? ' gn-ctodo-done' : ''), text: task.text });
       }
-      if (tasks.length > MAX) el.createDiv({ cls: 'gn-ctodo-more', text: '+' + (tasks.length - MAX) });
+      if (hideDone && doneCount) el.createDiv({ cls: 'gn-ctodo-more', text: '✓ ' + doneCount });
+      if (hideDone && !shown.length) el.createDiv({ cls: 'gn-ctodo-none', text: t('All done 🎉') });
+
+      // 右下角切換鈕：有已完成事項才出現
+      const card = el.closest('.gn-card');
+      if (card) {
+        let btn = card.querySelector('.gn-todo-toggle');
+        if (doneCount > 0) {
+          if (!btn) btn = card.createDiv('gn-todo-toggle');
+          btn.empty();
+          setIcon(btn, hideDone ? 'eye-off' : 'eye');
+          btn.setAttr('title', hideDone ? t('Show completed') : t('Hide completed'));
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            const set = new Set(this.plugin.state.todoHideDoneCards || []);
+            if (set.has(file.path)) set.delete(file.path); else set.add(file.path);
+            this.plugin.state.todoHideDoneCards = [...set];
+            this.plugin.saveState();
+            this.loadCardTodos(file, el);   // 就地重畫這張卡的清單
+          };
+        } else if (btn) btn.remove();
+      }
       this.relayoutWalls();
     } catch (e) {}
   }
@@ -4249,7 +4279,7 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {} }, await this.loadData());
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {}, todoHideDoneCards: [] }, await this.loadData());
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
 
     this.registerView(VIEW_TYPE, (leaf) => new GalleryView(leaf, this));

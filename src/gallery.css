@@ -77,8 +77,8 @@
 .gn-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
 .gn-btn:active { transform: scale(.94); }
 .gn-btn svg { width: 16px; height: 16px; }   /* 與資料夾樹圖示（.gn-tthumb svg 16px）同尺寸（2026-07-18） */
-.is-mobile .gn-btn svg { width: 20px; height: 20px; }   /* 手機同 .is-mobile .gn-tthumb svg */
-.is-mobile .gn-btn { width: 36px; height: 36px; }        /* 手機維持大點擊範圍 */
+.is-mobile .gn-btn svg { width: 24px; height: 24px; }   /* 手機工具列圖示加大（2026-07-19 20→24） */
+.is-mobile .gn-btn { width: 44px; height: 44px; }        /* Apple HIG 觸控標準 44pt（2026-07-19 36→44） */
 /* 表頭「含子資料夾」小標 */
 .gn-head-flat {
   margin-left: 8px; padding: 1px 7px; border-radius: 999px;
@@ -1316,3 +1316,26 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 
 /* 圖片卡＋待辦並存時：hover 疊層裡的核取方塊要能點（疊層本身 pointer-events:none） */
 .gn-card.gn-has-img .gn-card-todos { pointer-events: auto; }
+
+
+/* ===== 待辦卡 v2（2026-07-19）===== */
+/* 底色＝主題色的對比色（色相 +180°、彩度/明度不變）：跟主題聯動又一眼可辨。
+   相對色語法（hsl from）需 Chromium 119+；不支援時 fallback 用主題色淡化版 */
+.gn-card.gn-style-todo {
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+  background: hsl(from var(--interactive-accent) calc(h + 180) s l / 0.28);   /* 對比色 28% 透明（2026-07-19 再淡化） */
+}
+/* 展開/收合切換鈕：右下角小圓鈕 */
+.gn-todo-toggle {
+  position: absolute; right: 6px; bottom: 6px; z-index: 3;
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-normal) 8%, transparent);
+  cursor: pointer; opacity: .85;
+  transition: opacity .12s, background .12s;
+}
+.gn-todo-toggle:hover { opacity: 1; background: color-mix(in srgb, var(--text-normal) 14%, transparent); }
+.gn-todo-toggle svg { width: 14px; height: 14px; }
+/* 清單與按鈕不打架：body 底部多留一點空間 */
+.gn-card.gn-style-todo .gn-body { padding-bottom: 26px; }
