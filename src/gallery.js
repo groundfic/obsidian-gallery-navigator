@@ -2095,6 +2095,31 @@ class GalleryView extends ItemView {
     this._treeScrollLock = true;
     root.empty();
     root.addClass('gn-root');
+    // 待辦卡對比色：JS 計算（CSS 相對色語法在舊版桌面 Chromium 不支援，
+    // 會退回 fallback 造成桌機/手機顏色不一致，2026-07-19 修）——
+    // 讀實際 accent → 轉 HSL → 色相 +180° → 寫進 --gn-todo-bg（含 28% 透明）
+    try {
+      const probe = document.body.createDiv();
+      probe.style.color = 'var(--interactive-accent)';
+      const rgb = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g);
+      probe.remove();
+      if (rgb && rgb.length >= 3) {
+        const [r, g, b] = rgb.slice(0, 3).map((x) => (+x) / 255);
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+        const l = (mx + mn) / 2;
+        const sHsl = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+        let h = 0;
+        if (d) {
+          if (mx === r) h = ((g - b) / d) % 6;
+          else if (mx === g) h = (b - r) / d + 2;
+          else h = (r - g) / d + 4;
+          h *= 60; if (h < 0) h += 360;
+        }
+        root.style.setProperty('--gn-todo-bg',
+          'hsla(' + ((h + 180) % 360).toFixed(0) + ', ' + (sHsl * 100).toFixed(0) + '%, ' + (l * 100).toFixed(0) + '%, 0.28)');
+      }
+    } catch (e) {}
+
     // 手機單欄時掛狀態 class：豁免「卡片最小 1:1」限制（單欄全寬卡不需要，2026-07-19）
     root.toggleClass('gn-mobile-1col',
       document.body.classList.contains('is-mobile') && (this.plugin.state.mobileCols || 2) === 1);

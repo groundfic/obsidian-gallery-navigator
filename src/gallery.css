@@ -1322,8 +1322,8 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 /* 底色＝主題色的對比色（色相 +180°、彩度/明度不變）：跟主題聯動又一眼可辨。
    相對色語法（hsl from）需 Chromium 119+；不支援時 fallback 用主題色淡化版 */
 .gn-card.gn-style-todo {
-  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
-  background: hsl(from var(--interactive-accent) calc(h + 180) s l / 0.28);   /* 對比色 28% 透明（2026-07-19 再淡化） */
+  /* --gn-todo-bg 由 JS 算（accent 色相 +180°、28% 透明）：桌機/手機一致，不依賴相對色語法 */
+  background: var(--gn-todo-bg, color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary)));
 }
 /* 展開/收合切換鈕：右下角小圓鈕 */
 .gn-todo-toggle {
