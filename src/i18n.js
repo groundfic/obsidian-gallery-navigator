@@ -200,7 +200,10 @@ const ZH_TW = {
   'Mark as not done': '取消完成', 'Mark as done': '標記完成',
   'Cannot read the to-do note': '讀不到待辦筆記',
   // ── 標籤 / 多選 ──
-  'Untagged': '未標籤', 'Tags': '標籤', 'Pick a tag on the left': '從左側選一個標籤',
+  'Untagged': '未標籤',
+  'Added #{{tag}} to "{{name}}"': '已為「{{name}}」加上 #{{tag}}',
+  '"{{name}}" already has #{{tag}}': '「{{name}}」已有 #{{tag}}',
+  'Failed to add tag: {{msg}}': '加標籤失敗：{{msg}}', 'Tags': '標籤', 'Pick a tag on the left': '從左側選一個標籤',
   '{{n}} selected': '{{n}} 已選', 'Select all': '全選',
   'Copy wiki links (one per line)': '複製 Wiki 連結清單（一行一個）',
   'Clear selection': '清除選取', 'Nothing to copy': '沒有可複製的項目',

@@ -1299,7 +1299,25 @@ class GalleryView extends ItemView {
       }
     }
 
-    /* ── 卡片大小：真的滑桿，拖曳即時生效（手機不顯示：手機是固定欄數，在設定頁調） ── */
+    /* ── 手機：卡片欄數 1/2/3（2026-07-19 從設定頁移入；選了即時重畫） ── */
+    if (document.body.classList.contains('is-mobile')) {
+      pop.createDiv('gn-more-label').setText(t('Mobile columns'));
+      for (const n of [1, 2, 3]) {
+        const row = pop.createDiv('gn-more-row');
+        row.createSpan('gn-more-text').setText(t(n + (n === 1 ? ' column' : ' columns')));
+        const mark = row.createSpan('gn-more-check');
+        if ((state.mobileCols || 2) === n) setIcon(mark, 'check');
+        row.onclick = () => {
+          state.mobileCols = n;
+          this.plugin.saveState();
+          this.closeMorePopover();
+          this.render();   // 欄數變了 → 整面重畫（含單欄豁免 class 更新）
+        };
+      }
+      pop.createDiv('gn-more-sep');
+    }
+
+    /* ── 卡片大小：真的滑桿，拖曳即時生效（手機不顯示：手機是固定欄數，改在「更多」面板調） ── */
     if (!document.body.classList.contains('is-mobile')) {
       pop.createDiv('gn-more-label').setText(t('Card size'));
       const zoom = pop.createEl('input', { type: 'range' });
@@ -1753,6 +1771,14 @@ class GalleryView extends ItemView {
           this.gotoCardsMobile();
         } else {
           this.openNote(af, false);
+          // 右欄強制定位到這個檔案（2026-07-19）：檔案已開啟時 file-open 不會再觸發、
+          // syncToFile 遇「已 active」也會無動作返回 → 直接補 setActiveCard 捲到卡片。
+          // 不受「同步定位」開關影響——點最愛＝明確的定位意圖。
+          this.plugin.state.leftMode = 'folder';
+          this.syncToFile(af);
+          this.setActiveCard(af.path);                                  // 同牆已 active → 立刻捲到卡片
+          window.setTimeout(() => this.setActiveCard(af.path), 400);   // 跨資料夾重畫後再定位一次
+          this.gotoCardsMobile();
         }
       };
       this.wireContextMenu(row, () => {
@@ -2862,6 +2888,29 @@ class GalleryView extends ItemView {
     this.refreshTree();
   }
 
+  // 拖卡片到標籤列：把標籤寫進筆記 frontmatter（2026-07-19）。
+  // processFrontMatter 是官方 API——沒有 frontmatter 會自動建立、tags 字串/陣列格式都處理。
+  async addTagToNote(file, tag) {
+    try {
+      let added = false;
+      await this.app.fileManager.processFrontMatter(file, (fm) => {
+        let tags = fm.tags;
+        if (!tags) tags = [];
+        else if (typeof tags === 'string') tags = tags.split(/[,\s]+/).filter(Boolean);
+        else tags = [...tags];
+        const clean = tags.map((x) => String(x).replace(/^#/, ''));
+        if (!clean.includes(tag)) { clean.push(tag); added = true; }
+        fm.tags = clean;
+      });
+      new Notice(added
+        ? t('Added #{{tag}} to "{{name}}"', { tag, name: file.basename })
+        : t('"{{name}}" already has #{{tag}}', { tag, name: file.basename }));
+      // metadata 變動會自動觸發 tag 索引失效與重畫（markTagDirty + refreshViews）
+    } catch (e) {
+      new Notice(t('Failed to add tag: {{msg}}', { msg: e && e.message ? e.message : e }));
+    }
+  }
+
   // 左側：巢狀標籤樹（Bear 風）+ 未標籤
   renderTagTree(container) {
     const idx = this.buildTagIndex();
@@ -2906,6 +2955,22 @@ class GalleryView extends ItemView {
         this.render();
         this.gotoCardsMobile();
       };
+      // 拖卡片到標籤列 → 幫該筆記加上這個標籤（2026-07-19；待辦清單項目）
+      row.addEventListener('dragover', (e) => {
+        const d = this.drag;
+        if (!d || d.kind !== 'note') return;
+        e.preventDefault();
+        row.addClass('gn-tmove');
+      });
+      row.addEventListener('dragleave', () => row.removeClass('gn-tmove'));
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        row.removeClass('gn-tmove');
+        const d = this.drag;
+        if (!d || d.kind !== 'note') return;
+        const f = this.app.vault.getAbstractFileByPath(d.path);
+        if (f instanceof TFile) this.addTagToNote(f, node.path);
+      });
       if (hasKids && isOpen) node.children.slice().sort(byName).forEach((c) => renderNode(c, depth + 1));
     };
     roots.sort(byName).forEach((n) => renderNode(n, 1));
@@ -3766,18 +3831,7 @@ class CalendarSettingTab extends PluginSettingTab {
 
     /* ══ 1. 卡片牆（核心，永遠啟用） ══ */
     this.group(containerEl, t('Card wall'));
-    new Setting(containerEl)
-      .setName(t('Mobile columns'))
-      .setDesc(t('Mobile uses a fixed column count. On desktop, use the card size slider in the toolbar more panel.'))
-      .addDropdown((d) => {
-        d.addOption('1', t('1 column')); d.addOption('2', t('2 columns')); d.addOption('3', t('3 columns'));
-        d.setValue(String(st.mobileCols || 2));
-        d.onChange((v) => {
-          st.mobileCols = Math.min(3, Math.max(1, +v || 2));
-          save();
-          this.plugin.refreshViews();
-        });
-      });
+    // 手機欄數設定已移入工具列「⋯ 更多」面板（2026-07-19）
 
     new Setting(containerEl)
       .setName(t('Open notes without focusing the editor'))
@@ -4456,6 +4510,32 @@ class GalleryPlugin extends Plugin {
       return menu;
     };
 
+    // 點筆記內的 #標籤 → 開畫廊標籤模式（2026-07-19；Cmd/Ctrl+點 = 保留原生全域搜尋）
+    this.registerDomEvent(document, 'click', (evt) => {
+      if (evt.metaKey || evt.ctrlKey) return;
+      const el0 = evt.target;
+      if (!(el0 instanceof Element)) return;
+      let tag = null;
+      const a = el0.closest('a.tag');                       // 閱讀模式
+      if (a) {
+        tag = (a.getAttribute('href') || a.textContent || '').replace(/^#/, '');
+      } else {
+        const cm = el0.closest('.cm-hashtag');              // Live Preview（hashtag 拆成相鄰 span）
+        if (cm) {
+          const parts = [cm];
+          let p = cm;
+          while (p.previousElementSibling && p.previousElementSibling.classList.contains('cm-hashtag')) { p = p.previousElementSibling; parts.unshift(p); }
+          p = cm;
+          while (p.nextElementSibling && p.nextElementSibling.classList.contains('cm-hashtag')) { p = p.nextElementSibling; parts.push(p); }
+          tag = parts.map((x) => x.textContent).join('').replace(/^#/, '');
+        }
+      }
+      if (!tag) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.openGalleryTag(tag);
+    }, true);
+
     // 桌機：右鍵
     this.registerDomEvent(document, 'contextmenu', (evt) => {
       const src = imgSrcOf(evt.target);
@@ -4612,6 +4692,26 @@ class GalleryPlugin extends Plugin {
   isHiddenPath(path) {
     const hidden = this.state.hiddenFolders || [];
     return hidden.some((h) => path === h || path.startsWith(h + '/'));
+  }
+
+  // 點筆記內 #標籤 → 開畫廊標籤模式（2026-07-19）
+  async openGalleryTag(tag) {
+    await this.activateView();
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+    const v = leaf && leaf.view;
+    if (!(v instanceof GalleryView)) return;
+    this.state.leftMode = 'tag';
+    this.state.activeTag = tag;
+    // 巢狀標籤：展開所有祖先，左樹才看得到選中的節點
+    const expanded = new Set(this.state.expandedTags || []);
+    const parts = tag.split('/');
+    let acc = '';
+    for (const p of parts.slice(0, -1)) { acc = acc ? acc + '/' + p : p; expanded.add(acc); }
+    this.state.expandedTags = [...expanded];
+    this.saveState();
+    v._searchOn = false; v._searchQ = '';
+    v.render();
+    v.gotoCardsMobile();
   }
 
   // 懸浮搜尋的 Shift+Enter：開畫廊並直接進入搜尋模式顯示全部結果
