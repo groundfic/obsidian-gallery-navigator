@@ -2923,7 +2923,6 @@ class GalleryView extends ItemView {
       b.onclick = (e) => { e.stopPropagation(); fn(e); };
     };
     mk(t('Select all'), 'check-check', () => this.selectAll());
-    mk(t('Card style'), 'shapes', (e) => this.styleSelectedMenu(e));
     mk(t('Copy wiki links (one per line)'), 'link', () => this.copySelectedLinks());
     mk(t('Move to…'), 'folder-input', () => this.moveSelected());
     mk(t('Delete'), 'trash', () => this.deleteSelected(), true);
@@ -3041,10 +3040,12 @@ class GalleryView extends ItemView {
     this._cardEls.get(it.file.path).push(card);
     if (it.file.path === this.activePath) card.addClass('gn-card-active');
     const isMd = it.ext === 'md';
-    let cstyle = isMd ? ((this.plugin.state.cardStyles || {})[it.file.path] || null) : null;   // 卡片樣式（2026-07-18）
-    if (cstyle === 'book' || cstyle === 'video') cstyle = null;   // 兩樣式已下架：既有指定視同自動（2026-07-19）
-    if (cstyle) card.addClass('gn-style-' + cstyle);
-    const skipPreview = !!o.skipPreview || cstyle === 'todo';   // 待辦卡：任務清單取代內文預覽
+    // 全自動樣式（2026-07-19，手動樣式選單已移除）：
+    // 有核取方塊的筆記 → 自動待辦卡（metadataCache.listItems 同步判斷，零讀檔）
+    const mdCache = isMd ? this.app.metadataCache.getFileCache(it.file) : null;
+    const hasTasks = !!(mdCache && mdCache.listItems && mdCache.listItems.some((x) => x.task !== undefined));
+    if (hasTasks) card.addClass('gn-style-todo');
+    const skipPreview = !!o.skipPreview || hasTasks;   // 待辦卡：任務清單取代內文預覽
 
     // 卡片底色（feature 1）：底色 + 對比字色
     const cp = cardColors[it.file.path] && CARD_PALETTE_BY_KEY[cardColors[it.file.path]];
@@ -3068,57 +3069,19 @@ class GalleryView extends ItemView {
     if (this._searchQ) gnHighlightInto(titleEl, it.name, gnHighlightTerms(this._searchQ));
     else titleEl.setText(it.name);
 
-    // 自動影片卡（2026-07-19）：未手動指定樣式的 md，捲到時偵測內容有無影片連結
-    if (isMd && !cstyle) card._vidFile = it.file;
+    // 自動影片卡（2026-07-19）：所有 md 捲到時偵測內容有無影片連結
+    if (isMd) card._vidFile = it.file;
 
-    // 待辦卡：卡上直接勾（清單捲到才載入，走既有延遲載入管線）
-    if (cstyle === 'todo') {
+    // 自動待辦卡：卡上直接勾（清單捲到才載入，走既有延遲載入管線）
+    if (hasTasks) {
       card._todoEl = body.createDiv('gn-card-todos');
       card._todoFile = it.file;
-    }
-    // 影片卡：置中播放鈕 → 開啟筆記中第一個 YouTube（退而求其次任一外部）連結
-    if (cstyle === 'video') {
-      const pb = card.createDiv('gn-play');
-      setIcon(pb, 'play');
-      pb.setAttr('title', t('Play video'));
-      pb.onclick = async (e) => {
-        e.stopPropagation();
-        try {
-          const raw = await this.app.vault.cachedRead(it.file);
-          const yt = raw.match(/https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)[^\s)\]"'<>]*/);
-          const any = raw.match(/https?:\/\/[^\s)\]"'<>]+/);
-          const u = (yt && yt[0]) || (any && any[0]);
-          if (u) window.open(u, '_blank');
-          else new Notice(t('No video link found in this note'));
-        } catch (err) {}
-      };
     }
 
     if (it.src) {
       // 有封面 → 圖片在上、標題/日期在下
       card.addClass('gn-has-img');
-      let imgParent = card;
-      if (cstyle === 'book') {
-        // 書籍卡 v3（2026-07-19）：真 3D 書——舞台 > 3D 盒（封面 + 書頁切口 + 書脊 + 底板），
-        // 桌機滑鼠跟隨傾斜（游標位置 → --bx/--by 旋轉角）；手機維持固定微傾斜
-        const stage = card.createDiv('gn-book-stage');
-        const book = stage.createDiv('gn-book3d');
-        book.createDiv('gn-bookpages');
-        book.createDiv('gn-bookspine');
-        imgParent = book;
-        if (!document.body.classList.contains('is-mobile')) {
-          card.addEventListener('mousemove', (e) => {
-            const r = card.getBoundingClientRect();
-            book.style.setProperty('--by', (((e.clientX - r.left) / r.width - 0.5) * 24).toFixed(1) + 'deg');
-            book.style.setProperty('--bx', ((0.5 - (e.clientY - r.top) / r.height) * 14).toFixed(1) + 'deg');
-          });
-          card.addEventListener('mouseleave', () => {
-            book.style.removeProperty('--by');
-            book.style.removeProperty('--bx');
-          });
-        }
-      }
-      const img = imgParent.createEl('img');
+      const img = card.createEl('img');
       img.src = it.src;
       img.loading = 'lazy';
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
@@ -3215,19 +3178,6 @@ class GalleryView extends ItemView {
             try { if (s.iconEl) { s.iconEl.style.color = p.bg; s.iconEl.style.fill = p.bg; } } catch (e) {}
           });
         });
-      });
-      // 卡片樣式（2026-07-18）：todo / video / book
-      menu.addItem((i) => {
-        i.setTitle(t('Card style')).setIcon('shapes');
-        const sub = i.setSubmenu();
-        // 顯示「實際生效」的樣式：手動設定優先；沒有手動但已被自動偵測成影片卡
-        // （卡上有播放鈕）→ 打勾「影片卡」而不是「預設」，選單狀態與眼前一致（2026-07-19）
-        const curS = (this.plugin.state.cardStyles || {})[it.file.path]
-          || (card.querySelector('.gn-play') ? 'video' : null);
-        for (const [key, label, icon] of CARD_STYLES) {
-          sub.addItem((si) => si.setTitle(t(label)).setIcon(icon).setChecked(curS === key)
-            .onClick(() => this.setCardStyle([it.file.path], key)));
-        }
       });
       menu.addSeparator();
       menu.addItem((i) => i.setTitle(t('Copy wiki link')).setIcon('link').onClick(() => copyToClipboard('[[' + it.name + ']]')));

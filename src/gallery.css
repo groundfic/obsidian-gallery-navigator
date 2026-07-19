@@ -1304,12 +1304,15 @@
 .gn-mobile-1col .gn-card.gn-has-img > img { min-height: 0; }
 .gn-mobile-1col .gn-card:not(.gn-has-img) .gn-body { min-height: 0; }
 
-/* 桌機：所有卡片最小比例 4:3（2026-07-19 定案）——75cqw = 寬的 3/4。
-   寬幅圖裁 4:3、直圖不動；文字卡內容區撐到 4:3、日期貼底。 */
+/* 桌機：所有卡片最小比例 16:9（2026-07-19 定案）——56.25cqw = 寬的 9/16。
+   寬幅圖裁 16:9、直圖不動；文字卡內容區撐到 16:9、日期貼底。 */
 .gn-card { container-type: inline-size; }   /* 通用容器（手機規則沿用同一個） */
 body:not(.is-mobile) .gn-card.gn-has-img > img {
-  min-height: 75cqw;
+  min-height: 56.25cqw;
   object-fit: cover;
 }
-body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-body { min-height: 75cqw; }
+body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-body { min-height: 56.25cqw; }
 body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padding-top: 7px; }
+
+/* 圖片卡＋待辦並存時：hover 疊層裡的核取方塊要能點（疊層本身 pointer-events:none） */
+.gn-card.gn-has-img .gn-card-todos { pointer-events: auto; }
