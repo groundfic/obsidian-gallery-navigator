@@ -711,8 +711,9 @@ const CARD_STYLES = [
   [null, 'Auto (default)', 'sparkles'],            // 跟著內容走（有影片連結→自動播放鈕）
   ['plain', 'Plain card', 'rectangle-horizontal'], // 強制一般卡片（抑制自動偵測）
   ['todo', 'To-do list card', 'list-checks'],
-  ['video', 'Video card', 'play'],
-  ['book', 'Book card', 'book'],
+  // 書籍卡/影片卡手動樣式暫時下架（2026-07-19 使用者要求；程式保留休眠，恢復＝加回此清單）
+  // ['video', 'Video card', 'play'],
+  // ['book', 'Book card', 'book'],
 ];
 // 自動配色用的彩色子集（排除米/灰/黑，讓預設更繽紛）
 const AUTO_KEYS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'pink'];
@@ -2079,6 +2080,9 @@ class GalleryView extends ItemView {
     this._treeScrollLock = true;
     root.empty();
     root.addClass('gn-root');
+    // 手機單欄時掛狀態 class：豁免「卡片最小 1:1」限制（單欄全寬卡不需要，2026-07-19）
+    root.toggleClass('gn-mobile-1col',
+      document.body.classList.contains('is-mobile') && (this.plugin.state.mobileCols || 2) === 1);
 
     // 手機：contentEl 本身就是 .view-content；它的父層（.workspace-leaf-content）
     // 在手機不是 flex 直向，導致 gn-root 撐不滿高度 → 底部工具列上方留白。
@@ -3037,7 +3041,8 @@ class GalleryView extends ItemView {
     this._cardEls.get(it.file.path).push(card);
     if (it.file.path === this.activePath) card.addClass('gn-card-active');
     const isMd = it.ext === 'md';
-    const cstyle = isMd ? ((this.plugin.state.cardStyles || {})[it.file.path] || null) : null;   // 卡片樣式（2026-07-18）
+    let cstyle = isMd ? ((this.plugin.state.cardStyles || {})[it.file.path] || null) : null;   // 卡片樣式（2026-07-18）
+    if (cstyle === 'book' || cstyle === 'video') cstyle = null;   // 兩樣式已下架：既有指定視同自動（2026-07-19）
     if (cstyle) card.addClass('gn-style-' + cstyle);
     const skipPreview = !!o.skipPreview || cstyle === 'todo';   // 待辦卡：任務清單取代內文預覽
 

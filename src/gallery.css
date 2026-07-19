@@ -1289,3 +1289,27 @@
   min-height: 100cqw;
   object-fit: cover;
 }
+
+/* 手機：純文字卡也撐到最小 1:1（2026-07-19）。
+   cqw 參照的是「祖先容器」→ min-height 放在 .gn-body（其容器＝卡片本身）；
+   date 改 margin-top:auto 貼卡片底部，多出的空間留在中段。 */
+.is-mobile .gn-card:not(.gn-has-img) .gn-body {
+  min-height: 100cqw;
+  display: flex; flex-direction: column;
+}
+.is-mobile .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padding-top: 7px; }
+
+
+/* 手機單欄：豁免最小 1:1（全寬卡照原比例即可，2026-07-19） */
+.gn-mobile-1col .gn-card.gn-has-img > img { min-height: 0; }
+.gn-mobile-1col .gn-card:not(.gn-has-img) .gn-body { min-height: 0; }
+
+/* 桌機：所有卡片最小比例 4:3（2026-07-19 定案）——75cqw = 寬的 3/4。
+   寬幅圖裁 4:3、直圖不動；文字卡內容區撐到 4:3、日期貼底。 */
+.gn-card { container-type: inline-size; }   /* 通用容器（手機規則沿用同一個） */
+body:not(.is-mobile) .gn-card.gn-has-img > img {
+  min-height: 75cqw;
+  object-fit: cover;
+}
+body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-body { min-height: 75cqw; }
+body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padding-top: 7px; }
