@@ -220,7 +220,8 @@ const ZH_TW = {
   'Failed to copy image: {{msg}}': '複製圖片失敗：{{msg}}',
   // ── Pinterest 開關 ──
   'Card style': '卡片樣式',
-  'Default card': '預設卡片',
+  'Auto (default)': '自動（預設）',
+  'Plain card': '純卡片',
   'To-do list card': '待辦清單卡',
   'Video card': '影片卡',
   'Book card': '書籍卡',

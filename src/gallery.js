@@ -708,7 +708,8 @@ const GN_VIDEO_URL_RE = new RegExp(
 
 // 卡片樣式選項（2026-07-18）：[key, i18n label, lucide icon]；null = 預設
 const CARD_STYLES = [
-  [null, 'Default card', 'rectangle-horizontal'],
+  [null, 'Auto (default)', 'sparkles'],            // 跟著內容走（有影片連結→自動播放鈕）
+  ['plain', 'Plain card', 'rectangle-horizontal'], // 強制一般卡片（抑制自動偵測）
   ['todo', 'To-do list card', 'list-checks'],
   ['video', 'Video card', 'play'],
   ['book', 'Book card', 'book'],
@@ -3091,7 +3092,28 @@ class GalleryView extends ItemView {
     if (it.src) {
       // 有封面 → 圖片在上、標題/日期在下
       card.addClass('gn-has-img');
-      const img = card.createEl('img');
+      let imgParent = card;
+      if (cstyle === 'book') {
+        // 書籍卡 v3（2026-07-19）：真 3D 書——舞台 > 3D 盒（封面 + 書頁切口 + 書脊 + 底板），
+        // 桌機滑鼠跟隨傾斜（游標位置 → --bx/--by 旋轉角）；手機維持固定微傾斜
+        const stage = card.createDiv('gn-book-stage');
+        const book = stage.createDiv('gn-book3d');
+        book.createDiv('gn-bookpages');
+        book.createDiv('gn-bookspine');
+        imgParent = book;
+        if (!document.body.classList.contains('is-mobile')) {
+          card.addEventListener('mousemove', (e) => {
+            const r = card.getBoundingClientRect();
+            book.style.setProperty('--by', (((e.clientX - r.left) / r.width - 0.5) * 24).toFixed(1) + 'deg');
+            book.style.setProperty('--bx', ((0.5 - (e.clientY - r.top) / r.height) * 14).toFixed(1) + 'deg');
+          });
+          card.addEventListener('mouseleave', () => {
+            book.style.removeProperty('--by');
+            book.style.removeProperty('--bx');
+          });
+        }
+      }
+      const img = imgParent.createEl('img');
       img.src = it.src;
       img.loading = 'lazy';
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
