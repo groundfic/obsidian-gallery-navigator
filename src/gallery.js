@@ -2942,6 +2942,33 @@ class GalleryView extends ItemView {
     return changed;
   }
 
+  // 標籤刪除（2026-07-19）：從所有筆記的 frontmatter 移除該標籤（含子孫）。內文行內標籤不動。
+  async deleteTag(tagPath) {
+    const idx = this.buildTagIndex();
+    const files = [...(idx.map.get(tagPath) || [])];
+    let changed = 0;
+    for (const p of files) {
+      const f = this.app.vault.getAbstractFileByPath(p);
+      if (!(f instanceof TFile)) continue;
+      try {
+        let touched = false;
+        await this.app.fileManager.processFrontMatter(f, (fm) => {
+          let tags = fm.tags;
+          if (!tags) return;
+          if (typeof tags === 'string') tags = tags.split(/[,\s]+/).filter(Boolean);
+          else tags = [...tags];
+          const clean = tags.map((x) => String(x).replace(/^#/, ''));
+          const next = clean.filter((c) => c !== tagPath && !c.startsWith(tagPath + '/'));
+          if (next.length !== clean.length) { touched = true; fm.tags = next; }
+        });
+        if (touched) changed++;
+      } catch (e) {}
+    }
+    new Notice(t('Deleted #{{tag}} from {{n}} note(s)', { tag: tagPath, n: changed }));
+    if (this.plugin.state.activeTag === tagPath) { this.plugin.state.activeTag = ''; this.plugin.saveState(); }
+    this.render();
+  }
+
   // 卡片右鍵「移除 #tag」：從 frontmatter tags 拿掉（2026-07-19）。
   // 限制：標籤若寫在內文（#inline）不動筆記內文，改用 Notice 明講，不做危險的內文改寫。
   async removeTagFromNote(file, tag) {
@@ -3040,6 +3067,11 @@ class GalleryView extends ItemView {
               }, t('Merge')).open();
             }));
         }
+        menu.addItem((i) => i.setTitle(t('Delete tag')).setIcon('trash').setWarning(true).onClick(() => {
+          new ConfirmModal(this.app,
+            t('Remove #{{tag}} (and its sub-tags) from all notes?', { tag: node.path }),
+            () => this.deleteTag(node.path)).open();
+        }));
         menu.addItem((i) => i.setTitle(t('Rename tag')).setIcon('pencil').onClick(() => {
           new InputModal(this.app, t('Rename tag'), node.path, async (name) => {
             const target = String(name || '').trim().replace(/^#/, '');
