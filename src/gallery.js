@@ -2911,6 +2911,59 @@ class GalleryView extends ItemView {
     }
   }
 
+  // 標籤改名/合併核心（2026-07-19）：把 oldPath（含子孫如 old/xxx）改成 newPath。
+  // 逐筆走 processFrontMatter（內文行內標籤不動）；回傳更新筆數。
+  async renameTag(oldPath, newPath, silent) {
+    const idx = this.buildTagIndex();
+    const files = [...(idx.map.get(oldPath) || [])];
+    let changed = 0;
+    for (const p of files) {
+      const f = this.app.vault.getAbstractFileByPath(p);
+      if (!(f instanceof TFile)) continue;
+      try {
+        let touched = false;
+        await this.app.fileManager.processFrontMatter(f, (fm) => {
+          let tags = fm.tags;
+          if (!tags) return;
+          if (typeof tags === 'string') tags = tags.split(/[,\s]+/).filter(Boolean);
+          else tags = [...tags];
+          const next = tags.map((x) => {
+            const c = String(x).replace(/^#/, '');
+            if (c === oldPath) { touched = true; return newPath; }
+            if (c.startsWith(oldPath + '/')) { touched = true; return newPath + c.slice(oldPath.length); }
+            return c;
+          });
+          if (touched) fm.tags = [...new Set(next)];   // 合併撞名時去重
+        });
+        if (touched) changed++;
+      } catch (e) {}
+    }
+    if (!silent) new Notice(t('Renamed #{{old}} → #{{new}} in {{n}} note(s)', { old: oldPath, new: newPath, n: changed }));
+    return changed;
+  }
+
+  // 卡片右鍵「移除 #tag」：從 frontmatter tags 拿掉（2026-07-19）。
+  // 限制：標籤若寫在內文（#inline）不動筆記內文，改用 Notice 明講，不做危險的內文改寫。
+  async removeTagFromNote(file, tag) {
+    try {
+      let removed = false;
+      await this.app.fileManager.processFrontMatter(file, (fm) => {
+        let tags = fm.tags;
+        if (!tags) return;
+        if (typeof tags === 'string') tags = tags.split(/[,\s]+/).filter(Boolean);
+        else tags = [...tags];
+        const clean = tags.map((x) => String(x).replace(/^#/, ''));
+        const next = clean.filter((x) => x !== tag);
+        if (next.length !== clean.length) { removed = true; fm.tags = next; }
+      });
+      new Notice(removed
+        ? t('Removed #{{tag}} from "{{name}}"', { tag, name: file.basename })
+        : t('#{{tag}} is not in frontmatter (it may be an inline tag in the note body)', { tag }));
+    } catch (e) {
+      new Notice(t('Failed to remove tag: {{msg}}', { msg: e && e.message ? e.message : e }));
+    }
+  }
+
   // 左側：巢狀標籤樹（Bear 風）+ 未標籤
   renderTagTree(container) {
     const idx = this.buildTagIndex();
@@ -2949,12 +3002,56 @@ class GalleryView extends ItemView {
       setIcon(row.createSpan('gn-tthumb'), 'hash');
       row.createSpan('gn-tname').setText(node.name);
       row.createSpan('gn-tcount').setText(String(node.count));
-      row.onclick = () => {
+      if (this._tagSel && this._tagSel.has(node.path)) row.addClass('gn-tmsel');
+      row.onclick = (e) => {
+        // Cmd/Ctrl+點 → 複選標籤（合併用，記憶體狀態）
+        if (e.metaKey || e.ctrlKey) {
+          this._tagSel = this._tagSel || new Set();
+          if (this._tagSel.has(node.path)) this._tagSel.delete(node.path);
+          else this._tagSel.add(node.path);
+          row.toggleClass('gn-tmsel', this._tagSel.has(node.path));
+          return;
+        }
+        this._tagSel = new Set();   // 一般點擊清空複選
         this.plugin.state.activeTag = node.path;
         this.plugin.saveState();
         this.render();
         this.gotoCardsMobile();
       };
+      // 右鍵：重新命名 / 合併（2026-07-19）
+      this.wireContextMenu(row, () => {
+        const menu = new Menu();
+        const sel = [...(this._tagSel || new Set())];
+        if (sel.includes(node.path) && sel.length > 1) {
+          menu.addItem((i) => i.setTitle(t('Merge {{n}} tags into…', { n: sel.length })).setIcon('combine')
+            .onClick(() => {
+              new InputModal(this.app, t('Merge tags into'), node.path, async (name) => {
+                const target = String(name || '').trim().replace(/^#/, '');
+                if (!target) return;
+                // 父子同選時只處理最上層（父改名已涵蓋子孫）
+                const tops = sel.filter((p) => !sel.some((q) => q !== p && p.startsWith(q + '/')));
+                let total = 0;
+                for (const p of tops) { if (p !== target) total += await this.renameTag(p, target, true); }
+                new Notice(t('Merged into #{{tag}} ({{n}} notes updated)', { tag: target, n: total }));
+                this._tagSel = new Set();
+                this.plugin.state.activeTag = target;
+                this.plugin.saveState();
+                this.render();
+              }, t('Merge')).open();
+            }));
+        }
+        menu.addItem((i) => i.setTitle(t('Rename tag')).setIcon('pencil').onClick(() => {
+          new InputModal(this.app, t('Rename tag'), node.path, async (name) => {
+            const target = String(name || '').trim().replace(/^#/, '');
+            if (!target || target === node.path) return;
+            await this.renameTag(node.path, target);
+            if (this.plugin.state.activeTag === node.path) this.plugin.state.activeTag = target;
+            this.plugin.saveState();
+            this.render();
+          }, t('Rename')).open();
+        }));
+        return menu;
+      });
       // 拖卡片到標籤列 → 幫該筆記加上這個標籤（2026-07-19；待辦清單項目）
       row.addEventListener('dragover', (e) => {
         const d = this.drag;
@@ -3273,6 +3370,12 @@ class GalleryView extends ItemView {
       menu.addItem((i) => i.setTitle(t('Open in new tab')).setIcon('plus').onClick(() => this.openNote(it.file, true)));
       menu.addItem((i) => i.setTitle(t('Move to…')).setIcon('folder-input').onClick(() =>
         new FolderSuggest(this.app, (target) => this.moveItem(it.file, target)).open()));
+      // 標籤模式：移除「目前檢視中的標籤」（2026-07-19）
+      const curTag = this.plugin.state.leftMode === 'tag' ? this.plugin.state.activeTag : null;
+      if (curTag && curTag !== '__untagged__') {
+        menu.addItem((i) => i.setTitle(t('Remove #{{tag}} from this note', { tag: curTag }))
+          .setIcon('tag').onClick(() => this.removeTagFromNote(it.file, curTag)));
+      }
       if (it.src && this.plugin.state.enablePinterest) {
         const srcFolder = it.file.parent && it.file.parent.path !== '/' ? it.file.parent.path : '';
         menu.addItem((i) => i.setTitle(t('Pinterest visual search')).setIcon('search').onClick(() =>

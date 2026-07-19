@@ -1342,6 +1342,12 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 .gn-card.gn-style-todo .gn-body { padding-bottom: 26px; }
 
 
+/* 標籤複選（Cmd+點，合併用）：與單選 gn-tsel 區隔的主題色膠囊 */
+.gn-tnode.gn-tmsel {
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+}
+
+
 /* ════════════ 2. Image Peek ════════════ */
 /* Quick Peek — Quick Look 式圖片預覽 */
 
