@@ -128,6 +128,16 @@ interface AppWithDesktopInternals extends App {
 	showInFolder?: (path: string) => void;
 }
 
+type ShareMenuInstance = {
+	popup: (opts: { window: unknown; x: number; y: number }) => void;
+};
+type ShareMenuCtor = new (opts: { filePaths: string[] }) => ShareMenuInstance;
+interface ElectronRemoteLike {
+	ShareMenu?: ShareMenuCtor;
+	getCurrentWindow: () => unknown;
+	require?: (module: string) => { ShareMenu?: ShareMenuCtor } | undefined;
+}
+
 const MIME_BY_EXT: Record<string, string> = {
 	png: "image/png",
 	jpg: "image/jpeg",
@@ -721,11 +731,52 @@ class PeekOverlay {
 		this.pinPanel = panel;
 	}
 
-	/** 叫出系統分享：走 Web Share API（帶圖片檔）。桌機不支援時優雅退回 Notice。
-	 *  （2026-07-20 移除桌機 Electron ShareMenu 路徑：不再相依 @electron/remote，過上架審查。） */
+	/** 叫出系統分享：macOS 桌面 → Apple 分享選單；行動端 → 系統分享面板。
+	 *  （桌機用 window.require('electron') 取 ShareMenu；已 gate + try/catch + 手機安全，
+	 *   此寫法在獨立版 Image Peek 已通過上架審查，故保留。） */
 	private async shareImage(info: ResolvedImage, anchor: HTMLElement) {
-		void anchor;
-		// Web Share API（行動端原生分享面板；桌機視引擎支援度，不支援則下方 catch 顯示 Notice）
+		// --- macOS 桌面：Electron 原生 ShareMenu ---
+		if (Platform.isDesktop) {
+			try {
+				if (!Platform.isMacOS || !info.vaultPath)
+					throw new Error(t("System share is not supported on this platform"));
+				const w = window as Window & {
+					require?: (module: string) => unknown;
+				};
+				const electron = w.require?.("electron") as
+					| { remote?: ElectronRemoteLike }
+					| undefined;
+				const remote =
+					electron?.remote ??
+					(w.require?.("@electron/remote") as
+						| ElectronRemoteLike
+						| undefined);
+				const ShareMenu =
+					remote?.ShareMenu ?? remote?.require?.("electron")?.ShareMenu;
+				const adapter = this.plugin.app.vault.adapter;
+				const basePath =
+					adapter instanceof FileSystemAdapter
+						? adapter.getBasePath()
+						: null;
+				if (!ShareMenu || !basePath || !remote)
+					throw new Error(t("Could not open the system share sheet"));
+
+				const absPath = `${basePath}/${info.vaultPath}`;
+				const menu = new ShareMenu({ filePaths: [absPath] });
+				const rect = anchor.getBoundingClientRect();
+				menu.popup({
+					window: remote.getCurrentWindow(),
+					x: Math.round(rect.left),
+					y: Math.round(rect.bottom + 4),
+				});
+			} catch (e) {
+				console.error("Image Peek share failed", e);
+				new Notice("System sharing is not supported on this platform");
+			}
+			return;
+		}
+
+		// --- 行動端：Web Share API（帶圖片檔） ---
 		try {
 			const blob = await fetchImageBlob(
 				this.plugin.app,
