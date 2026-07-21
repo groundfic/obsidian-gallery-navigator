@@ -62,7 +62,9 @@
   padding: 6px 8px;
 }
 /* 手機：工具列另有自己的樣式（底部列 + 漸層），左右段不上色 */
-.is-mobile .gn-bar-group { background: transparent; border-right: none; padding: 0; }
+/* display:contents ＝ 讓 barL/barR 兩組「消失成透明」，所有按鈕變成 .gn-bar 的直接子元素，
+   才能靠 .gn-bar 的 justify-content 把每顆按鈕均分（否則只會均分兩個 group、按鈕仍擠在兩角）。 */
+.is-mobile .gn-bar-group { display: contents; background: transparent; border-right: none; padding: 0; }
 .gn-btn {
   flex: none;
   width: 28px; height: 28px;   /* 2026-07-18 縮小點擊範圍（手機另外維持 36px） */
@@ -251,32 +253,23 @@
 .gn-todo-gear { margin-left: auto; display: flex; color: var(--text-faint); cursor: pointer; }
 .gn-todo-gear:hover { color: var(--text-normal); }
 .gn-todo-gear svg { width: 14px; height: 14px; }
-.gn-todo-list { display: flex; flex-direction: column; gap: 1px; max-height: 32vh; overflow-y: auto; }
+/* 面板標題右側動作鈕群（開啟來源筆記 / 顯示已完成 / 換筆記） */
+.gn-todo-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.gn-todo-act { display: flex; color: var(--text-faint); cursor: pointer; }
+.gn-todo-act:hover { color: var(--text-normal); }
+.gn-todo-act svg { width: 14px; height: 14px; }
+.is-mobile .gn-todo-acts { gap: 12px; }
+.is-mobile .gn-todo-act svg { width: 17px; height: 17px; }
+.gn-todo-list { display: flex; flex-direction: column; gap: 4px; max-height: 32vh; overflow-y: auto; }
+/* 面板的待辦列 ＝ .gn-ctodo 這套設計（原生核取方塊 + 單行省略），
+   這裡只補「層級縮排」與「hover 底色」兩件面板專屬的事 */
 .gn-todo-item {
-  display: flex; align-items: flex-start; gap: 7px;
-  padding: 3px 4px;
+  padding: 2px 4px;
   padding-left: calc(4px + var(--td-depth, 0) * 16px);   /* 依層級縮排 */
   border-radius: 6px; cursor: pointer;
 }
 .gn-todo-item:hover { background: var(--background-modifier-hover); }
-.gn-todo-check {
-  flex: none; width: 14px; height: 14px; margin-top: 1px;
-  display: flex; align-items: center; justify-content: center;
-  border: 1.5px solid var(--text-muted); border-radius: 4px; cursor: pointer;
-  color: var(--text-on-accent);
-}
-.gn-todo-check:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }
-.gn-todo-check svg { width: 11px; height: 11px; }
-.gn-todo-text {
-  flex: 1; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-normal);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-/* 已完成：打勾方框 + 刪除線淡化 */
-.gn-todo-done .gn-todo-check {
-  background: var(--interactive-accent); border-color: var(--interactive-accent);
-}
-.gn-todo-done .gn-todo-check:hover { background: var(--interactive-accent); }
-.gn-todo-done .gn-todo-text { text-decoration: line-through; color: var(--text-faint); }
+.gn-todo-list .gn-ctodo-more { padding: 2px 4px; }
 .gn-todo-empty, .gn-todo-none {
   font-size: 11px; color: var(--text-faint); padding: 4px; cursor: pointer;
 }
@@ -443,28 +436,34 @@
 /* 有底色的圖片卡：文字改用對比色 */
 .gn-card-colored.gn-has-img .gn-title { color: var(--gn-card-fg); }
 .gn-card-colored.gn-has-img .gn-date { color: color-mix(in srgb, var(--gn-card-fg) 72%, transparent); }
-/* 卡片 hover 按鈕：外連 wiki 關係 */
-.gn-card-btn {
-  position: absolute; top: 6px; right: 6px; z-index: 3;
-  width: 26px; height: 26px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 999px; cursor: pointer;
-  background: color-mix(in srgb, var(--background-primary) 94%, transparent);   /* 實心，免 blur（省全域重繪） */
-  color: var(--text-normal);
-  opacity: 0; transition: opacity .12s, background .12s, color .12s;
-}
-.gn-card:hover .gn-card-btn { opacity: 1; }
-.gn-card-btn:hover { background: var(--interactive-accent); color: var(--text-on-accent); }
-.gn-card-btn svg { width: 15px; height: 15px; }
-.is-mobile .gn-card-btn { opacity: 1; }   /* 手機沒 hover，常駐顯示 */
+/* （2026-07-20 移除）.gn-card-btn 卡片 hover 連結按鈕：連結牆下架 */
 /* 非 md、無封面的檔案：圖示佔位 */
 .gn-fileicon {
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px;
   aspect-ratio: 4 / 3;
   background: var(--background-modifier-hover);
   color: var(--text-muted);
 }
-.gn-fileicon svg { width: 36px; height: 36px; }
+.gn-fileicon-ic { display: flex; }
+.gn-fileicon-ic svg { width: 16px; height: 16px; }   /* 與文字同大小 */
+/* icon 右側的字型標籤（BASE / CANVAS…），左右並排 */
+.gn-fileicon-label {
+  font-family: var(--font-monospace, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  font-size: 16px; font-weight: 600; letter-spacing: .14em;
+  color: var(--text-muted);
+}
+/* 檔型「圖示封面」卡（canvas / base / 尚未渲染縮圖的 pdf）：把 .gn-fileicon 當成圖片卡的封面，
+   版型比照 .gn-card.gn-has-img > img（置頂、滿寬、圓角、同一組最小比例），標題/日期在下方。
+   canvas/pdf 之後抓到真圖時，loadCanvasThumb/loadPdfThumb 會移除本方塊、換成 <img>，無縫接軌。 */
+.gn-card.gn-has-img .gn-fileicon {
+  order: 1;
+  width: 100%; margin: 0;
+  aspect-ratio: auto;              /* 取消原 4/3，改用下面的 min-height 對齊圖片卡 */
+  border-radius: 10px;
+}
+body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; }   /* 桌機 16:9，同圖片卡 */
+.is-mobile .gn-card.gn-has-img .gn-fileicon { min-height: 100cqw; }               /* 手機 1:1，同圖片卡 */
+.gn-mobile-1col .gn-card.gn-has-img .gn-fileicon { min-height: 0; aspect-ratio: 16 / 9; }   /* 手機單欄豁免，退回 16:9 */
 .gn-filetype {
   margin-top: 5px;
   font-family: var(--font-monospace, ui-monospace, "SFMono-Regular", Menlo, monospace);
@@ -483,7 +482,7 @@
   font-variant-numeric: tabular-nums;
 }
 .gn-title {
-  font-size: 13px; font-weight: 700; line-height: 1.3; color: var(--text-normal);   /* 13px＝與 .gn-tname 資料夾名同字級（2026-07-19） */
+  font-size: 13px; font-weight: 600; line-height: 1.3; color: var(--text-normal);   /* 13px＝與 .gn-tname 資料夾名同字級（2026-07-19）；字重 600（2026-07-20） */
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .gn-preview {
@@ -535,41 +534,7 @@
 .gn-fav-row .gn-tthumb { color: var(--text-muted); }
 .gn-fav-row .gn-tthumb svg { width: 16px; height: 16px; }
 
-/* 連結牆（右欄）：沿用卡片牆，分「連結 / 反向連結」兩區 */
-.gn-links-head { display: flex; align-items: center; gap: 6px; white-space: normal; }
-.gn-links-title {
-  flex: 1; min-width: 0;
-  font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-normal);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* 分區 */
-.gn-links-sec { margin-bottom: 22px; }
-.gn-links-sec:last-child { margin-bottom: 4px; }
-
-/* 分區標頭：小標 + 數量藥丸，下方一條髮絲線 */
-.gn-links-sec-head {
-  display: flex; align-items: center; gap: 6px;
-  margin: 0 4px 10px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-normal) 10%, transparent);
-}
-.gn-links-sec-icon { display: flex; align-items: center; color: var(--text-muted); }
-.gn-links-sec-icon svg { width: 14px; height: 14px; }
-.gn-links-sec-label {
-  font-size: 12px; font-weight: 600; letter-spacing: .02em;
-  color: var(--text-muted);
-}
-.gn-links-sec-count {
-  font-size: 11px; font-weight: 600; line-height: 1;
-  padding: 3px 7px; border-radius: 999px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--text-normal) 8%, transparent);
-}
-.gn-links-sec-empty {
-  padding: 10px 4px 4px;
-  font-size: 12px; color: var(--text-faint);
-}
+/* （2026-07-20 移除）連結牆 .gn-links-* 全部樣式：連結牆功能整套下架 */
 
 
 /* 確認刪除對話框按鈕列 */
@@ -716,9 +681,10 @@
    （--background-secondary ≈96.2%）只差 2%，看起來像白色 → 混 6% 前景色，
    亮色主題變淺灰、深色主題變淺一階，任何主題都看得出是一張卡。
    右鍵上色的卡是 inline style，不受影響。 */
-.is-mobile .gn-card {
-  background: color-mix(in srgb, var(--text-normal) 6%, var(--background-secondary));
-}
+/* 手機卡片底色＝桌機同一條 .gn-card 規則（#fff 4% + background-primary）。
+   （2026-07-20 移除手機專屬 override：舊值用 text-normal 6% + background-secondary，
+   會讓手機卡片顏色跟桌機不同。手機 root 已是 background-primary，桌機公式直接適用。
+   若日後又遇到 vault snippet 焦土規則把卡片掃成透明，先修 snippet，別在這裡加回不同底色。） */
 .is-mobile .gn-tree-scroll, .is-mobile .gn-main { touch-action: pan-y; }   /* 子欄只吃垂直捲動；水平由 JS 接管 */
 .is-mobile .gn-split-handle { display: none; }
 .is-mobile .gn-collapse-btn { display: none; }   /* 手機用滑動切換，不需收合鈕 */
@@ -741,18 +707,33 @@
   left: 0; right: 0; bottom: 0; top: auto;   /* 貼齊畫面底邊；再往下就會戳進抽屜、露出色差 */
   z-index: 5;
   width: 100%; max-width: none; margin: 0;
-  padding: 28px 24px 6px;   /* 上方多留白給更長的漸層淡出；左右內距再往內對齊膠囊 */
+  padding: 16px 24px 6px;   /* 給漸層淡入一點上緣空間 */
   border-radius: 0;
   border: none;
-  /* 由上到下：透明 → 底色。卡片捲到工具列後面會平順淡出，底部實色不留色差線 */
-  background: linear-gradient(to bottom, transparent 0%, var(--background-secondary) 72%);
+  /* 工具列底＝漸層淡入到 --gn-mobile-bg（跟 root/tree 同色）：大部分是漸層、只有底部一小截實色，
+     所以「看得到的實色灰」很矮，上方長長地柔和淡入（2026-07-20「矮＋漸層多」）。
+     淡入收在同一個灰 → 不會露白帶。⚠️ 需同時停用 snippet 第 3 段的 background:none 才生效。
+     想更矮/漸層更多 → 把 88% 調大（如 92%）；想實色多一點 → 調小（如 75%）。 */
+  background: linear-gradient(to bottom, transparent 0%, var(--gn-mobile-bg) 88%);
   -webkit-backdrop-filter: none; backdrop-filter: none;
   box-shadow: none;
-  justify-content: space-between;
+  /* 按鈕均分且整體置中（原本 space-between 會把兩組擠到最左最右、中間空一大塊）。
+     配合上方 .gn-bar-group{display:contents}，每顆按鈕之間等距、頭尾也留等距 → 分散對齊置中。 */
+  justify-content: space-evenly;
 }
-/* 手機：整個面板背景透明 → 直接用 Obsidian 抽屜底色，消除底邊色差線（也更像原生側邊欄） */
-.is-mobile .gn-root { background: var(--background-primary); }   /* 手機：滑動雙欄，root 單色 */
-.is-mobile .gn-tree { background: var(--background-primary); }   /* 左欄與 root 同色（2026-07-18 修深色模式灰塊）；滑動覆蓋卡片時仍不透明 */
+/* 手機底色（2026-07-20 三修）：資料夾區與卡片區「一致」。
+   手機是左右滑動（不像桌機兩欄並排），桌機那種「左灰右白」在手機滑動時會看到底色跳一下。
+   → root（卡片區的底）與 gn-tree（資料夾區）用**同一個** --gn-mobile-bg，滑過去底色不變。
+   用前景色混 7% 的固定灰：既不是近白（使用者不要白），深/淺色都成立；
+   卡片本身（#fff 4% + primary，近白）浮在這層灰上＝Notes.app 風。
+   兩者必須是同一個不透明色（滑動時 tree 會蓋在卡牆上）。想更灰/更淡：改 7%。 */
+body.is-mobile {
+  /* 兩行漸進增強：舊引擎不支援 color-mix → 丟棄第二行、退回第一行純色，不會變透明/爆色。 */
+  --gn-mobile-bg: var(--background-secondary);
+  --gn-mobile-bg: color-mix(in srgb, var(--text-normal) 7%, var(--background-primary));
+}
+.is-mobile .gn-root { background: var(--gn-mobile-bg); }
+.is-mobile .gn-tree { background: var(--gn-mobile-bg); }
 .is-mobile .gn-split { height: 100%; }   /* 撐滿 gn-root（工具列改絕對定位、不佔 flex 空間） */
 .is-mobile .gn-bar-group:first-child { border-right: none; margin-right: 0; padding-right: 0; }   /* 手機不畫欄界線 */
 .is-mobile .gn-zoom { display: none; }   /* 手機不需縮放滑桿 */
@@ -1190,24 +1171,15 @@
 
 /* ===== 卡片樣式（todo / video / book，2026-07-18）===== */
 /* 待辦清單卡：卡上直接勾選 */
-.gn-card-todos { order: 3; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
-.gn-card.gn-has-img .gn-card-todos { order: 2; }   /* 圖片卡：標題之後、日期之前 */
+/* .gn-ctodo：待辦列的樣式本體。卡片上的待辦清單已於 2026-07-20 下架，
+   但這組 class 仍由「工具列待辦浮動面板」（.gn-todo-list）沿用，勿刪。 */
 .gn-ctodo { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.45; }
 .gn-ctodo input[type="checkbox"] { margin: 0; flex: none; cursor: pointer; }
 .gn-ctodo-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-normal); }
 .gn-ctodo-done { text-decoration: line-through; color: var(--text-faint); }
 .gn-ctodo-more, .gn-ctodo-none { font-size: 11px; color: var(--text-faint); padding-left: 2px; }
-/* 影片卡：置中播放鈕（YouTube 風黑底白箭頭） */
-.gn-play {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 46px; height: 46px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, .55); color: #fff;
-  z-index: 2; cursor: pointer;
-  transition: transform .12s, background .12s;
-}
-.gn-play:hover { background: rgba(0, 0, 0, .8); transform: translate(-50%, -50%) scale(1.08); }
-.gn-play svg { width: 20px; height: 20px; margin-left: 2px; }
+/* （2026-07-20 移除）.gn-play 影片卡置中播放鈕：自動影片卡整套下架，
+   連同 GN_VIDEO_URL_RE 偵測與 detectVideoCard() 一併移除。 */
 /* 書籍卡 v3（2026-07-19）：真 3D 書本 + 滑鼠跟隨傾斜
    結構：.gn-book-stage（舞台/透視）> .gn-book3d（preserve-3d 盒，JS 給 --bx/--by）
         > img 封面（z=1）+ .gn-bookpages 右側書頁切口 + .gn-bookspine 左書脊 + ::before 底板 */
@@ -1264,11 +1236,14 @@
 .gn-card.gn-style-book.gn-has-img .gn-date { color: var(--text-faint); }
 
 
-/* ===== 圖片卡＝全圖樣式（2026-07-19 復活初代「白字疊圖」，取代「圖上文下」成為預設）=====
-   整張卡＝圖片滿版；標題/日期疊在底部黑色漸層上，桌機 hover 才浮現、手機常駐淡出漸層。
-   文字區 absolute 不佔高 → 卡高＝圖高，純圖牆。無封面的卡維持一般文字版型。
-   本區放檔案末端：同特異度、後者勝 → 蓋掉前面的圖上文下規則（含上色卡字色）。 */
-.gn-card.gn-has-img .gn-body {
+/* ===== 圖片卡版面：兩種可選（2026-07-20 設定 → 卡片牆 → 圖片卡版面）=====
+   預設＝「白字疊圖」（本區）；.gn-root 掛 .gn-imgcard-stacked 時整組不生效，
+   改用檔案前段（.gn-card.gn-has-img 基礎規則，407 行附近）的「圖上文下」版面。
+   本區選擇器全部加 .gn-root:not(.gn-imgcard-stacked) 前綴，
+   同特異度規則不生效時，前段的圖上文下規則自然接手，不用另外重寫一份。 ===== */
+/* 白字疊圖：整張卡＝圖片滿版；標題/日期疊在底部黑色漸層上，桌機 hover 才浮現、手機常駐淡出漸層。
+   文字區 absolute 不佔高 → 卡高＝圖高，純圖牆。 */
+.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-body {
   position: absolute; left: 0; right: 0; bottom: 0;
   z-index: 2;
   padding: 26px 12px 9px;
@@ -1276,10 +1251,10 @@
   opacity: 0; transition: opacity .18s;
   pointer-events: none;   /* 點擊穿透給卡片本體 */
 }
-.gn-card.gn-has-img:hover .gn-body { opacity: 1; }
-.is-mobile .gn-card.gn-has-img .gn-body { opacity: 1; padding-top: 18px; }   /* 手機沒 hover → 常駐 */
-.gn-card.gn-has-img .gn-title { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
-.gn-card.gn-has-img .gn-date { color: rgba(255, 255, 255, .78); }
+.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img:hover .gn-body { opacity: 1; }
+.is-mobile .gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-body { opacity: 1; padding-top: 18px; }   /* 手機沒 hover → 常駐 */
+.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-title { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-date { color: rgba(255, 255, 255, .78); }
 
 /* 手機：圖片卡最小比例 1:1（2026-07-19）——寬幅圖不再變成扁扁一小條。
    container query 單位：100cqw = 卡片寬 → min-height 撐到正方形，object-fit: cover 裁切不變形；
@@ -1314,31 +1289,11 @@ body:not(.is-mobile) .gn-card.gn-has-img > img {
 body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-body { min-height: 56.25cqw; }
 body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padding-top: 7px; }
 
-/* 圖片卡＋待辦並存時：hover 疊層裡的核取方塊要能點（疊層本身 pointer-events:none） */
-.gn-card.gn-has-img .gn-card-todos { pointer-events: auto; }
-
-
-/* ===== 待辦卡 v2（2026-07-19）===== */
-/* 底色＝主題色的對比色（色相 +180°、彩度/明度不變）：跟主題聯動又一眼可辨。
-   相對色語法（hsl from）需 Chromium 119+；不支援時 fallback 用主題色淡化版 */
-.gn-card.gn-style-todo {
-  /* --gn-todo-bg 由 JS 算（accent 色相 +180°、28% 透明）：桌機/手機一致，不依賴相對色語法 */
-  background: var(--gn-todo-bg, color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary)));
-}
-/* 展開/收合切換鈕：右下角小圓鈕 */
-.gn-todo-toggle {
-  position: absolute; right: 6px; bottom: 6px; z-index: 3;
-  width: 22px; height: 22px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--text-normal) 8%, transparent);
-  cursor: pointer; opacity: .85;
-  transition: opacity .12s, background .12s;
-}
-.gn-todo-toggle:hover { opacity: 1; background: color-mix(in srgb, var(--text-normal) 14%, transparent); }
-.gn-todo-toggle svg { width: 14px; height: 14px; }
-/* 清單與按鈕不打架：body 底部多留一點空間 */
-.gn-card.gn-style-todo .gn-body { padding-bottom: 26px; }
+/* ===== 待辦卡（2026-07-20 整套下架）=====
+   卡片不再渲染核取方塊清單，待辦筆記＝一般卡片（內文預覽）。
+   已移除：.gn-card-todos 版位、.gn-card.gn-style-todo 底色與 padding、
+          右下角 .gn-todo-toggle 切換鈕、對比底色 --gn-todo-bg（JS 計算一併移除）。
+   待辦清單現在只有一個入口＝工具列的浮動面板（.gn-todo-pop）。 */
 
 
 /* 標籤複選（Cmd+點，合併用）：與單選 gn-tsel 區隔的主題色膠囊 */

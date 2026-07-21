@@ -9,7 +9,6 @@
 const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
 
-const GN_BUILD = '2026-07-17 i18n';   // 手機診斷用：確認 iCloud 同步到的是哪一版
 
 const PIN_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const PIN_ENDPOINT = 'https://api.pinterest.com/v3/visual_search/extension/image/';
@@ -636,9 +635,9 @@ function setFolderIcon(el, open) {
 }
 
 function iconForExt(ext) {
-  if (ext === 'canvas') return 'layout-dashboard';
+  if (ext === 'canvas') return 'frame';        // 畫布（artboard 風）
   if (ext === 'pdf') return 'file-text';
-  if (ext === 'base') return 'database';
+  if (ext === 'base') return 'layout-grid';    // 圖庫（2x2 四格）
   if (/^(mp4|mov|webm|mkv|avi|m4v)$/.test(ext)) return 'file-video';
   if (/^(mp3|wav|m4a|flac|ogg|aac)$/.test(ext)) return 'file-audio';
   if (/^(zip|rar|7z|gz|tar)$/.test(ext)) return 'file-archive';
@@ -693,22 +692,11 @@ const CARD_PALETTE = [
 ];
 const CARD_PALETTE_BY_KEY = Object.fromEntries(CARD_PALETTE.map((p) => [p.key, p]));
 
-// 影片連結偵測（2026-07-19 自動影片卡）：限定「影片內容頁」網址，頻道/個人頁不算
-const GN_VIDEO_URL_RE = new RegExp(
-  'https?://(?:www\\.|m\\.|music\\.|v\\.|vm\\.|vt\\.)?(?:' + [
-    'youtube\\.com/(?:watch|shorts|embed)[^\\s)\\]"\'<>]*',   // YouTube 影片頁
-    'youtu\\.be/[^\\s)\\]"\'<>]+',
-    'vimeo\\.com/\\d[^\\s)\\]"\'<>]*',
-    'instagram\\.com/reel/[^\\s)\\]"\'<>]+',                  // IG Reel（/p/ 圖文不算）
-    'douyin\\.com/[^\\s)\\]"\'<>]+',                          // 抖音（v.douyin.com 短連結 / douyin.com/video）
-    'tiktok\\.com/[^\\s)\\]"\'<>]+',                          // TikTok（vm./vt. 短連結）
-    'bilibili\\.com/video/[^\\s)\\]"\'<>]+',                  // B 站
-    'b23\\.tv/[^\\s)\\]"\'<>]+',
-  ].join('|') + ')', 'i');
+// （2026-07-20 移除）GN_VIDEO_URL_RE：自動影片卡下架，卡片不再偵測影片連結
 
 // 卡片樣式選項（2026-07-18）：[key, i18n label, lucide icon]；null = 預設
 const CARD_STYLES = [
-  [null, 'Auto (default)', 'sparkles'],            // 跟著內容走（有影片連結→自動播放鈕）
+  [null, 'Auto (default)', 'sparkles'],            // 2026-07-20 起自動偵測已全部下架（待辦卡/影片卡），此項等同一般卡片
   ['plain', 'Plain card', 'rectangle-horizontal'], // 強制一般卡片（抑制自動偵測）
   ['todo', 'To-do list card', 'list-checks'],
   // 書籍卡/影片卡手動樣式暫時下架（2026-07-19 使用者要求；程式保留休眠，恢復＝加回此清單）
@@ -976,7 +964,7 @@ class GalleryView extends ItemView {
       const tag = (e.target && e.target.tagName) || '';
       if (/^(input|textarea)$/i.test(tag)) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) {
-        if (this._hover && !this.graphFocus && this._cardOrder && this._cardOrder.length) {
+        if (this._hover && this._cardOrder && this._cardOrder.length) {
           e.preventDefault();
           this.selectAll();
         }
@@ -1031,10 +1019,9 @@ class GalleryView extends ItemView {
     if (this.plugin.state.leftMode === 'tag') return;   // 標籤模式不做資料夾定位
     if (!(file instanceof TFile)) return;
     const curFolder = file.parent && file.parent.path !== '/' ? file.parent.path : '';
-    if (curFolder === this.path && this.activePath === file.path && !this.graphFocus) return;  // 無變化不重繪
-    // 同資料夾內換檔（且不在關聯圖）→ 只更新 active 卡片，不整頁重畫（避免 PDF 縮圖等重載）
-    if (curFolder === this.path && !this.graphFocus) { this.setActiveCard(file.path); return; }
-    this.graphFocus = null;                       // 開筆記時離開關聯圖
+    if (curFolder === this.path && this.activePath === file.path) return;  // 無變化不重繪
+    // 同資料夾內換檔 → 只更新 active 卡片，不整頁重畫（避免 PDF 縮圖等重載）
+    if (curFolder === this.path) { this.setActiveCard(file.path); return; }
     const parent = file.parent;
     const folderPath = parent && parent.path !== '/' ? parent.path : '';
     const expanded = new Set(this.plugin.state.expandedFolders || []);
@@ -1059,6 +1046,11 @@ class GalleryView extends ItemView {
         sel.scrollIntoView({ block: 'nearest' });
         this.saveTreeScroll();   // 同步定位造成的捲動也要記下來
       });
+      // 跨資料夾定位 bug 修正（2026-07-20）：原本只捲了左欄樹到資料夾，右欄卡片牆沒捲到 active 卡片。
+      // render 後補捲一次（立即＋400ms），等分批渲染/縮圖延遲載入造成的高度變化穩定再定位一次。
+      // 若 active 筆記在分批渲染的第一批之外，卡片尚未建立 → setActiveCard 找不到就先略過（同最愛定位的既有限制）。
+      this.setActiveCard(file.path);
+      window.setTimeout(() => this.setActiveCard(file.path), 400);
     });
   }
 
@@ -1123,36 +1115,7 @@ class GalleryView extends ItemView {
     window.setTimeout(blurNow, 160);
   }
 
-  // 這則筆記「連結出去」的 md 筆記（已建立的）
-  outgoingMdFiles(file) {
-    const res = this.app.metadataCache.resolvedLinks[file.path] || {};
-    const out = [];
-    for (const p of Object.keys(res)) {
-      const f = this.app.vault.getAbstractFileByPath(p);
-      if (f instanceof TFile && f.extension === 'md') out.push(f);
-    }
-    return out;
-  }
-
-  // 「連結進來」的 md 筆記（backlinks：誰引用了這則）
-  incomingMdFiles(file) {
-    const all = this.app.metadataCache.resolvedLinks;
-    const out = [];
-    for (const src of Object.keys(all)) {
-      if (src !== file.path && all[src][file.path]) {
-        const f = this.app.vault.getAbstractFileByPath(src);
-        if (f instanceof TFile && f.extension === 'md') out.push(f);
-      }
-    }
-    return out;
-  }
-
-  // 在右欄開啟自製關聯圖（canvas / 心智圖風）
-  showLinks(file) {
-    this.graphFocus = file.path;
-    this.render();
-    this.gotoCardsMobile();   // 手機：關聯圖畫在右欄，維持停在右欄
-  }
+  // （2026-07-20 移除）連結牆整套下架：outgoingMdFiles / incomingMdFiles / showLinks / renderLinksWall 一併移除。
 
   // 在資料夾內新建檔案（自動避開同名），建立後開啟。ext: md / canvas / base
   async newFile(folder, ext, content) {
@@ -1364,6 +1327,20 @@ class GalleryView extends ItemView {
       else this.render();
     };
 
+    /* ── 待辦筆記（2026-07-20）：工具列待辦鈕改成「有指定才顯示」，
+         這裡是沒指定時唯一的設定入口，指定後鈕就會回到工具列 ──
+         ⏸️ 暫時停用（2026-07-20 使用者要求）：連同工具列待辦鈕一起註解，恢復＝取消本區與工具列同標記區塊的註解 */
+    /*
+    const todoRow = pop.createDiv('gn-more-row');
+    const tdIcon = todoRow.createSpan('gn-more-icon');
+    setIcon(tdIcon, 'list-checks');
+    const tdFile = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
+    todoRow.createSpan('gn-more-text').setText(
+      tdFile instanceof TFile ? t('To-do note: {{name}}', { name: tdFile.basename }) : t('Pick a to-do note')
+    );
+    todoRow.onclick = () => { this.closeMorePopover(); this.pickTodoNote(); };
+    */
+
     /* ── 重新整理 ── */
     const refreshRow = pop.createDiv('gn-more-row');
     const rIcon = refreshRow.createSpan('gn-more-icon');
@@ -1511,57 +1488,6 @@ class GalleryView extends ItemView {
     this.setPane('cards');
   }
 
-  // 診斷用（行車記錄器版）：執行後「武裝 10 秒」，這期間去點一個會失敗的資料夾，
-  // 它會記錄 setPane / gotoCardsMobile / render 的呼叫時間軸 + 每 200ms 取樣兩欄實際位置，
-  // 10 秒後把整條時間軸用 Notice 顯示出來（手機沒 console，全靠這個）。
-  diagnoseMobileScroll() {
-    if (this._diagArmed) { new Notice('已在記錄中…'); return; }
-    this._diagArmed = true;
-    const log = [];
-    const t0 = Date.now();
-    const stamp = () => ((Date.now() - t0) / 1000).toFixed(1) + 's';
-
-    // 靜態環境檢查（styles.css 舊版一眼看出）
-    const tree0 = this._split && this._split.querySelector('.gn-tree');
-    if (tree0) {
-      const ct = getComputedStyle(tree0);
-      if (!/transform/.test(ct.transitionProperty)) log.push('⚠️ 左欄無 transform transition ＝ styles.css 是舊版');
-      log.push('0.0s 起點 _pane=' + this._pane + ' shift=' + (this._split.style.getPropertyValue('--gn-shift') || '(未設)'));
-    }
-
-    // 包住三個關鍵方法，記錄呼叫與拋錯
-    const V = this;
-    const wrap = (name) => {
-      const orig = V[name];
-      V[name] = function (...a) {
-        log.push(stamp() + ' ' + name + '(' + a.map(String).join(',') + ')');
-        try { return orig.apply(V, a); }
-        catch (e) { log.push(stamp() + ' ❌ ' + name + ' 拋錯: ' + (e && e.message ? e.message : e)); throw e; }
-      };
-      return () => { V[name] = orig; };
-    };
-    const restores = ['setPane', 'gotoCardsMobile', 'renderInner'].map(wrap);
-
-    // 每 200ms 取樣：pane / 右欄相對位置 / split 有沒有被水平捲動（值變了才記）
-    let last = '';
-    const iv = setInterval(() => {
-      const split = V._split, main = V._main;
-      if (!split || !main || !split.isConnected) return;
-      const sr = split.getBoundingClientRect(), mr = main.getBoundingClientRect();
-      const cur = 'pane=' + (split.dataset.pane || '-') + ' mainΔ=' + Math.round(mr.left - sr.left) + ' sL=' + Math.round(split.scrollLeft);
-      if (cur !== last) { log.push(stamp() + ' ' + cur); last = cur; }
-    }, 200);
-
-    new Notice('🩺 開始記錄 10 秒——現在去點一個「不會跳」的資料夾', 5000);
-    setTimeout(() => {
-      clearInterval(iv);
-      restores.forEach((r) => r());
-      this._diagArmed = false;
-      // mainΔ≈左欄寬(~86%畫面) ＝ 停在左欄；mainΔ≈0 ＝ 已滑到卡片欄；sL>0 ＝ split 被水平捲動（不該發生）
-      new Notice('版本: ' + GN_BUILD + '\n' + (log.join('\n') || '（10 秒內沒有任何事件）'), 60000);
-    }, 10000);
-  }
-
   // 桌機才有「在 Finder 顯示」（行動裝置的 adapter 沒有 getFullPath）
   canReveal() {
     const a = this.app.vault.adapter;
@@ -1602,6 +1528,40 @@ class GalleryView extends ItemView {
         if (src !== file.path && res[src] && res[src][f.path]) { used = true; break; }
       }
       if (!used) out.push(f);
+    }
+    return out;
+  }
+
+  // 批次版孤兒判定（2026-07-20）：一次刪多個筆記時，附件只要「所有引用它的筆記都在刪除清單內」
+  // 就算孤兒——單筆版的 orphanAttachmentsOf 會把「被另一個也要刪的筆記引用」誤判成非孤兒。
+  orphanAttachmentsOfMany(paths) {
+    const mc = this.app.metadataCache;
+    const res = mc.resolvedLinks || {};
+    const delSet = new Set(paths);
+    const candidates = new Set();   // 被刪筆記引用到的非 md 附件路徑
+    const byPath = new Map();
+    for (const p of paths) {
+      const file = this.app.vault.getAbstractFileByPath(p);
+      if (!(file instanceof TFile)) continue;
+      const cache = mc.getFileCache(file);
+      if (!cache) continue;
+      for (const r of [...(cache.embeds || []), ...(cache.links || [])]) {
+        const lp = String(r.link || '').split('#')[0].split('|')[0].trim();
+        if (!lp) continue;
+        const f = mc.getFirstLinkpathDest(lp, file.path);
+        if (!(f instanceof TFile) || f.extension === 'md') continue;
+        if (delSet.has(f.path)) continue;   // 附件自己也在刪除清單 → 主迴圈會處理，不重複
+        candidates.add(f.path); byPath.set(f.path, f);
+      }
+    }
+    const out = [];
+    for (const ap of candidates) {
+      let externalRef = false;
+      for (const src of Object.keys(res)) {
+        if (delSet.has(src)) continue;                       // 被刪的來源不算引用
+        if (res[src] && res[src][ap]) { externalRef = true; break; }
+      }
+      if (!externalRef) out.push(byPath.get(ap));
     }
     return out;
   }
@@ -2099,7 +2059,7 @@ class GalleryView extends ItemView {
     try {
       this.renderInner();
     } catch (e) {
-      console.error('Gallery render 錯誤', e);
+      console.error('[Gallery Navigator] render error', e);
       new Notice(t('Gallery render error: {{msg}}', { msg: e && e.message ? e.message : e }), 10000);
     }
   }
@@ -2121,34 +2081,15 @@ class GalleryView extends ItemView {
     this._treeScrollLock = true;
     root.empty();
     root.addClass('gn-root');
-    // 待辦卡對比色：JS 計算（CSS 相對色語法在舊版桌面 Chromium 不支援，
-    // 會退回 fallback 造成桌機/手機顏色不一致，2026-07-19 修）——
-    // 讀實際 accent → 轉 HSL → 色相 +180° → 寫進 --gn-todo-bg（含 28% 透明）
-    try {
-      const probe = document.body.createDiv();
-      probe.style.color = 'var(--interactive-accent)';
-      const rgb = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g);
-      probe.remove();
-      if (rgb && rgb.length >= 3) {
-        const [r, g, b] = rgb.slice(0, 3).map((x) => (+x) / 255);
-        const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
-        const l = (mx + mn) / 2;
-        const sHsl = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-        let h = 0;
-        if (d) {
-          if (mx === r) h = ((g - b) / d) % 6;
-          else if (mx === g) h = (b - r) / d + 2;
-          else h = (r - g) / d + 4;
-          h *= 60; if (h < 0) h += 360;
-        }
-        root.style.setProperty('--gn-todo-bg',
-          'hsla(' + ((h + 180) % 360).toFixed(0) + ', ' + (sHsl * 100).toFixed(0) + '%, ' + (l * 100).toFixed(0) + '%, 0.28)');
-      }
-    } catch (e) {}
+    // （2026-07-20 移除）待辦卡對比色計算：底色已取消，不再需要 --gn-todo-bg
 
     // 手機單欄時掛狀態 class：豁免「卡片最小 1:1」限制（單欄全寬卡不需要，2026-07-19）
     root.toggleClass('gn-mobile-1col',
       document.body.classList.contains('is-mobile') && (this.plugin.state.mobileCols || 2) === 1);
+
+    // 圖片卡版面（2026-07-20，設定 → 卡片牆 可選）：預設「白字疊圖」（圖滿版）；
+    // 'stacked' ＝ 舊版「圖上文下」，CSS 用 .gn-imgcard-stacked 切回底層規則（見 gallery.css）。
+    root.toggleClass('gn-imgcard-stacked', this.plugin.state.imageCardLayout === 'stacked');
 
     // 手機：contentEl 本身就是 .view-content；它的父層（.workspace-leaf-content）
     // 在手機不是 flex 直向，導致 gn-root 撐不滿高度 → 底部工具列上方留白。
@@ -2231,30 +2172,41 @@ class GalleryView extends ItemView {
     if (!isMobileUI && treeHidden) root.style.setProperty('--gn-treew', '-1px');   // 左欄收合 → 整塊主底色（-1px：連交界線一起滑出畫面）
 
     // 左：收合 / 展開資料夾面板
-    const collapseBtn = barL.createDiv('gn-btn gn-collapse-btn');
-    setIcon(collapseBtn, treeHidden ? 'panel-left-open' : 'panel-left-close');
-    collapseBtn.setAttr('title', treeHidden ? t('Expand folder pane') : t('Collapse folder pane'));
-    collapseBtn.onclick = () => {
-      if (this._searchOn) { this._searchTreeOpen = !this._searchTreeOpen; this.render(); return; }   // 搜尋中：只切這次
-      state.treeCollapsed = !state.treeCollapsed;
-      this.plugin.saveState();
-      this.render();
-    };
+    // 精簡（2026-07-20）：桌機「左欄展開時」不顯示——分隔線 hover 已有同功能的收合鈕。
+    // ⚠️ 但收合後分隔線本身也 display:none（見下方 treeHidden 分支）→ 那時**必須**留展開鈕，
+    //    否則左欄再也叫不回來。手機沒有分隔線 hover，一律保留。
+    if (isMobileUI || treeHidden) {
+      const collapseBtn = barL.createDiv('gn-btn gn-collapse-btn');
+      setIcon(collapseBtn, treeHidden ? 'panel-left-open' : 'panel-left-close');
+      collapseBtn.setAttr('title', treeHidden ? t('Expand folder pane') : t('Collapse folder pane'));
+      collapseBtn.onclick = () => {
+        if (this._searchOn) { this._searchTreeOpen = !this._searchTreeOpen; this.render(); return; }   // 搜尋中：只切這次
+        state.treeCollapsed = !state.treeCollapsed;
+        this.plugin.saveState();
+        this.render();
+      };
+    }
 
     // 左：待辦按鈕（點了彈出面板；徽章顯示未完成數）
-    const todoBtn = barL.createDiv('gn-btn gn-todo-btn');
-    setIcon(todoBtn, 'list-checks');
-    todoBtn.setAttr('title', t('To-dos'));
-    const todoBadge = todoBtn.createSpan('gn-todo-badge');
-    todoBadge.style.display = 'none';
+    // ⏸️ 暫時停用（2026-07-20 使用者要求）：整顆待辦鈕連同「更多」面板的「選擇待辦筆記」一起註解。
+    //    恢復＝取消本區與 openMorePopover() 內同標記區塊的註解（openTodoPopover/renderTodoInto/pickTodoNote 都留著）。
+    // 精簡（2026-07-20）：**沒指定待辦筆記就不顯示**——那時這顆鈕只是個空殼。
+    // 設定入口改放「⋯ 更多」面板的「選擇待辦筆記」，指定後這顆鈕就會回到工具列。
+    /*
     const tf = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
     if (tf instanceof TFile) {
+      const todoBtn = barL.createDiv('gn-btn gn-todo-btn');
+      setIcon(todoBtn, 'list-checks');
+      todoBtn.setAttr('title', t('To-dos'));
+      const todoBadge = todoBtn.createSpan('gn-todo-badge');
+      todoBadge.style.display = 'none';
       this.app.vault.cachedRead(tf).then((raw) => {
-        const undone = parseTasks(raw).filter((t) => !t.done).length;
+        const undone = parseTasks(raw).filter((x) => !x.done).length;   // ⚠️ 勿叫 t（遮蔽 i18n）
         if (undone > 0) { todoBadge.style.display = ''; todoBadge.setText(String(undone)); }
       }).catch(() => {});
+      todoBtn.onclick = (e) => { e.stopPropagation(); this.openTodoPopover(todoBtn); };
     }
-    todoBtn.onclick = (e) => { e.stopPropagation(); this.openTodoPopover(todoBtn); };
+    */
 
     // 左：資料夾 ⇄ 標籤 模式切換
     const modeBtn = barL.createDiv('gn-btn');
@@ -2278,11 +2230,16 @@ class GalleryView extends ItemView {
       eye.onclick = () => { this.showHidden = !this.showHidden; this.render(); };
     }
 
-    // 右：新建（筆記 / Canvas / Base / 資料夾）—— 常用，留在工具列上
-    const newBtn = barR.createDiv('gn-btn');
-    setIcon(newBtn, 'file-plus');
-    newBtn.setAttr('title', t('Create here (folder / note / canvas / base)'));
-    newBtn.onclick = (e) => this.newFileMenu(this.folderAt(this.path), e);
+    // 右：新建（筆記 / Canvas / Base / 資料夾）
+    // 精簡（2026-07-20）：**只在資料夾情境顯示**。搜尋牆沒有「這個資料夾」的概念，
+    // 「在此新建」在那裡沒有語意（會建到上次的 this.path，是個陷阱）。
+    const inFolderView = !this._searchOn;
+    if (inFolderView) {
+      const newBtn = barR.createDiv('gn-btn');
+      setIcon(newBtn, 'file-plus');
+      newBtn.setAttr('title', t('Create here (folder / note / canvas / base)'));
+      newBtn.onclick = (e) => this.newFileMenu(this.folderAt(this.path), e);
+    }
 
     // 右：⋯ 更多（排序 / 卡片大小滑桿 / 攤平 / 重新整理 → 單層浮動面板）
     const moreBtn = barR.createDiv('gn-btn');
@@ -2600,7 +2557,6 @@ class GalleryView extends ItemView {
   // 識別「目前右欄是哪一面牆」：換牆（換資料夾/標籤/搜尋詞）就不還原捲動，自然從頂部開始
   mainScrollKey() {
     if (this._searchQ) return 'search:' + this._searchQ;
-    if (this.graphFocus) return 'links:' + this.graphFocus;
     if (this.plugin.state.leftMode === 'tag') return 'tag:' + (this.plugin.state.activeTag || '');
     return 'folder:' + (this.path || '');
   }
@@ -2632,17 +2588,11 @@ class GalleryView extends ItemView {
   // 右欄內容的分派。抽出來是為了讓搜尋打字時能「只重繪右欄」——
   // 若每次打字都跑整個 render()，輸入框會被重建 → 立刻失焦，根本沒法打字。
   renderMainContent(main, zoom) {
-    if (this._barTitle) this._barTitle.empty();   // 各檢視自己填；連結牆等自帶表頭者留空
+    if (this._barTitle) this._barTitle.empty();   // 各檢視自己填
     const state = this.plugin.state;
     if (this._searchQ) { this.renderSearchWall(main, zoom); return; }
-    const gf = this.graphFocus ? this.app.vault.getAbstractFileByPath(this.graphFocus) : null;
-    if (gf instanceof TFile) {
-      this.renderLinksWall(main, gf, zoom);
-    } else {
-      this.graphFocus = null;
-      if (state.leftMode === 'tag') this.renderTagNotes(main, zoom);
-      else this.renderNoteWall(main, this.folderAt(this.path), zoom);
-    }
+    if (state.leftMode === 'tag') this.renderTagNotes(main, zoom);
+    else this.renderNoteWall(main, this.folderAt(this.path), zoom);
   }
 
   // 只重繪右欄（打字時用；搜尋列在 gn-root 底下，不會被清掉 → 保持焦點）
@@ -2699,75 +2649,10 @@ class GalleryView extends ItemView {
     menu.showAtMouseEvent(e);
   }
 
-  // 自動影片卡：讀內容找影片連結（cachedRead 有快取，成本極低），
-  // 找到就浮出播放鈕；找不到就什麼都不做（維持原卡）
-  async detectVideoCard(file, card) {
-    try {
-      if (!card.isConnected || card.querySelector('.gn-play')) return;
-      // 優先讀 frontmatter：ig_sync 對影片貼文寫 video: true（IG /p/ 網址分不出圖文/影片，
-      // 只有同步當下的 API 知道）→ 免讀檔、連結直接用 source:
-      const fm = (this.app.metadataCache.getFileCache(file) || {}).frontmatter;
-      let url = null;
-      if (fm && (fm.video === true || fm.video === 'true') && fm.source) url = String(fm.source);
-      if (!url) {
-        const raw = await this.app.vault.cachedRead(file);
-        const m = raw.match(GN_VIDEO_URL_RE);
-        if (!m) return;
-        url = m[0];
-      }
-      if (!card.isConnected) return;
-      const pb = card.createDiv('gn-play');
-      setIcon(pb, 'play');
-      pb.setAttr('title', t('Play video'));
-      pb.onclick = (e) => { e.stopPropagation(); window.open(url, '_blank'); };
-    } catch (e) {}
-  }
+  // （2026-07-20 移除）detectVideoCard()：自動影片卡整套下架
 
-  // 待辦卡（2026-07-19 v3）：顯示全部任務；右下小鈕切換「隱藏已完成 ⇄ 顯示全部」
-  //（篩選狀態每卡獨立、存 data.json 跨裝置同步）
-  async loadCardTodos(file, el) {
-    try {
-      const raw = await this.app.vault.cachedRead(file);
-      const tasks = parseTasks(raw);
-      el.empty();
-      if (!tasks.length) { el.createDiv({ cls: 'gn-ctodo-none', text: t('No to-dos in this note') }); return; }
-      const hideSet = new Set(this.plugin.state.todoHideDoneCards || []);
-      const hideDone = hideSet.has(file.path);
-      const doneCount = tasks.filter((x) => x.done).length;
-      const shown = hideDone ? tasks.filter((x) => !x.done) : tasks;
-      for (const task of shown) {
-        const row = el.createDiv('gn-ctodo');
-        row.onclick = (e) => e.stopPropagation();   // 勾選不觸發開啟筆記
-        const chk = row.createEl('input', { type: 'checkbox' });
-        chk.checked = task.done;
-        chk.onclick = (e) => { e.stopPropagation(); this.toggleTask(file, task.line); };
-        row.createSpan({ cls: 'gn-ctodo-text' + (task.done ? ' gn-ctodo-done' : ''), text: task.text });
-      }
-      if (hideDone && doneCount) el.createDiv({ cls: 'gn-ctodo-more', text: '✓ ' + doneCount });
-      if (hideDone && !shown.length) el.createDiv({ cls: 'gn-ctodo-none', text: t('All done 🎉') });
+  // （2026-07-20 移除）loadCardTodos()：卡片上的待辦清單已下架，待辦只留浮動面板。
 
-      // 右下角切換鈕：有已完成事項才出現
-      const card = el.closest('.gn-card');
-      if (card) {
-        let btn = card.querySelector('.gn-todo-toggle');
-        if (doneCount > 0) {
-          if (!btn) btn = card.createDiv('gn-todo-toggle');
-          btn.empty();
-          setIcon(btn, hideDone ? 'eye-off' : 'eye');
-          btn.setAttr('title', hideDone ? t('Show completed') : t('Hide completed'));
-          btn.onclick = (e) => {
-            e.stopPropagation();
-            const set = new Set(this.plugin.state.todoHideDoneCards || []);
-            if (set.has(file.path)) set.delete(file.path); else set.add(file.path);
-            this.plugin.state.todoHideDoneCards = [...set];
-            this.plugin.saveState();
-            this.loadCardTodos(file, el);   // 就地重畫這張卡的清單
-          };
-        } else if (btn) btn.remove();
-      }
-      this.relayoutWalls();
-    } catch (e) {}
-  }
 
   async toggleTask(file, lineNo) {
     try {
@@ -2816,12 +2701,39 @@ class GalleryView extends ItemView {
     const head = box.createDiv('gn-todo-head');
     head.style.cursor = 'default';
     head.createSpan('gn-todo-title').setText(t('To-dos'));
-    const gear = head.createSpan('gn-todo-gear');
+    const acts = head.createDiv('gn-todo-acts');
+
+    const file = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
+
+    // 開啟待辦來源筆記（錨定的那則）
+    if (file instanceof TFile) {
+      const openBtn = acts.createSpan('gn-todo-act');
+      setIcon(openBtn, 'file-text');
+      openBtn.setAttr('title', t('Open the to-do note'));
+      openBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.openNote(file, false);
+        if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; }
+      };
+    }
+
+    // 顯示 / 隱藏已完成（預設只顯示未完成）
+    const hideDone = state.todoHideDone !== false;
+    const eye = acts.createSpan('gn-todo-act');
+    setIcon(eye, hideDone ? 'eye-off' : 'eye');
+    eye.setAttr('title', hideDone ? t('Show completed') : t('Hide completed'));
+    eye.onclick = (e) => {
+      e.stopPropagation();
+      state.todoHideDone = !hideDone;
+      this.plugin.saveState();
+      this.renderTodoInto(box);
+    };
+
+    const gear = acts.createSpan('gn-todo-act');
     setIcon(gear, 'settings');
     gear.setAttr('title', t('Pick a to-do note'));
     gear.onclick = (e) => { e.stopPropagation(); this.pickTodoNote(); };
 
-    const file = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
     if (!(file instanceof TFile)) {
       const empty = box.createDiv('gn-todo-empty');
       setIcon(empty.createSpan('gn-todo-empty-ic'), 'plus');
@@ -2831,25 +2743,29 @@ class GalleryView extends ItemView {
     }
 
     const list = box.createDiv('gn-todo-list');
-    list.createDiv('gn-todo-none').setText(t('Loading…'));
+    list.createDiv('gn-ctodo-none').setText(t('Loading…'));
     this.app.vault.cachedRead(file).then((raw) => {
       list.empty();
-      const tasks = parseTasks(raw);
-      if (!tasks.length) { list.createDiv('gn-todo-none').setText(t('No to-dos')); return; }
+      const all = parseTasks(raw);
+      if (!all.length) { list.createDiv('gn-ctodo-none').setText(t('No to-dos')); return; }
+      const doneCount = all.filter((x) => x.done).length;
+      const tasks = hideDone ? all.filter((x) => !x.done) : all;
+      if (!tasks.length) { list.createDiv('gn-ctodo-none').setText(t('All done 🎉')); return; }
+      // gn-ctodo：原生核取方塊 + 單行省略（卡片版下架後，這是唯一使用者）
       for (const task of tasks) {   // ⚠️ 迴圈變數勿叫 t，會遮蔽 i18n 的 t()
-        const item = list.createDiv('gn-todo-item');
+        const item = list.createDiv('gn-todo-item gn-ctodo');
         item.style.setProperty('--td-depth', String(task.depth));
-        if (task.done) item.addClass('gn-todo-done');
-        const chk = item.createSpan('gn-todo-check');
-        if (task.done) setIcon(chk, 'check');
+        const chk = item.createEl('input', { type: 'checkbox' });
+        chk.checked = task.done;
         chk.setAttr('title', task.done ? t('Mark as not done') : t('Mark as done'));
         chk.onclick = (e) => { e.stopPropagation(); this.toggleTask(file, task.line); };
-        item.createSpan('gn-todo-text').setText(task.text);
+        item.createSpan({ cls: 'gn-ctodo-text' + (task.done ? ' gn-ctodo-done' : ''), text: task.text });
         item.onclick = () => this.openNote(file, false);
       }
+      if (hideDone && doneCount) list.createDiv('gn-ctodo-more').setText('✓ ' + doneCount);
     }).catch(() => {
       list.empty();
-      list.createDiv('gn-todo-none').setText(t('Cannot read the to-do note'));
+      list.createDiv('gn-ctodo-none').setText(t('Cannot read the to-do note'));
     });
   }
 
@@ -3206,14 +3122,28 @@ class GalleryView extends ItemView {
   }
   deleteSelected() {
     const paths = [...this.selected];
-    new ConfirmModal(this.app, t('Delete the {{n}} selected items? (moves to trash)', { n: paths.length }), async () => {
+    // 連同孤兒附件（2026-07-20，比照單筆刪除）：確認視窗多一個勾選項（預設勾）
+    const orphans = this.orphanAttachmentsOfMany(paths);
+    const extra = orphans.length ? {
+      label: t('Also delete {{n}} attachment(s) not referenced by any other note', { n: orphans.length }),
+      items: orphans.map((f) => f.path),
+      checked: true,
+    } : null;
+    new ConfirmModal(this.app, t('Delete the {{n}} selected items? (moves to trash)', { n: paths.length }), async (withExtra) => {
       for (const p of paths) {
         const f = this.app.vault.getAbstractFileByPath(p);
         if (f) { try { await this.app.fileManager.trashFile(f); } catch (e) {} }
       }
+      let n = 0;
+      if (withExtra) {
+        for (const f of orphans) { try { await this.app.fileManager.trashFile(f); n++; } catch (e) {} }
+      }
       this.selected.clear();
       this.render();
-    }).open();
+      new Notice(n
+        ? t('Moved {{c}} items to trash (+{{n}} attachments)', { c: paths.length, n })
+        : t('Moved {{c}} items to trash', { c: paths.length }));
+    }, extra).open();
   }
 
 
@@ -3241,8 +3171,6 @@ class GalleryView extends ItemView {
         obs.unobserve(en.target);
         const card = en.target;
         if (card._prevFile && card._prevEl) { this.loadPreview(card._prevFile, card._prevEl); card._prevFile = null; }
-        if (card._todoFile && card._todoEl) { this.loadCardTodos(card._todoFile, card._todoEl); card._todoFile = null; }
-        if (card._vidFile) { this.detectVideoCard(card._vidFile, card); card._vidFile = null; }
         if (card._ogFile) { this.loadLinkPreview(card._ogFile, card); card._ogFile = null; }
         if (card._pdfFile) { this.loadPdfThumb(card._pdfFile, card, card._pdfPh); card._pdfFile = null; }
       }
@@ -3291,10 +3219,9 @@ class GalleryView extends ItemView {
     const isMd = it.ext === 'md';
     // 全自動樣式（2026-07-19，手動樣式選單已移除）：
     // 有核取方塊的筆記 → 自動待辦卡（metadataCache.listItems 同步判斷，零讀檔）
-    const mdCache = isMd ? this.app.metadataCache.getFileCache(it.file) : null;
-    const hasTasks = !!(mdCache && mdCache.listItems && mdCache.listItems.some((x) => x.task !== undefined));
-    if (hasTasks) card.addClass('gn-style-todo');
-    const skipPreview = !!o.skipPreview || hasTasks;   // 待辦卡：任務清單取代內文預覽
+    // （2026-07-20 移除）自動待辦卡：卡片不再渲染核取方塊清單，待辦筆記＝一般卡片（內文預覽）。
+    // 待辦清單只留工具列的浮動面板一個入口。
+    const skipPreview = !!o.skipPreview;
 
     // 卡片底色（feature 1）：底色 + 對比字色
     const cp = cardColors[it.file.path] && CARD_PALETTE_BY_KEY[cardColors[it.file.path]];
@@ -3318,15 +3245,6 @@ class GalleryView extends ItemView {
     if (this._searchQ) gnHighlightInto(titleEl, it.name, gnHighlightTerms(this._searchQ));
     else titleEl.setText(it.name);
 
-    // 自動影片卡（2026-07-19）：所有 md 捲到時偵測內容有無影片連結
-    if (isMd) card._vidFile = it.file;
-
-    // 自動待辦卡：卡上直接勾（清單捲到才載入，走既有延遲載入管線）
-    if (hasTasks) {
-      card._todoEl = body.createDiv('gn-card-todos');
-      card._todoFile = it.file;
-    }
-
     if (it.src) {
       // 有封面 → 圖片在上、標題/日期在下
       card.addClass('gn-has-img');
@@ -3336,10 +3254,12 @@ class GalleryView extends ItemView {
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
       // 圖片卡不顯示內文（2026-07-18 使用者移除 hover 內文功能，也省下讀檔）
     } else if (!isMd) {
-      // 非 md 且無封面 → 檔型圖示卡；Canvas 抓內部圖、PDF 渲染第一頁當縮圖
-      body.createDiv('gn-filetype').setText(it.ext.toUpperCase());
+      // 非 md 且無封面 → 檔型「圖示封面」卡：套 gn-has-img 圖片卡版型（icon 方塊當封面、標題/日期在下），
+      //   與圖片卡一致（canvas/base/pdf 皆然）。Canvas 抓到內部圖、PDF 渲染第一頁 → 之後無縫換成真圖封面。
+      card.addClass('gn-has-img');
       const ph = card.createDiv('gn-fileicon');
-      setIcon(ph, iconForExt(it.ext));
+      setIcon(ph.createDiv('gn-fileicon-ic'), iconForExt(it.ext));       // icon 在上
+      ph.createSpan('gn-fileicon-label').setText(it.ext.toUpperCase());  // 文字（BASE / CANVAS…）在下，一起置中
       if (it.ext === 'canvas') this.loadCanvasThumb(it.file, card, ph);
       else if (it.ext === 'pdf' && window.pdfjsLib) { card._pdfFile = it.file; card._pdfPh = ph; }   // 捲到才渲染
     } else {
@@ -3351,14 +3271,7 @@ class GalleryView extends ItemView {
       card._ogFile = it.file;   // 捲到才抓 og:image（持久快取）
     }
 
-    // 外連 wiki 關係按鈕：暫時停用（2026-07-18 使用者要求）。
-    // 連結牆仍可從右鍵選單或其他入口進入；要復原把 false 改回 isMd 即可。
-    if (false && isMd) {
-      const lb = card.createDiv('gn-card-btn');
-      setIcon(lb, 'link');
-      lb.setAttr('title', t('Show linked notes'));
-      lb.onclick = (e) => { e.stopPropagation(); this.showLinks(it.file); };
-    }
+    // （2026-07-20 移除）卡片上的「顯示連結牆」🔗 按鈕：連結牆功能整套下架。
 
     let ndrag = false;
     card.onclick = (e) => {
@@ -3445,7 +3358,7 @@ class GalleryView extends ItemView {
     });
 
     // 有延遲工作（內文預覽 / 連結圖 / PDF 縮圖）→ 掛觀察器，捲到附近才載入
-    if (card._prevFile || card._ogFile || card._pdfFile || card._todoFile || card._vidFile) this._ogObserver.observe(card);
+    if (card._prevFile || card._ogFile || card._pdfFile) this._ogObserver.observe(card);
 
     masonry.add(card);
     return card;
@@ -3548,47 +3461,6 @@ class GalleryView extends ItemView {
   }
 
   // 右欄：某則筆記的關係牆。沿用卡片牆的呈現，分「連結」與「反向連結」兩區
-  renderLinksWall(container, file, zoom) {
-    const app = this.app;
-
-    // 標頭：返回 + 筆記名 + 開啟
-    const head = container.createDiv('gn-main-head gn-links-head');
-    const back = head.createDiv('gn-btn');
-    setIcon(back, 'arrow-left');
-    back.setAttr('title', t('Back to card wall'));
-    back.onclick = () => { this.graphFocus = null; this.render(); };
-    head.createDiv('gn-links-title').setText(file.basename);
-    const openBtn = head.createDiv('gn-btn');
-    setIcon(openBtn, 'file');
-    openBtn.setAttr('title', t('Open this note'));
-    openBtn.onclick = () => this.openNote(file, false);
-
-    const outFiles = this.outgoingMdFiles(file);
-    const inFiles = this.incomingMdFiles(file);
-
-    this.beginWall(container);
-
-    const sort = this.plugin.state.sort || 'new';
-    const section = (label, icon, files) => {
-      const sec = container.createDiv('gn-links-sec');
-      const sh = sec.createDiv('gn-links-sec-head');
-      setIcon(sh.createSpan('gn-links-sec-icon'), icon);
-      sh.createSpan({ cls: 'gn-links-sec-label', text: label });
-      sh.createSpan({ cls: 'gn-links-sec-count', text: String(files.length) });
-      if (!files.length) {
-        sec.createDiv('gn-links-sec-empty').setText(t('None'));
-        return;
-      }
-      const notes = sortItems(files.map((f) => itemFromFile(app, f)), sort);
-      const { grid, masonry } = this.makeGrid(sec, zoom);
-      for (const it of notes) this.makeCard(grid, masonry, it, {});
-    };
-
-    // 連結＝這則筆記連出去的；反向連結＝誰引用了這則
-    section(t('Links'), 'arrow-up-right', outFiles);
-    section(t('Backlinks'), 'corner-down-left', inFiles);
-    this.endWall(container);
-  }
 }
 
 /* ===== 行事曆（Mini Calendar，讀 Google ICS，唯讀）===== */
@@ -3807,7 +3679,14 @@ class CalendarView extends ItemView {
   async createDailyNote(day) {
     const dateStr = day.getFullYear() + '-' + calPad2(day.getMonth() + 1) + '-' + calPad2(day.getDate());
     const wd = t(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day.getDay()]);
-    const folder = this.app.vault.getAbstractFileByPath('每日筆記') ? '每日筆記/' : '';
+    // 每日筆記資料夾：讀 Obsidian 核心「每日筆記」外掛設定的 folder（跟模板同一套來源）。
+    // （2026-07-20 修：原本寫死中文「每日筆記」→ 別人沒有這個資料夾會建到 vault 根目錄。）
+    let folder = '';
+    try {
+      const dn = this.app.internalPlugins.getPluginById('daily-notes');
+      const df = ((dn && dn.instance && dn.instance.options && dn.instance.options.folder) || '').trim();
+      if (df && this.app.vault.getAbstractFileByPath(df)) folder = df.replace(/\/?$/, '/');
+    } catch (e) { /* 內部 API 變動 → 退回根目錄 */ }
     let path = folder + dateStr + ' ' + wd + '.md';
     let f = this.app.vault.getAbstractFileByPath(path);
     try {
@@ -3967,6 +3846,16 @@ class CalendarSettingTab extends PluginSettingTab {
     /* ══ 1. 卡片牆（核心，永遠啟用） ══ */
     this.group(containerEl, t('Card wall'));
     // 手機欄數設定已移入工具列「⋯ 更多」面板（2026-07-19）
+
+    new Setting(containerEl)
+      .setName(t('Image card layout'))
+      .setDesc(t('How cards with a cover image show their title and date.'))
+      .addDropdown((d) => {
+        d.addOption('overlay', t('Overlay text on image (current)'));
+        d.addOption('stacked', t('Image on top, text below (classic)'));
+        d.setValue(st.imageCardLayout === 'stacked' ? 'stacked' : 'overlay');
+        d.onChange((v) => { st.imageCardLayout = v; save(); this.plugin.refreshViews(); });
+      });
 
     new Setting(containerEl)
       .setName(t('Open notes without focusing the editor'))
@@ -4493,7 +4382,7 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {}, todoHideDoneCards: [] }, await this.loadData());
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, todoHideDone: true, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {}, imageCardLayout: 'stacked' }, await this.loadData());
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
 
     this.registerView(VIEW_TYPE, (leaf) => new GalleryView(leaf, this));
@@ -4532,45 +4421,7 @@ class GalleryPlugin extends Plugin {
     this.registerEvent(this.app.vault.on('delete', (f) => this.search.onFileDeleted(f)));
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.search.onFileRenamed(f, old)));
 
-    if (this.state.devMode) this.addCommand({
-      id: 'gn-search-test',
-      name: t('Search: test query'),
-      callback: async () => {
-        // 惰性建索引：第一次搜尋才建，之後直接用
-        if (!this.search.ready) {
-          const n = new Notice(t('First search — building index…'), 0);
-          const r = await this.search.ensureReady((done, total) => n.setMessage(t('Building index… {{done}}/{{total}}', { done, total })));
-          n.hide();
-          if (r) console.log('[GN Search] 索引完成', r);
-        }
-        new InputModal(this.app, t('Search test (full ranking in console)'), '', (q) => {
-          const t0 = Date.now();
-          const hits = this.search.search(q, 20);
-          const ms = Date.now() - t0;
-          console.log(`\n🔍 「${q}」→ ${hits.length} 筆 (${ms}ms)`);
-          console.log('   斷詞:', gnTokenizeQuery(q).join(' / '));
-          hits.forEach((h, i) => console.log(`   ${String(i + 1).padStart(2)}. ${h.score.toFixed(2).padStart(6)}  ${h.path}`));
-          new Notice(
-            `「${q}」→ ${hits.length} 筆 (${ms}ms)\n\n` +
-            (hits.slice(0, 8).map((h, i) => `${i + 1}. ${h.title}`).join('\n') || t('(no results)')),
-            10000
-          );
-        }, t('Search')).open();
-      },
-    });
-
     // PDF 內文：借 text-extractor 擷取（它有持久快取，只需要跑一次；之後建索引就會自動吃到）
-    // 診斷：手機點資料夾沒跳右欄時，用這個指令看實際數值
-    if (this.state.devMode) this.addCommand({
-      id: 'gn-diagnose-mobile-scroll',
-      name: t('Diagnose: mobile pane switching'),
-      callback: () => {
-        const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
-        if (leaf && leaf.view && leaf.view.diagnoseMobileScroll) leaf.view.diagnoseMobileScroll();
-        else new Notice(t('Open Gallery Navigator first'));
-      },
-    });
-
     this.addCommand({
       id: 'gn-search-extract-pdfs',
       name: t('Search: extract all PDF text (Text Extractor)'),

@@ -90,7 +90,7 @@ module.exports = class GalleryNavigatorPlugin extends GalleryPlugin {
         const j = JSON.parse(await a.read(oldPeekData)) || {};
         this.state.peek = Object.assign({}, j, this.state.peek);
       }
-    } catch (e) { console.log('[GN] 舊外掛資料搬遷失敗（不影響使用）:', e.message); }
+    } catch (e) { console.warn('[Gallery Navigator] Old-plugin data migration failed (safe to ignore):', e.message); }
 
     this.state._mergedFromOldPlugins = true;
     this.saveState();

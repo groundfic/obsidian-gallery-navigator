@@ -9,8 +9,9 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 ### Card wall
 - True JS masonry layout with lazy, chunked rendering (handles folders with thousands of files, mobile-friendly)
 - Covers from `cover:` frontmatter, first embedded image, image files themselves, PDF first pages, and web page `og:image` for link notes
-- Pin cards to top, per-card background colors, hover text preview, multi-select with batch move / delete / copy-wiki-links
-- Link wall: click a card's link button to browse its outgoing links and backlinks as cards
+- Two image-card layouts (text overlaid on the image, or image-on-top with text below) — switchable in settings
+- Pin cards to top, per-card background colors, multi-select with batch move / delete (optionally removing orphaned attachments) / copy-wiki-links
+- Canvas and Base files render as cards too (Canvas uses its first embedded image as the cover when available)
 
 ### Navigation
 - Folder tree with drag-to-reorder, custom colors, hide/unhide, favorites, and inline rename

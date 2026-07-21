@@ -222,6 +222,8 @@ const ZH_TW = {
   'Clear selection': '清除選取', 'Nothing to copy': '沒有可複製的項目',
   '{{n}} wiki links': '{{n}} 個 wiki 連結',
   'Delete the {{n}} selected items? (moves to trash)': '確定刪除選取的 {{n}} 個項目？（移到垃圾桶）',
+  'Moved {{c}} items to trash (+{{n}} attachments)': '已移到垃圾桶：{{c}} 個項目（＋{{n}} 個附件）',
+  'Moved {{c}} items to trash': '已移到垃圾桶：{{c}} 個項目',
   // ── 卡片 / 連結牆 ──
   'Unpin': '取消釘選', 'Pin to top': '釘選到頂部', 'Show linked notes': '顯示連結的筆記',
   'Card color': '卡片顏色', 'Copy wiki link': '複製 Wiki 連結',
@@ -247,6 +249,12 @@ const ZH_TW = {
   'Show completed': '顯示已完成',
   'Hide completed': '隱藏已完成',
   'All done 🎉': '全部完成 🎉',
+  'Open the to-do note': '開啟待辦筆記',
+  'To-do note: {{name}}': '待辦筆記：{{name}}',
+  'Image card layout': '圖片卡版面',
+  'How cards with a cover image show their title and date.': '有封面圖的卡片如何呈現標題與日期。',
+  'Overlay text on image (current)': '文字疊在圖片上（現行）',
+  'Image on top, text below (classic)': '圖片在上、文字在下（經典）',
   'No video link found in this note': '這則筆記裡找不到影片連結',
   'Open notes without focusing the editor': '開啟筆記時不聚焦編輯器',
   'Notes opened from the gallery start unfocused, so a first-line image embed stays rendered instead of expanding to markdown. Click into the note to edit as usual.':
