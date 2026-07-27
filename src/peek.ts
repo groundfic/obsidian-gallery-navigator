@@ -372,7 +372,13 @@ export class PeekModule {
 		return img ? this.previewableImg(img) : null;
 	}
 
-	private previewableImg(target: EventTarget | null): HTMLImageElement | null {
+	// requireLoaded=true（點擊開啟用）：圖必須已下載完（naturalWidth>0），才不會點到破圖。
+	// requireLoaded=false（建 ←→ 清單用）：放寬此限，讓「還沒 lazy 載入」的圖也進清單，
+	//   方向鍵才能循環到筆記內全部的圖（切到時才在 overlay 載入）。
+	private previewableImg(
+		target: EventTarget | null,
+		requireLoaded = true
+	): HTMLImageElement | null {
 		if (!(target instanceof HTMLImageElement)) return null;
 		if (target.closest(".image-peek-overlay")) return null;
 		// 不攔截超連結內的圖片
@@ -387,7 +393,7 @@ export class PeekModule {
 			}
 		}
 		if (!target.closest(CONTAINER_SELECTOR)) return null;
-		if (target.naturalWidth === 0) return null;
+		if (requireLoaded && target.naturalWidth === 0) return null;
 		// Canvas 上只預覽 vault 內的圖片檔（app:// 資源）。
 		// 連結卡片類外掛的圖片是 base64 或外部網址，一律放行不攔截。
 		if (target.closest(".canvas-wrapper, .canvas-node")) {
@@ -403,10 +409,18 @@ export class PeekModule {
 		this.overlay?.destroy();
 
 		// 收集同一個視圖內的所有圖片，給 ← → 導覽
-		const root = img.closest(CONTAINER_SELECTOR) ?? activeDocument.body;
-		const list = Array.from(root.querySelectorAll("img")).filter(
-			(el) => this.previewableImg(el) && el.getBoundingClientRect().width > 0
-		);
+		const root = img.closest(CONTAINER_SELECTOR);
+		const list = root
+			? // 在筆記／Canvas 容器內：收「全部」可預覽圖（含尚未 lazy 載入、捲出視窗的）→ 循環筆記內所有圖
+			  Array.from(root.querySelectorAll("img")).filter((el) =>
+					this.previewableImg(el, false)
+			  )
+			: // 找不到已知容器 → 退回整份 body，但只收「已載入且可見」的（避免抓到全 app 的隱藏圖）
+			  Array.from(activeDocument.body.querySelectorAll("img")).filter(
+					(el) =>
+						this.previewableImg(el) &&
+						el.getBoundingClientRect().width > 0
+			  );
 		const index = Math.max(0, list.indexOf(img));
 
 		this.overlay = new PeekOverlay(this, list.length ? list : [img], index);

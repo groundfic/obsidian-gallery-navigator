@@ -4,6 +4,14 @@ A visual way to browse your Obsidian vault: a folder/tag tree on the left, a Pin
 
 Interface available in **English** and **繁體中文** (follows your Obsidian language setting, with a manual override in settings).
 
+![Gallery Navigator card wall](docs/hero.png)
+
+## Screenshots
+
+| Card wall | Tag tree | Search | Calendar |
+|---|---|---|---|
+| ![Card wall](docs/cards.png) | ![Tag tree](docs/tree.png) | ![Search](docs/search.png) | ![Calendar](docs/calendar.png) |
+
 ## Features
 
 ### Card wall

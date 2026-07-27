@@ -6,8 +6,23 @@
  * 核心封面/標籤邏輯移植自 vault 內的 BASE/Code/Collections code.md (js-engine)。
  */
 
-const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
+const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
+
+/* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
+   ⚠️ addIcon() 的內容必須適配 0 0 100 100 的 viewBox，但原稿是 24×24
+   → 包一層 scale(4.16667)（24 × 4.16667 = 100，幾何不變形）。
+   fill 用 currentColor，圖示才會跟著主題明暗與 hover 狀態變色。 */
+// 編輯風索引卡的最小欄寬（2026-07-20）：縮圖 94px + 左右內距，再窄標題/日期會擠在一起。
+const GN_EDITORIAL_MIN_COL = 150;
+
+const GN_ICON_ID = 'gallery-navigator';
+const GN_ICON_SVG =
+  '<g transform="scale(4.16667)" fill="currentColor">' +
+  '<path d="M13.06,9.41v-4.66c0-1.05-.85-1.9-1.9-1.9h-6.05c-1.05,0-1.9.85-1.9,1.9v6.05c0,1.05.85,1.9,1.9,1.9h3.93c1.05,0,1.9.85,1.9,1.9v4.66c0,1.05.85,1.9,1.9,1.9h6.05c1.05,0,1.9-.85,1.9-1.9v-6.05c0-1.05-.85-1.9-1.9-1.9h-3.93c-1.05,0-1.9-.85-1.9-1.9Z"/>' +
+  '<rect x="2.75" y="14.57" width="6.4" height="6.4" rx="1.9" ry="1.9"/>' +
+  '<rect x="14.84" y="3.02" width="6.4" height="6.4" rx="1.9" ry="1.9"/>' +
+  '</g>';
 
 
 const PIN_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -188,6 +203,98 @@ class MasonryLayout {
   destroy() {
     if (this.ro) this.ro.disconnect();
     if (this._raf) cancelAnimationFrame(this._raf);
+  }
+}
+
+/* ===== 交換圖片：挑一張 vault 內的圖替換掉筆記裡的嵌入（2026-07-20）=====
+   視窗＝「最近修改的圖片瀑布牆」＋檔名搜尋；點一張就替換。
+   分批渲染（同卡片牆的理由：img/ 可能有數千張，一次畫完手機會爆記憶體）。 */
+class SwapImageModal extends Modal {
+  constructor(app, oldFile, onPick) {
+    super(app);
+    this.oldFile = oldFile;      // 目前這張圖的 vault 檔案（TFile）
+    this.onPick = onPick;        // 選定新圖的回呼
+    this.q = '';
+    this.drawn = 0;
+    // ⚠️ 一次畫太多會爆記憶體：img/ 可能有數千張高解析原圖，
+    //    同時解碼 60 張（每張數 MB~十幾 MB）足以讓 Obsidian 當掉。
+    //    → 一批 18 張、捲到才補；並限制候選總數（見 candidates()）。
+    this.CHUNK = document.body.classList.contains('is-mobile') ? 12 : 18;
+    this.MAX = 300;
+  }
+
+  onOpen() {
+    this.modalEl.addClass('gn-swap-modal');
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createDiv('gn-swap-title').setText(t('Swap image'));
+
+    // 搜尋列：即時篩檔名/路徑
+    const search = contentEl.createEl('input', { type: 'search', cls: 'gn-swap-search' });
+    search.placeholder = t('Filter by file name…');
+    search.addEventListener('input', () => {
+      this.q = search.value.trim().toLowerCase();
+      this.renderWall();
+    });
+    setTimeout(() => search.focus(), 0);
+
+    this.wallEl = contentEl.createDiv('gn-swap-wall');
+    this.renderWall();
+
+    // 捲到底補下一批
+    this.wallEl.addEventListener('scroll', () => {
+      if (this.wallEl.scrollTop + this.wallEl.clientHeight >= this.wallEl.scrollHeight - 600) this.drawNext();
+    }, { passive: true });
+  }
+
+  // 全 vault 圖片，依「最近修改」排序；排除目前這張
+  candidates() {
+    const cur = this.oldFile ? this.oldFile.path : '';
+    let list = this.app.vault.getFiles()
+      .filter((f) => IMG_EXT.test(f.path) && f.path !== cur);
+    if (this.q) list = list.filter((f) => f.path.toLowerCase().includes(this.q));
+    list.sort((a, b) => b.stat.mtime - a.stat.mtime);
+    return list.slice(0, this.MAX);   // 只留最近的 N 張：沒人會捲到第 300 張，也避免記憶體壓力
+  }
+
+  renderWall() {
+    this.wallEl.empty();
+    this.drawn = 0;
+    if (this.masonry) { try { this.masonry.destroy(); } catch (e) {} }
+    const grid = this.wallEl.createDiv('gn-swap-grid');
+    const isMobileUI = document.body.classList.contains('is-mobile');
+    this.masonry = new MasonryLayout(grid, { gap: 10, minCol: isMobileUI ? 110 : 130 });
+    this.grid = grid;
+    this.list = this.candidates();
+    if (!this.list.length) {
+      this.wallEl.createDiv('gn-swap-empty').setText(t('No images found'));
+      return;
+    }
+    this.drawNext();
+  }
+
+  drawNext() {
+    if (!this.list || this.drawn >= this.list.length) return;
+    const end = Math.min(this.drawn + this.CHUNK, this.list.length);
+    for (let i = this.drawn; i < end; i++) {
+      const f = this.list[i];
+      const cell = this.grid.createDiv('gn-swap-cell');
+      const img = cell.createEl('img');
+      img.src = this.app.vault.getResourcePath(f);
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      cell.createDiv('gn-swap-name').setText(f.name);
+      cell.setAttr('title', f.path);
+      cell.onclick = () => { this.close(); this.onPick(f); };
+      this.masonry.add(cell);
+    }
+    this.drawn = end;
+  }
+
+  onClose() {
+    if (this.masonry) { try { this.masonry.destroy(); } catch (e) {} }
+    this.contentEl.empty();
   }
 }
 
@@ -532,6 +639,54 @@ class PinterestModal extends Modal {
 
 const VIEW_TYPE = 'gallery-navigator';
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+
+/* 取圖片主色（2026-07-20，自動卡片底色用）
+   畫進 16×16 canvas（只有 256 像素，成本可忽略）讀像素，**量化分組取最多的一群**——
+   不用「全圖平均」，因為平均值幾乎都會變成灰泥色，看不出圖片個性。
+   略過近黑/近白/透明像素，否則多數圖只會取到黑白邊框色。
+   canvas 讀 vault 圖片不會被 CORS 汙染（外掛既有的 toJpeg / PDF 縮圖已證實）。 */
+function gnDominantColor(img) {
+  try {
+    const N = 16;
+    const c = document.createElement('canvas');
+    c.width = N; c.height = N;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0, N, N);
+    const d = ctx.getImageData(0, 0, N, N).data;
+
+    const buckets = new Map();     // 只裝「有顏色」的像素（近黑/近白排除）
+    let total = 0;                 // 全部非透明像素
+    const light = [0, 0, 0, 0];    // 近白像素的累加（保留米白/象牙白的實際色調）
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 128) continue;                       // 透明
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      total++;
+      if (Math.min(r, g, b) > 232) { light[0] += r; light[1] += g; light[2] += b; light[3]++; continue; }
+      if (Math.max(r, g, b) < 24) continue;               // 近黑：不當主色（混進淺底也只是灰）
+      const key = (r >> 5) + ',' + (g >> 5) + ',' + (b >> 5);            // 量化成 8 階
+      const rec = buckets.get(key) || [0, 0, 0, 0];
+      rec[0] += r; rec[1] += g; rec[2] += b; rec[3]++;
+      buckets.set(key, rec);
+    }
+    if (!total) return null;
+
+    // ① 白底圖 → 就用白（2026-07-20 使用者要求）。
+    //    近白像素過半即視為白底；回傳它們的平均，米白/象牙白會被保留而不是硬套純白。
+    if (light[3] / total > 0.45) {
+      return [Math.round(light[0] / light[3]), Math.round(light[1] / light[3]), Math.round(light[2] / light[3])];
+    }
+    // ② 否則取「有顏色」像素裡最多的一群當主色（白邊/黑邊不會搶走整張卡的顏色）
+    let best = null;
+    for (const rec of buckets.values()) if (!best || rec[3] > best[3]) best = rec;
+    if (!best) {
+      // 整張都是近白/近黑 → 用近白平均（有的話），否則放棄
+      if (light[3]) return [Math.round(light[0] / light[3]), Math.round(light[1] / light[3]), Math.round(light[2] / light[3])];
+      return null;
+    }
+    return [Math.round(best[0] / best[3]), Math.round(best[1] / best[3]), Math.round(best[2] / best[3])];
+  } catch (e) { return null; }   // 解碼未完成等狀況 → 放棄，維持原底色
+}
 const INVISIBLE = /[​‌‍⁠﻿￼]/g;
 
 /* ===== 資料邏輯(移植自 Collections code.md) ===== */
@@ -938,13 +1093,15 @@ class GalleryView extends ItemView {
 
   getViewType() { return VIEW_TYPE; }
   getDisplayText() { return 'Gallery Navigator'; }
-  getIcon() { return 'egg'; }   // 🥚（2026-07-18 使用者欽點）
+  getIcon() { return GN_ICON_ID; }   // 外掛專屬圖示（2026-07-20，取代原本的 egg 🥚）
 
   async onOpen() {
     this.render();
     // 開啟任一筆記時，若同步開著 → 定位到它的資料夾（從日曆開的會設跳過旗標）
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
-      if (this.plugin._skipNextSync) { this.plugin._skipNextSync = false; return; }
+      // 只跳過「從行事曆開的那個特定檔案」——用路徑比對，不用無差別旗標
+      // （否則日記若已開著、不觸發 file-open，旗標會殘留 → 被之後點的連結誤消耗 → 連結不定位）
+      if (file && this.plugin._skipSyncPath === file.path) { this.plugin._skipSyncPath = null; return; }
       if (!this.plugin.state.syncActive) return;
       if (this.isCanvasEmbed(file)) return;   // 在 Canvas 裡點圖片/內嵌節點 → 不要跳去 img/
       this.syncToFile(file);
@@ -1204,7 +1361,7 @@ class GalleryView extends ItemView {
   // 用自訂浮動面板而不是 Obsidian 的 Menu —— Menu 只吃「選項列」，塞不進滑桿，
   // 而且會被迫再開一層子選單。這裡全部攤平成單層。
   openMorePopover(anchor) {
-    if (this._morePop) { this._morePop.remove(); this._morePop = null; return; }   // 再點一次＝收起
+    if (this._morePop) { this.closeMorePopover(); return; }   // 再點一次＝收起（走同一條路徑，才會一併清事件）
     const state = this.plugin.state;
     const pop = document.body.createDiv('gn-more-pop');
     this._morePop = pop;
@@ -1262,8 +1419,9 @@ class GalleryView extends ItemView {
       }
     }
 
-    /* ── 手機：卡片欄數 1/2/3（2026-07-19 從設定頁移入；選了即時重畫） ── */
-    if (document.body.classList.contains('is-mobile')) {
+    /* ── 手機：卡片欄數 1/2/3（2026-07-19 從設定頁移入；選了即時重畫） ──
+         編輯風索引卡固定 2 欄 → 該模式下不顯示此區，免得點了沒反應。 */
+    if (document.body.classList.contains('is-mobile') && state.imageCardLayout !== 'editorial') {
       pop.createDiv('gn-more-label').setText(t('Mobile columns'));
       for (const n of [1, 2, 3]) {
         const row = pop.createDiv('gn-more-row');
@@ -1285,10 +1443,13 @@ class GalleryView extends ItemView {
       pop.createDiv('gn-more-label').setText(t('Card size'));
       const zoom = pop.createEl('input', { type: 'range' });
       zoom.addClass('gn-zoom');
-      zoom.min = '120'; zoom.max = '300'; zoom.step = '10';
-      zoom.value = String(state.cardWidth || 120);
+      // 編輯風索引卡有欄寬下限（縮圖+內距塞不下）→ 滑桿最小值跟著提高，
+      // 否則拉到 120~140 會「看起來沒反應」（makeGrid 那邊會被 Math.max 夾住）。
+      const zMin = state.imageCardLayout === 'editorial' ? GN_EDITORIAL_MIN_COL : 120;
+      zoom.min = String(zMin); zoom.max = '300'; zoom.step = '10';
+      zoom.value = String(Math.max(zMin, state.cardWidth || 120));
       zoom.oninput = () => {
-        const v = Number(zoom.value);
+        const v = Math.max(zMin, Number(zoom.value));
         state.cardWidth = v;
         for (const m of (this._masonries || [])) m.setMinCol(v);   // 各區瀑布流即時重排
         this.plugin.saveState();
@@ -1720,8 +1881,8 @@ class GalleryView extends ItemView {
       row.style.setProperty('--gn-depth', '1');
       row.createSpan('gn-tcaret');
       const thumb = row.createSpan('gn-tthumb');
-      // 資料夾用和樹狀圖同一個自訂資料夾圖示，大小/樣式統一；筆記用 lucide file-text
-      if (f.type === 'folder') setFolderIcon(thumb, false);
+      // 資料夾用和樹狀圖同一個自訂資料夾圖示（並加 folder class 一起藏）；筆記用 lucide file-text（保留）
+      if (f.type === 'folder') { thumb.addClass('gn-tthumb-folder'); setFolderIcon(thumb, false); }
       else setIcon(thumb, 'file-text');
       row.createSpan('gn-tname').setText(af.basename || af.name);
       row.onclick = () => {
@@ -1900,6 +2061,7 @@ class GalleryView extends ItemView {
       // 內文預覽**不刪除**（只是被 CSS 收起來），hover 時才展開 → 圖跟文都留得住。
       img.onload = () => {
         card.addClass('gn-has-img');
+        this.autoTintCard(card, img, 'og:' + file.path);   // 連結預覽圖也套自動底色
         this.relayoutWalls();
       };
       img.onerror = () => { img.remove(); this.relayoutWalls(); };
@@ -2084,12 +2246,17 @@ class GalleryView extends ItemView {
     // （2026-07-20 移除）待辦卡對比色計算：底色已取消，不再需要 --gn-todo-bg
 
     // 手機單欄時掛狀態 class：豁免「卡片最小 1:1」限制（單欄全寬卡不需要，2026-07-19）
+    // ⚠️ 編輯風索引卡固定 2 欄（makeGrid 寫死）→ 即使 mobileCols 存的是 1 也不能掛這個 class，
+    //    否則會套到用不到的單欄豁免規則（2026-07-20）。
     root.toggleClass('gn-mobile-1col',
-      document.body.classList.contains('is-mobile') && (this.plugin.state.mobileCols || 2) === 1);
+      document.body.classList.contains('is-mobile')
+      && this.plugin.state.imageCardLayout !== 'editorial'
+      && (this.plugin.state.mobileCols || 2) === 1);
 
     // 圖片卡版面（2026-07-20，設定 → 卡片牆 可選）：預設「白字疊圖」（圖滿版）；
     // 'stacked' ＝ 舊版「圖上文下」，CSS 用 .gn-imgcard-stacked 切回底層規則（見 gallery.css）。
     root.toggleClass('gn-imgcard-stacked', this.plugin.state.imageCardLayout === 'stacked');
+    root.toggleClass('gn-imgcard-editorial', this.plugin.state.imageCardLayout === 'editorial');
 
     // 手機：contentEl 本身就是 .view-content；它的父層（.workspace-leaf-content）
     // 在手機不是 flex 直向，導致 gn-root 撐不滿高度 → 底部工具列上方留白。
@@ -2246,6 +2413,23 @@ class GalleryView extends ItemView {
     setIcon(moreBtn, 'more-horizontal');
     moreBtn.setAttr('title', t('More (sort / card size / flatten)'));
     moreBtn.onclick = (e) => { e.stopPropagation(); this.openMorePopover(moreBtn); };
+
+    // 鍵盤可及性：.gn-btn 是 div，預設不可 focus → 補上 button 語意與 Enter/Space 觸發。
+    // （工具列「懸浮膠囊」版已還原成左右兩段，此段與版面無關、保留。）
+    if (!isMobileUI) {
+      for (const btn of Array.from(barR.children)) {
+        if (!btn.hasClass || !btn.hasClass('gn-btn')) continue;
+        btn.setAttr('tabindex', '0');
+        btn.setAttr('role', 'button');
+        const label = btn.getAttr('title');
+        if (label && !btn.getAttr('aria-label')) btn.setAttr('aria-label', label);
+        btn.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          btn.click();
+        });
+      }
+    }
 
     const zoom = null;   // 滑桿已移進「更多」面板（makeGrid 對 null 有防呆）
 
@@ -2424,8 +2608,9 @@ class GalleryView extends ItemView {
           caret.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
         }
 
-        const thumb = row.createSpan('gn-tthumb');
+        const thumb = row.createSpan('gn-tthumb gn-tthumb-folder');   // folder class 保留：日後要再藏資料夾圖示用
         setFolderIcon(thumb, hasKids && isOpen);
+        // 資料夾配色套在圖示上（2026-07-25 還原；07-20 曾因藏圖示改套在名稱文字）
         if (folderColors[it.folder.path]) thumb.style.color = paletteFor(it, folderColors).bg;
 
         const nameEl = row.createSpan('gn-tname');
@@ -3190,8 +3375,14 @@ class GalleryView extends ItemView {
     // 手機：改用**固定欄數**（設定頁可選 1 / 2 / 3 欄），不吃桌機調大後的 cardWidth，
     //       免得在窄螢幕被撐成 1 欄。
     const isMobileUI = document.body.classList.contains('is-mobile');
-    const minCol = isMobileUI ? 120 : (this.plugin.state.cardWidth || 120);
-    const fixedCols = isMobileUI ? (this.plugin.state.mobileCols || 2) : 0;
+    // 編輯風索引卡：欄寬有下限（GN_EDITORIAL_MIN_COL）——縮圖 94px + 內距，
+    // 再窄下去標題與日期會擠在一起（2026-07-20 使用者定為目前寬度 150）。
+    const isEditorial = this.plugin.state.imageCardLayout === 'editorial';
+    const edMin = isEditorial ? GN_EDITORIAL_MIN_COL : 0;
+    const minCol = isMobileUI ? 120 : Math.max(edMin, this.plugin.state.cardWidth || 120);
+    // 手機欄數：一般版面吃「⋯ 更多」的 1/2/3 欄設定；
+    // 編輯風索引卡**固定 2 欄**（2026-07-20 使用者要求）——1 欄太空、3 欄塞不下縮圖+日期。
+    const fixedCols = isMobileUI ? (isEditorial ? 2 : (this.plugin.state.mobileCols || 2)) : 0;
     const masonry = new MasonryLayout(grid, { gap: 16, minCol, fixedCols });   // 2026-07-18 12→16 更透氣
     if (!this._masonries) this._masonries = [];
     this._masonries.push(masonry);
@@ -3206,6 +3397,28 @@ class GalleryView extends ItemView {
 
   // 建一張卡片（原 renderNoteWall 內的邏輯，抽出來讓各區共用）
   // opts: { skipPreview }
+  /* 自動卡片底色（2026-07-20，設定 → 卡片牆可開關）：從封面圖抽主色，混入主題底色當卡片背景。
+     ⚠️ 手動右鍵上色（gn-card-colored）永遠優先，不會被自動色蓋掉。
+     快取 key＝path:mtime（同一張圖只算一次；只存記憶體，重載後重算，成本極低）。 */
+  autoTintCard(card, img, key) {
+    if (!this.plugin.state.autoCardColor) return;
+    if (card.hasClass('gn-card-colored')) return;   // 手動上色優先
+    const cache = this.plugin._tintCache || (this.plugin._tintCache = new Map());
+    const apply = (rgb) => {
+      if (!rgb || !card.isConnected) return;
+      card.style.setProperty('--gn-tint', 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')');
+      card.addClass('gn-card-tinted');
+    };
+    if (cache.has(key)) { apply(cache.get(key)); return; }
+    const run = () => {
+      const rgb = gnDominantColor(img);
+      cache.set(key, rgb);   // 連 null 也記，避免反覆重算失敗的圖
+      apply(rgb);
+    };
+    if (img.complete && img.naturalWidth) run();
+    else img.addEventListener('load', run, { once: true });
+  }
+
   makeCard(grid, masonry, it, opts) {
     const o = opts || {};
     const cardColors = this.plugin.state.cardColors || {};
@@ -3240,6 +3453,17 @@ class GalleryView extends ItemView {
     }
     // 文字區塊置頂（iOS 備忘錄式）：日期 → 粗標題
     const body = card.createDiv('gn-body');
+    // 編輯風索引卡（imageCardLayout='editorial'）：右上角「大日數 ＋ 小月年」日期塊。
+    // 只在該模式建立（切換設定會 refreshViews 整頁重畫，不必常駐佔 DOM）。
+    if (this.plugin.state.imageCardLayout === 'editorial') {
+      const d0 = new Date(it.ctime);
+      const dbox = body.createDiv('gn-datebox');
+      dbox.createSpan({ cls: 'gn-datebox-day', text: String(d0.getDate()) });
+      // 月名固定英文三字母（設計元素，2026-07-20 使用者指定；不跟隨語言，中文才不會變「11月」）
+      const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d0.getMonth()];
+      // 年份不加撇號（2026-07-20 使用者要求）：JUL 26，不是 JUL '26
+      dbox.createSpan({ cls: 'gn-datebox-my', text: mon + ' ' + String(d0.getFullYear()).slice(2) });
+    }
     body.createDiv('gn-date').setText(fmtDate(it.ctime));
     const titleEl = body.createDiv('gn-title');
     if (this._searchQ) gnHighlightInto(titleEl, it.name, gnHighlightTerms(this._searchQ));
@@ -3252,7 +3476,13 @@ class GalleryView extends ItemView {
       img.src = it.src;
       img.loading = 'lazy';
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
-      // 圖片卡不顯示內文（2026-07-18 使用者移除 hover 內文功能，也省下讀檔）
+      this.autoTintCard(card, img, it.file.path + ':' + it.file.stat.mtime);   // 自動卡片底色（設定可開關）
+      // 圖片卡預設不顯示內文（2026-07-18 移除 hover 內文，省讀檔）；
+      // 但「編輯風索引卡」要有內文預覽（2026-07-20）→ 該模式下補建，走既有延遲載入管線（捲到才 cachedRead）。
+      if (isMd && !skipPreview && this.plugin.state.imageCardLayout === 'editorial') {
+        const prev = body.createDiv('gn-preview');
+        card._prevEl = prev; card._prevFile = it.file;
+      }
     } else if (!isMd) {
       // 非 md 且無封面 → 檔型「圖示封面」卡：套 gn-has-img 圖片卡版型（icon 方塊當封面、標題/日期在下），
       //   與圖片卡一致（canvas/base/pdf 皆然）。Canvas 抓到內部圖、PDF 渲染第一頁 → 之後無縫換成真圖封面。
@@ -3393,13 +3623,25 @@ class GalleryView extends ItemView {
     } else {
       head.createSpan({ cls: 'gn-bar-title-text', text: headText });
     }
-    if (flatten) head.createSpan({ cls: 'gn-head-flat', text: t('Including subfolders') });
-    // 標籤篩選中 → 表頭掛上小標（點一下即清除），免得忘了自己開著篩選
+    // 狀態膠囊（攤平／標籤篩選）獨立成一列，放在卡片牆頂端、不再塞進工具列標題列（2026-07-20）：
+    //   多選標籤時字串會很長（#a #b #c ✕），塞在工具列會把麵包屑擠爆＝破格。
+    //   獨立一列後可自行換行（flex-wrap），長度再長也不影響工具列。
     const tagFilterOn = !filesOverride && this._tagFilter && this._tagFilter.size;
-    if (tagFilterOn) {
-      const chip = head.createSpan({ cls: 'gn-head-flat gn-head-tag', text: '#' + [...this._tagFilter].join(' #') + ' ✕' });
-      chip.setAttr('title', t('Clear tag filter'));
-      chip.onclick = () => { this._tagFilter = new Set(); this.rerenderMain(); };
+    if (flatten || tagFilterOn) {
+      const chips = container.createDiv('gn-wall-chips');
+      if (flatten) chips.createSpan({ cls: 'gn-head-flat', text: t('Including subfolders') });
+      // 標籤篩選中 → **每個標籤各自一顆膠囊**，點哪顆就只移除那一個篩選條件
+      // （2026-07-20 改：原本全部標籤擠成一顆、一點就整組清空，無法逐一取消）
+      if (tagFilterOn) {
+        for (const tag of [...this._tagFilter]) {
+          const chip = chips.createSpan({ cls: 'gn-head-flat gn-head-tag', text: '#' + tag + ' ✕' });
+          chip.setAttr('title', t('Remove this filter'));
+          chip.onclick = () => {
+            this._tagFilter.delete(tag);
+            this.rerenderMain();
+          };
+        }
+      }
     }
 
     let items = filesOverride
@@ -3648,7 +3890,9 @@ class CalendarView extends ItemView {
       setIcon(row.createSpan('mc-note-icon'), 'file-text');
       row.createSpan('mc-note-name').setText(f.basename);
       if (timeLabel) row.createSpan('mc-note-time').setText(timeLabel);
-      row.onclick = () => this.openNoteNoSync(f.path);
+      // 點行事曆「當天筆記」→ 正常開啟（觸發畫廊同步定位，2026-07-20 使用者要求）。
+      // 之前用 openNoteNoSync 刻意不同步，現改回會同步。
+      row.onclick = () => this.app.workspace.openLinkText(f.path, '', false);
     };
     const groupHead = (text, extraClass) => sec.createDiv('mc-notes-head' + (extraClass ? ' ' + extraClass : '')).createSpan('mc-notes-title').setText(text);
 
@@ -3669,10 +3913,11 @@ class CalendarView extends ItemView {
     }
   }
 
-  // 從日曆開筆記：設跳過旗標，避免牽動畫廊同步（跨資料夾整頁重畫）
+  // 從日曆開筆記：只跳過「這個特定路徑」的同步（避免牽動畫廊跨資料夾重畫），
+  // 不用無差別旗標——否則旗標殘留會被之後「從日記點的連結」誤消耗，害連結不定位（2026-07-20 修）。
   openNoteNoSync(path) {
-    this.plugin._skipNextSync = true;
-    window.setTimeout(() => { this.plugin._skipNextSync = false; }, 800);   // 安全網：沒觸發就自動清
+    this.plugin._skipSyncPath = path;
+    window.setTimeout(() => { if (this.plugin._skipSyncPath === path) this.plugin._skipSyncPath = null; }, 1500);   // 安全網：沒觸發就自動清
     this.app.workspace.openLinkText(path, '', false);
   }
 
@@ -3853,9 +4098,16 @@ class CalendarSettingTab extends PluginSettingTab {
       .addDropdown((d) => {
         d.addOption('overlay', t('Overlay text on image (current)'));
         d.addOption('stacked', t('Image on top, text below (classic)'));
-        d.setValue(st.imageCardLayout === 'stacked' ? 'stacked' : 'overlay');
+        d.addOption('editorial', t('Editorial index card (thumbnail + big date)'));
+        d.setValue(['stacked', 'editorial'].includes(st.imageCardLayout) ? st.imageCardLayout : 'overlay');
         d.onChange((v) => { st.imageCardLayout = v; save(); this.plugin.refreshViews(); });
       });
+
+    new Setting(containerEl)
+      .setName(t('Auto card color from cover image'))
+      .setDesc(t('Tints each card with the dominant color of its cover image. Cards you colored manually are left alone.'))
+      .addToggle((tg) => tg.setValue(!!st.autoCardColor)
+        .onChange((v) => { st.autoCardColor = v; save(); this.plugin.refreshViews(); }));
 
     new Setting(containerEl)
       .setName(t('Open notes without focusing the editor'))
@@ -4382,13 +4634,16 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, todoHideDone: true, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {}, imageCardLayout: 'stacked' }, await this.loadData());
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, todoHideDone: true, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {}, imageCardLayout: 'stacked', autoCardColor: false }, await this.loadData());
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
+
+    // 註冊外掛專屬圖示（必須在 registerView / addRibbonIcon 之前）
+    addIcon(GN_ICON_ID, GN_ICON_SVG);
 
     this.registerView(VIEW_TYPE, (leaf) => new GalleryView(leaf, this));
     this.registerView(CAL_VIEW_TYPE, (leaf) => new CalendarView(leaf, this));
 
-    this.addRibbonIcon('egg', 'Gallery Navigator', () => this.activateView());   // 🥚
+    this.addRibbonIcon(GN_ICON_ID, 'Gallery Navigator', () => this.activateView());
     this.addRibbonIcon('calendar', 'Mini Calendar', () => this.activateCalendar());
 
     this.addCommand({
@@ -4480,6 +4735,16 @@ class GalleryPlugin extends Plugin {
       if (this.state.enablePinterest) menu.addItem((i) => i.setTitle(t('Pinterest visual search')).setIcon('search')
         .onClick(() => new PinterestModal(this.app, src, img.alt || '', srcFolder).open()));
       if (file) {
+        // 交換圖片（2026-07-20）：開「最近圖片瀑布牆」挑一張，替換筆記裡的這個嵌入。
+        // 只在「筆記內的本機圖」提供（af 存在才有可改寫的來源筆記）。
+        if (af) {
+          menu.addSeparator();
+          menu.addItem((i) => i.setTitle(t('Swap image…')).setIcon('image-plus')
+            .onClick(() => {
+              const nth = this.imgEmbedIndex(img, file);
+              new SwapImageModal(this.app, file, (picked) => this.swapImage(af, file, picked, nth)).open();
+            }));
+        }
         menu.addSeparator();
         const a = this.app.vault.adapter;
         if (a && typeof a.getFullPath === 'function') {
@@ -4561,6 +4826,66 @@ class GalleryPlugin extends Plugin {
   }
 
   // 筆記內的 <img> 對應回 vault 檔案（本機圖才有；外部網址圖回 null）
+  /* 交換圖片（2026-07-20）：把「筆記裡指向 oldFile 的那個嵌入」換成 newFile。
+     ⚠️ 不能用字串盲取代——同一則筆記可能嵌入同一張圖多次，也可能有 ![[a.png|300]] / ![alt](path) 多種語法。
+     做法：用 metadataCache 的 embeds 取得**精確位置**（position.offset），只改那一段；
+     並保留原本的顯示參數（|300 之類）與語法形式（wiki / markdown）。
+     nth = 這是該筆記裡「第幾個指向 oldFile 的嵌入」（由 DOM 推算，見 imgEmbedIndex）。 */
+  async swapImage(note, oldFile, newFile, nth) {
+    try {
+      const cache = this.app.metadataCache.getFileCache(note) || {};
+      const embeds = (cache.embeds || []).filter((e) => {
+        const lp = String(e.link || '').split('#')[0].split('|')[0].trim();
+        const f = this.app.metadataCache.getFirstLinkpathDest(lp, note.path);
+        return f && f.path === oldFile.path;
+      });
+      if (!embeds.length) { new Notice(t('Could not locate this image in the note')); return; }
+      const target = embeds[Math.min(nth || 0, embeds.length - 1)];
+
+      const raw = await this.app.vault.read(note);
+      const from = target.position.offset.start;
+      const to = target.position.offset.end;
+      const orig = raw.slice(from, to);
+
+      // 沿用原本的顯示參數（|300、|left 之類）
+      const pipe = String(target.link || '').includes('|')
+        ? '|' + String(target.link).split('|').slice(1).join('|')
+        : '';
+      // 新的連結文字：用官方 API，同名檔會自動帶路徑避免撞名
+      const linktext = this.app.metadataCache.fileToLinktext(newFile, note.path);
+      // 維持原語法形式：![alt](path) 保持 markdown、其餘用 wikilink
+      const isMd = /^!\[[^\]]*\]\(/.test(orig);
+      const replacement = isMd
+        ? '![' + (orig.match(/^!\[([^\]]*)\]/) || ['', ''])[1] + '](' + encodeURI(linktext) + ')'
+        : '![[' + linktext + pipe + ']]';
+
+      await this.app.vault.modify(note, raw.slice(0, from) + replacement + raw.slice(to));
+      new Notice(t('Swapped to {{name}}', { name: newFile.name }));
+    } catch (e) {
+      new Notice(t('Swap failed: {{msg}}', { msg: e && e.message ? e.message : e }));
+    }
+  }
+
+  /* 這張 <img> 是筆記裡「第幾個指向同一個檔案的嵌入」——交換時才不會改到別張。
+     閱讀檢視：同 src 的 .internal-embed 依 DOM 順序數。數不出來就回 0（改第一個）。 */
+  imgEmbedIndex(img, oldFile) {
+    try {
+      const root = img.closest('.markdown-preview-view, .markdown-reading-view, .markdown-source-view, .cm-content');
+      if (!root) return 0;
+      const emb = img.closest('.internal-embed, .image-embed');
+      if (!emb) return 0;
+      const all = Array.from(root.querySelectorAll('.internal-embed, .image-embed')).filter((el) => {
+        const lp = String(el.getAttribute('src') || '').split('#')[0].split('|')[0].trim();
+        if (!lp) return false;
+        const af = this.app.workspace.getActiveFile();
+        const f = this.app.metadataCache.getFirstLinkpathDest(lp, af ? af.path : '');
+        return f && f.path === oldFile.path;
+      });
+      const i = all.indexOf(emb);
+      return i < 0 ? 0 : i;
+    } catch (e) { return 0; }
+  }
+
   imgToVaultFile(img) {
     const af = this.app.workspace.getActiveFile();
     // 1) 閱讀檢視嵌入：用 embed 的 src 屬性解 linkpath

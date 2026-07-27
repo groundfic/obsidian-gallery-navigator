@@ -62,6 +62,7 @@
   flex: 1; justify-content: flex-end;
   padding: 6px 8px;
 }
+
 /* 手機：工具列另有自己的樣式（底部列 + 漸層），左右段不上色 */
 /* display:contents ＝ 讓 barL/barR 兩組「消失成透明」，所有按鈕變成 .gn-bar 的直接子元素，
    才能靠 .gn-bar 的 justify-content 把每顆按鈕均分（否則只會均分兩個 group、按鈕仍擠在兩角）。 */
@@ -89,6 +90,15 @@
   background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
   color: var(--interactive-accent);
 }
+/* 狀態膠囊列（攤平／標籤篩選）：卡片牆頂端獨立一列（2026-07-20）。
+   原本塞在工具列標題列，多選標籤字串一長就把麵包屑擠爆＝破格。
+   獨立成列後可自行換行，長度再長也不影響工具列。 */
+.gn-wall-chips {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 0 4px 8px;                 /* 與卡片左緣對齊，下方留白接卡片牆 */
+  line-height: 1.6;
+}
+.gn-wall-chips .gn-head-flat { margin-left: 0; }   /* 改用 gap 控間距 */
 /* 切換鈕開啟狀態（如攤平）：灰底 + 正常字色，不用主題色（2026-07-18） */
 .gn-btn-on {
   background: color-mix(in srgb, var(--text-normal) 10%, transparent);
@@ -185,7 +195,7 @@
   overflow: hidden; white-space: nowrap;
 }
 .gn-bar-title-text {
-  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
   color: var(--text-normal);
   overflow: hidden; text-overflow: ellipsis;
 }
@@ -194,7 +204,7 @@
 .gn-bar-crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
 .gn-crumb2 {
   cursor: pointer; white-space: nowrap;
-  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
   color: var(--text-muted);
   transition: color .12s;
 }
@@ -285,8 +295,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px;
-  padding-left: calc(4px + var(--gn-depth, 0) * 15px);
+  padding: 6px 8px;   /* 列高上下間距拉開（2026-07-20，4→6px） */
+  padding-left: calc(6px + var(--gn-depth, 0) * 12px);   /* 縮排收緊（2026-07-20，箭頭移除後 15→12px） */
   margin: 0;
   border-radius: 8px;
   cursor: pointer;
@@ -333,7 +343,10 @@
   display: flex; align-items: center; justify-content: center;
   color: var(--text-muted);
 }
-.gn-tthumb svg { width: 16px; height: 16px; color: inherit; }
+.gn-tthumb svg { width: 16px; height: 16px; color: inherit; stroke-width: 1.5; }
+/* （2026-07-25 還原）資料夾圖示重新顯示：07-20 曾用 .gn-tthumb-folder 藏起來，
+   使用者要求「加回所有左欄的 icon」→ 規則移除，class 保留（JS 仍會掛，之後要再藏很方便）。
+   資料夾配色也一併套回圖示（見 gallery.js 的 thumb.style.color）。 */
 .gn-tname {
   flex: 1; min-width: 0;
   font-size: 13px; line-height: 1.3;
@@ -502,16 +515,24 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 /* 釘選角標（feature 4） */
 .gn-card-pin {
   position: absolute; top: 6px; left: 6px; z-index: 4;
-  width: 22px; height: 22px;
+  width: 26px; height: 26px;
   display: flex; align-items: center; justify-content: center;
-  border-radius: 7px; cursor: pointer;
+  border-radius: 50%; cursor: pointer;   /* 圓形角標 */
   background: color-mix(in srgb, var(--interactive-accent) 92%, transparent);
   color: var(--text-on-accent);
-  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
   transition: background .12s, transform .12s;
 }
-.gn-card-pin:hover { background: var(--text-error, #d9534f); transform: scale(1.08); }
-.gn-card-pin svg { width: 13px; height: 13px; }
+/* hover：黑底白圖（用 --text-normal，深色主題會自動反轉、不會黑到看不見） */
+.gn-card-pin:hover {
+  background: var(--text-normal);
+  color: var(--background-primary);
+  transform: scale(1.08);
+}
+.gn-card-pin svg { width: 15px; height: 15px; }
+/* 手機：釘選角標放大（好按、看得清；2026-07-20 使用者要求） */
+.is-mobile .gn-card-pin { width: 30px; height: 30px; }
+.is-mobile .gn-card-pin svg { width: 17px; height: 17px; }
 
 .gn-empty { padding: 30px; text-align: center; color: var(--text-muted); }
 
@@ -519,20 +540,26 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 .gn-fav-sec { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 50%, transparent); }
 /* 標題列與資料夾列共用同一套版位（2026-07-18）：左距 19px + 箭頭盒 22px + gap 8px
    → 星星起點 49px，與 depth-1 資料夾圖示完全對齊 */
-.gn-fav-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; padding-left: 19px; cursor: pointer; border-radius: 8px; }
+/* 最愛標題列版位與資料夾樹對齊（2026-07-20）：padding 同 .gn-tnode（6px 8px / 左 6px＝根列同級），
+   箭頭色同 .gn-tcaret（text-muted）。 */
+.gn-fav-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; padding-left: 6px; cursor: pointer; border-radius: 8px; }
 .gn-fav-head:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
-.gn-fav-caret { flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--text-faint); }
+.gn-fav-caret { flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
 .gn-fav-caret svg { width: 18px; height: 18px; }   /* 同 .gn-tcaret svg */
 .is-mobile .gn-fav-caret { width: 28px; height: 28px; }   /* 同 .is-mobile .gn-tcaret */
+/* （2026-07-25 還原）最愛標題列的 ★ 星星加回來，尺寸同 .gn-tthumb 的資料夾圖示。 */
 .gn-fav-star { flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
-.gn-fav-star svg { width: 16px; height: 16px; }   /* 與 .gn-tthumb 的資料夾圖示同尺寸（2026-07-18） */
+.gn-fav-star svg { width: 16px; height: 16px; }
 .is-mobile .gn-fav-star { width: 22px; height: 22px; }
 .is-mobile .gn-fav-star svg { width: 20px; height: 20px; }   /* 手機同 .is-mobile .gn-tthumb */
 .gn-fav-title { font-size: 13px; font-weight: 600; color: var(--text-muted); }   /* 與 .gn-tname 同字級（2026-07-18） */
 .is-mobile .gn-fav-title { font-size: 17px; }   /* 手機同 .is-mobile .gn-tname */
 .gn-fav-count { font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: auto; }
 .gn-fav-collapsed { padding-bottom: 0; }
-.gn-fav-row .gn-tthumb { color: var(--text-muted); }
+/* （2026-07-25 還原）最愛列的資料夾／檔案圖示加回來。
+   ⚠️ 這條要蓋掉上面 .gn-tthumb-folder 的規則（若日後又把資料夾圖示藏起來），
+   所以最愛列的 thumb 一律明確設 display:flex。 */
+.gn-fav-row .gn-tthumb { display: flex; color: var(--text-muted); }
 .gn-fav-row .gn-tthumb svg { width: 16px; height: 16px; }
 
 /* （2026-07-20 移除）連結牆 .gn-links-* 全部樣式：連結牆功能整套下架 */
@@ -747,7 +774,7 @@ body.is-mobile {
   overflow: hidden; white-space: nowrap;
 }
 .gn-bar-title-text {
-  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
   color: var(--text-normal);
   overflow: hidden; text-overflow: ellipsis;
 }
@@ -756,7 +783,7 @@ body.is-mobile {
 .gn-bar-crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
 .gn-crumb2 {
   cursor: pointer; white-space: nowrap;
-  font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
   color: var(--text-muted);
   transition: color .12s;
 }
@@ -765,6 +792,14 @@ body.is-mobile {
 .gn-crumb2-sep { color: var(--text-faint); margin: 0 8px; font-weight: 400; flex: none; }
 
 .gn-main-head { margin-top: 0; margin-bottom: 8px; }   /* 右欄標題上方免留白 */
+
+/* 手機：牆內表頭的麵包屑置中 + 放大（2026-07-20 使用者要求）。
+   桌機的麵包屑在工具列（.gn-bar-title），不受影響。 */
+.is-mobile .gn-main-head { text-align: center; margin-bottom: 12px; }
+.is-mobile .gn-main-head .gn-bar-crumbs { justify-content: center; flex-wrap: wrap; }
+.is-mobile .gn-crumb2 { font-size: 17px; }
+.is-mobile .gn-crumb2-sep { font-size: 17px; margin: 0 6px; }
+.is-mobile .gn-bar-title-text { font-size: 17px; }
 
 .is-mobile .gn-tnode { padding-top: 9px; padding-bottom: 9px; }   /* 好點一點 */
 .is-mobile .gn-tthumb { width: 22px; height: 22px; }
@@ -781,55 +816,55 @@ body.is-mobile {
   font-feature-settings: "tnum";
 }
 
-/* 頂部標題列 */
-.mc-head { display: flex; align-items: center; gap: 8px; margin: 4px 2px 14px; }
-.mc-title { display: flex; align-items: baseline; }
-.mc-month { font-size: 22px; font-weight: 700; color: var(--text-normal); letter-spacing: -.01em; }
-.mc-year { font-size: 22px; font-weight: 400; color: var(--text-muted); }
+/* 頂部標題列（2026-07-20 現代化：字距收緊、年份降一階、下方留白加大） */
+.mc-head { display: flex; align-items: center; gap: 8px; margin: 4px 2px 18px; }
+.mc-title { display: flex; align-items: baseline; gap: 6px; }
+.mc-month { font-size: 22px; font-weight: 700; color: var(--text-normal); letter-spacing: -.02em; }
+.mc-year { font-size: 17px; font-weight: 400; color: var(--text-faint); letter-spacing: -.01em; }
 .mc-head-spacer { flex: 1; }
 /* 控制鈕毛玻璃膠囊（與懸浮工具列同語言） */
+/* 工具列與畫廊 .gn-btn 對齊（2026-07-20 統一 UI）：拿掉膠囊容器（底色/邊框/陰影），
+   改扁平；按鈕圓角 10px、圖示 16px，與畫廊工具列一致。 */
 .mc-toolpill {
-  display: flex; align-items: center; gap: 1px;
-  padding: 3px 4px; border-radius: 999px;
-  background: var(--background-secondary);
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 45%, transparent);
-  box-shadow: 0 1px 6px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.12);
+  display: flex; align-items: center; gap: 2px;
+  padding: 0; border-radius: 0;
+  background: transparent; border: none; box-shadow: none;
 }
 .mc-iconbtn {
-  min-width: 28px; height: 28px; padding: 0 3px; border-radius: 8px;
+  min-width: 28px; height: 28px; padding: 0 3px; border-radius: 10px;
   display: flex; align-items: center; justify-content: center;
-  color: var(--text-muted); cursor: pointer; transition: background .12s, color .12s, transform .1s;
+  color: var(--text-muted); cursor: pointer; transition: background .12s, color .12s;
 }
 .mc-iconbtn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-.mc-iconbtn:active { transform: scale(.92); }
-.mc-iconbtn svg { width: 17px; height: 17px; }
+.mc-iconbtn svg { width: 16px; height: 16px; }
 .mc-today-btn { font-size: 12px; font-weight: 600; padding: 0 9px; }
 
-/* 星期列 */
-.mc-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 4px; }
-.mc-weekday { text-align: center; font-size: 11px; font-weight: 600; color: var(--text-faint); letter-spacing: .06em; }
+/* 星期列（2026-07-20：更小更淡，讓數字成為主角） */
+.mc-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 8px; }
+.mc-weekday { text-align: center; font-size: 10px; font-weight: 600; color: var(--text-faint); letter-spacing: .08em; text-transform: uppercase; }
 
-/* 月曆格 */
-.mc-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: 1fr; gap: 2px; }
+/* 月曆格（2026-07-20 現代化：圓形日期、扁平無光暈、今天用主題色細環） */
+.mc-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: 1fr; gap: 4px; }
 .mc-cell {
   position: relative;
   aspect-ratio: 1 / 1;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  border-radius: 11px;
+  border-radius: 50%;              /* 圓形日期格（Apple/Notion 風），取代 11px 圓角方塊 */
   cursor: pointer;
-  transition: background .12s;
+  transition: background .12s, box-shadow .12s;
 }
 .mc-cell:hover { background: var(--background-modifier-hover); }
-.mc-num { font-size: 14px; color: var(--text-normal); line-height: 1; }
+.mc-num { font-size: 14px; font-weight: 500; color: var(--text-normal); line-height: 1; }
 .mc-other .mc-num { color: var(--text-faint); }
-.mc-today .mc-num { font-weight: 800; }
-/* 有每日筆記的日子：數字加底線標記 */
-.mc-hasnote .mc-num { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--interactive-accent) 70%, transparent); }
+/* 今天：主題色細環＋主題色數字（原本是灰環＋800 粗體＝兩種訊號打架） */
+.mc-today { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--interactive-accent) 45%, transparent); }
+.mc-today .mc-num { font-weight: 700; color: var(--interactive-accent); }
+/* 有每日筆記：底線收細（原本 2px 偏重） */
+.mc-hasnote .mc-num { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--interactive-accent) 55%, transparent); }
 .mc-selected.mc-hasnote .mc-num { text-decoration-color: rgba(255,255,255,.8); }
-.mc-today { box-shadow: inset 0 0 0 1.5px var(--background-modifier-border-hover, var(--background-modifier-border)); }
-.mc-selected { background: var(--interactive-accent) !important; box-shadow: 0 3px 10px color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
-.mc-selected .mc-num { color: var(--text-on-accent); font-weight: 700; }
-.mc-selected.mc-today { box-shadow: 0 3px 10px color-mix(in srgb, var(--interactive-accent) 40%, transparent); }
+/* 選取：實心圓，扁平不打光暈 */
+.mc-selected { background: var(--interactive-accent) !important; box-shadow: none !important; }
+.mc-selected .mc-num { color: var(--text-on-accent); font-weight: 600; }
 
 /* 事件圓點 */
 .mc-dots { position: absolute; bottom: 5px; display: flex; gap: 3px; }
@@ -855,14 +890,14 @@ body.is-mobile {
 .mc-notes-head { margin: 0 0 8px; }
 .mc-notes-head2 { margin-top: 14px; }
 .mc-notes-title { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--text-muted); }
+/* 當日筆記列（2026-07-20 現代化）：扁平列表，去掉卡片邊框/底色/浮起陰影，只留 hover 底色。 */
 .mc-note {
   display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; margin-bottom: 5px; border-radius: 10px; cursor: pointer;
-  background: var(--background-secondary);
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 30%, transparent);
-  transition: background .12s, transform .1s, box-shadow .12s;
+  padding: 7px 8px; margin-bottom: 2px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: none;
+  transition: background .12s;
 }
-.mc-note:hover { background: var(--background-modifier-hover); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.mc-note:hover { background: var(--background-modifier-hover); }
 .mc-note-icon { display: flex; flex: none; color: var(--text-muted); }
 .mc-note-icon svg { width: 15px; height: 15px; }
 .mc-note-name { flex: 1; font-size: 13px; color: var(--text-normal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -881,16 +916,13 @@ body.is-mobile {
 
 /* 全天事件藥丸 */
 .mc-allday { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+/* 去描邊與左側色條（2026-07-20，與時間軸事件方塊同語言）：左右內距對稱。 */
 .mc-allday-pill {
   position: relative;
   font-size: 12px; font-weight: 600; color: var(--text-normal);
-  padding: 4px 12px 4px 18px; border-radius: 999px;
-  background: color-mix(in srgb, var(--mc-c) 16%, var(--background-primary));
-  border: 1px solid color-mix(in srgb, var(--mc-c) 24%, transparent);
-}
-.mc-allday-pill::before {
-  content: ''; position: absolute; left: 8px; top: 6px; bottom: 6px;
-  width: 3px; border-radius: 3px; background: var(--mc-c);
+  padding: 4px 12px; border-radius: 999px;
+  background: color-mix(in srgb, var(--mc-c) 20%, var(--background-primary));
+  border: none;
 }
 
 /* 時間軸 */
@@ -905,18 +937,17 @@ body.is-mobile {
 .mc-nowline::before { content: ''; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d); }
 
 .mc-events { position: absolute; left: 48px; right: 2px; top: 0; bottom: 0; }
+/* 事件方塊（2026-07-20 現代化）：去陰影與描邊，改「稍濃的色底＋左側色條」＝乾淨色塊。 */
 .mc-block {
   position: absolute; overflow: hidden;
-  padding: 3px 7px 3px 11px; border-radius: 9px;
-  background: color-mix(in srgb, var(--mc-c) 16%, var(--background-primary));
-  border: 1px solid color-mix(in srgb, var(--mc-c) 28%, transparent);
-  box-shadow: 0 1px 3px rgba(0,0,0,.07);
+  padding: 3px 7px 3px 11px; border-radius: 8px;
+  background: color-mix(in srgb, var(--mc-c) 20%, var(--background-primary));
+  border: none;
+  box-shadow: none;
 }
-/* 左側色條：內縮成一條線，上下留白、自身圓角，不被卡片圓角吃掉 */
-.mc-block::before {
-  content: ''; position: absolute; left: 4px; top: 4px; bottom: 4px;
-  width: 3px; border-radius: 3px; background: var(--mc-c);
-}
+/* 左側色條移除（2026-07-20 使用者要求）：靠色底本身辨識行事曆顏色即可。
+   左內距一併收回（原本 11px 是為了讓出色條空間）。 */
+.mc-block { padding-left: 7px; }
 .mc-btime { font-size: 10px; color: var(--text-muted); line-height: 1.2; font-variant-numeric: tabular-nums; }
 .mc-btitle { font-size: 12.5px; font-weight: 600; color: var(--text-normal); line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-bsub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -924,6 +955,42 @@ body.is-mobile {
 /* 手機微調 */
 .is-mobile .mc-month, .is-mobile .mc-year { font-size: 24px; }
 .is-mobile .mc-num { font-size: 15px; }
+
+/* ===================== 交換圖片視窗（2026-07-20）===================== */
+/* 面板底色吃主題 modal 變數（全案規約），換主題不走鐘 */
+.gn-swap-modal { width: min(760px, 92vw); }
+.gn-swap-title {
+  font-size: 13px; font-weight: 600; letter-spacing: -.01em;
+  color: var(--text-muted); margin: 0 0 10px;
+}
+.gn-swap-search {
+  width: 100%; margin: 0 0 12px;
+  padding: 7px 10px; border-radius: 8px;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-normal); font-size: 13px;
+}
+.gn-swap-search:focus { outline: none; border-color: var(--interactive-accent); }
+.gn-swap-wall { max-height: min(62vh, 560px); overflow-y: auto; padding-right: 4px; }
+.gn-swap-grid { position: relative; }
+.gn-swap-cell {
+  border-radius: 8px; overflow: hidden; cursor: pointer;
+  background: var(--background-secondary);
+  transition: transform .12s, box-shadow .12s;
+}
+.gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0 4px 14px rgba(0, 0, 0, .16); }
+/* 固定成正方縮圖：高解析原圖不會把版面（與記憶體）撐爆，也讓瀑布流高度可預測 */
+.gn-swap-cell img {
+  width: 100%; aspect-ratio: 1 / 1; height: auto;
+  object-fit: cover; display: block;
+  background: var(--background-modifier-hover);
+}
+.gn-swap-name {
+  padding: 5px 7px;
+  font-size: 10px; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gn-swap-empty { padding: 24px 4px; font-size: 13px; color: var(--text-muted); text-align: center; }
 
 /* ===================== 搜尋列 ===================== */
 /* 放在 .gn-root 底下（不在 .gn-main 內）：
@@ -1240,11 +1307,11 @@ body.is-mobile {
 /* ===== 圖片卡版面：兩種可選（2026-07-20 設定 → 卡片牆 → 圖片卡版面）=====
    預設＝「白字疊圖」（本區）；.gn-root 掛 .gn-imgcard-stacked 時整組不生效，
    改用檔案前段（.gn-card.gn-has-img 基礎規則，407 行附近）的「圖上文下」版面。
-   本區選擇器全部加 .gn-root:not(.gn-imgcard-stacked) 前綴，
+   本區選擇器全部加 .gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) 前綴，
    同特異度規則不生效時，前段的圖上文下規則自然接手，不用另外重寫一份。 ===== */
 /* 白字疊圖：整張卡＝圖片滿版；標題/日期疊在底部黑色漸層上，桌機 hover 才浮現、手機常駐淡出漸層。
    文字區 absolute 不佔高 → 卡高＝圖高，純圖牆。 */
-.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-body {
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img .gn-body {
   position: absolute; left: 0; right: 0; bottom: 0;
   z-index: 2;
   padding: 26px 12px 9px;
@@ -1252,10 +1319,134 @@ body.is-mobile {
   opacity: 0; transition: opacity .18s;
   pointer-events: none;   /* 點擊穿透給卡片本體 */
 }
-.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img:hover .gn-body { opacity: 1; }
-.is-mobile .gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-body { opacity: 1; padding-top: 18px; }   /* 手機沒 hover → 常駐 */
-.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-title { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
-.gn-root:not(.gn-imgcard-stacked) .gn-card.gn-has-img .gn-date { color: rgba(255, 255, 255, .78); }
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:hover .gn-body { opacity: 1; }
+.is-mobile .gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img .gn-body { opacity: 1; padding-top: 18px; }   /* 手機沒 hover → 常駐 */
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img .gn-title { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img .gn-date { color: rgba(255, 255, 255, .78); }
+
+/* overlay 模式例外：沒有真圖的「檔型封面卡」（base / canvas 無縮圖 / pdf 佔位）維持圖上文下（stacked），
+   不要把文字疊在灰底 icon 封面上（沒有圖、疊上去會蓋住 icon）。
+   用 :has(.gn-fileicon) 精準命中——canvas/pdf 抓到真圖後 .gn-fileicon 被換成 <img>，就自動改回 overlay。
+   選擇器比上面 overlay 規則多一個 :has()＝特異度更高、又排在其後，穩定覆蓋回堆疊值。 */
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:has(.gn-fileicon) .gn-body {
+  position: relative; z-index: 1;
+  padding: 9px 12px 10px;
+  background: inherit;
+  opacity: 1; pointer-events: auto;
+}
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:has(.gn-fileicon) .gn-title { color: var(--text-normal); text-shadow: none; }
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:has(.gn-fileicon) .gn-date { color: var(--text-faint); text-shadow: none; }
+
+/* ===== 圖片卡版面③「編輯風索引卡」（imageCardLayout='editorial'，2026-07-20 新增）=====
+   版型：左上角小方縮圖 ＋ 右上角大日數/小月年 ＋ 下方大標題。無圖時同版型、卡片自然較矮。
+   日期用 JS 另建的 .gn-datebox（大日數＋短月年），原本的 .gn-date（YYYY-MM-DD）在此模式隱藏。
+   ⚙️ 兩個縮放旋鈕：
+      --gn-ed     ＝內距/字級等「整體」倍率（1 ＝ 基準尺寸）
+      --gn-ed-img ＝**只有縮圖**的倍率（2026-07-20：使用者只要圖片放大 1.3，字級維持原樣）
+      ⚠️ 兩者都只影響卡片內部；卡片寬度是瀑布流欄寬，用「⋯ 更多 → 卡片大小」滑桿調。 */
+.gn-root.gn-imgcard-editorial { --gn-ed: 1; --gn-ed-img: 1.3; }
+.gn-root.gn-imgcard-editorial .gn-card,
+.gn-root.gn-imgcard-editorial .gn-card.gn-has-img {
+  padding: calc(14px * var(--gn-ed));
+  border-radius: calc(16px * var(--gn-ed));
+  background: var(--background-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .05);
+}
+/* 縮圖／檔型圖示：左上角小方卡（不再滿版、不吃 16:9 / 1:1 最小比例） */
+.gn-root.gn-imgcard-editorial .gn-card.gn-has-img > img,
+.gn-root.gn-imgcard-editorial .gn-card .gn-fileicon {
+  order: 1;
+  width: calc(72px * var(--gn-ed-img)); height: calc(72px * var(--gn-ed-img));
+  min-height: 0; aspect-ratio: auto;
+  object-fit: cover;
+  border-radius: calc(8px * var(--gn-ed-img));
+  margin: 0 0 calc(14px * var(--gn-ed));
+  align-self: flex-start;
+}
+/* 右上角日期塊（.gn-card 本身是 position:absolute → 直接當定位基準） */
+.gn-root.gn-imgcard-editorial .gn-datebox {
+  position: absolute;
+  /* 2026-07-20：日期離上／右邊界再多留一點（18px，比卡片 padding 14px 更內縮）。
+     刻意不跟縮圖共用同一條線——小字塊貼太邊會顯得擁擠。 */
+  top: calc(18px * var(--gn-ed)); right: calc(18px * var(--gn-ed));
+  display: flex; flex-direction: column; align-items: flex-end;
+  line-height: 1; pointer-events: none;
+}
+.gn-root.gn-imgcard-editorial .gn-datebox-day {
+  font-size: calc(16px * var(--gn-ed)); font-weight: 500; letter-spacing: -.03em;
+  color: var(--text-normal); font-variant-numeric: tabular-nums;
+  /* 光學對齊：行盒上方有字型上伸空間，數字看起來會比縮圖頂端低 → 往上補回。
+     用 em（隨字級自動等比）而非固定 px：字級一改就不必重算補償值（2026-07-20）。 */
+  margin-top: -.12em;
+}
+.gn-root.gn-imgcard-editorial .gn-datebox-my {
+  margin-top: calc(4px * var(--gn-ed));
+  font-size: calc(10px * var(--gn-ed)); font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted);
+  /* 字距會在「最後一個字之後」也加一份空隙 → 右緣比上面的日數縮進。抵銷掉尾隙才對得齊。 */
+  margin-right: -.08em;
+}
+/* 文字區：一般流排版（覆蓋 overlay 模式的 absolute/漸層/淡出） */
+.gn-root.gn-imgcard-editorial .gn-body {
+  position: static; order: 2;
+  padding: 0; background: transparent;
+  opacity: 1; pointer-events: auto;
+  display: flex; flex-direction: column;
+}
+.gn-root.gn-imgcard-editorial .gn-title {
+  order: 1;
+  font-size: calc(13px * var(--gn-ed)); font-weight: 600; line-height: 1.3; letter-spacing: -.01em;
+  color: var(--text-normal); text-shadow: none;
+  -webkit-line-clamp: 3;
+}
+.gn-root.gn-imgcard-editorial .gn-date { display: none; }        /* 由 .gn-datebox 取代 */
+/* base / canvas / pdf 的檔型封面：此模式下只留文字，不要 icon（2026-07-20 使用者要求）。
+   縮圖只有 94px，icon+文字並排會太擠 → 文字獨撐、字級略縮以塞進小方塊。 */
+.gn-root.gn-imgcard-editorial .gn-fileicon-ic { display: none; }
+.gn-root.gn-imgcard-editorial .gn-fileicon-label { font-size: 12px; letter-spacing: .1em; }
+/* 釘選角標：內縮距離與縮圖一致（＝卡片 padding），角標貼齊縮圖的左上角（2026-07-20）。
+   （曾試過右下角、日期下方，最後回到左上角圓形角標。） */
+.gn-root.gn-imgcard-editorial .gn-card-pin {
+  top: calc(14px * var(--gn-ed));
+  left: calc(14px * var(--gn-ed));
+}
+/* 內文預覽：此模式**有圖的卡也要顯示**（覆蓋通用的 .gn-has-img .gn-preview{display:none}；
+   JS 端也已在 editorial 模式為圖片卡補建 .gn-preview 並掛延遲載入）。 */
+.gn-root.gn-imgcard-editorial .gn-preview,
+.gn-root.gn-imgcard-editorial .gn-card.gn-has-img .gn-preview {
+  display: -webkit-box;
+  order: 2; margin-top: calc(6px * var(--gn-ed));
+  font-size: calc(7pt * var(--gn-ed));    /* 基準 7pt（2026-07-20 使用者指定），隨 --gn-ed 縮放 */
+  line-height: 1.45;
+  -webkit-line-clamp: 3;
+}
+/* 無圖卡：沒有縮圖佔位 → 標題要讓開右上角日期塊的高度；並解除「最小 16:9 / 1:1」撐高 */
+.gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-body {
+  min-height: 0; padding-top: calc(58px * var(--gn-ed));   /* 日期塊往下移 4px → 讓位高度跟著加 */
+}
+.gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-date { margin-top: 0; padding-top: 0; }
+/* 手機：基準尺寸略縮（同樣吃 --gn-ed） */
+.is-mobile .gn-root.gn-imgcard-editorial .gn-card.gn-has-img > img,
+.is-mobile .gn-root.gn-imgcard-editorial .gn-card .gn-fileicon {
+  width: calc(56px * var(--gn-ed-img)); height: calc(56px * var(--gn-ed-img));
+  margin-bottom: calc(10px * var(--gn-ed));
+}
+.is-mobile .gn-root.gn-imgcard-editorial .gn-datebox-day { font-size: calc(15px * var(--gn-ed)); }
+.is-mobile .gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-body { padding-top: calc(40px * var(--gn-ed)); }
+/* 手機也吃 7pt／3 行（通用 .is-mobile .gn-preview 是 11px，特異度較高會蓋掉，這裡補回） */
+.is-mobile .gn-root.gn-imgcard-editorial .gn-preview { font-size: calc(7pt * var(--gn-ed)); -webkit-line-clamp: 3; }
+
+/* ===== 自動卡片底色（2026-07-20；設定 → 卡片牆 →「依封面圖自動決定卡片底色」）=====
+   JS 抽出封面圖主色寫進 --gn-tint，這裡混入主題底色。
+   ⚠️ 只混 14%：直接塗原色會讓標題/日期看不清，且彩度高的圖會讓整牆很吵。
+      想更濃/更淡 → 只改這個百分比。
+   ⚠️ 必須排在「.gn-card 基礎底色」與「editorial 卡片底色」之後才蓋得過（同特異度後者勝）。
+   ⚠️ 手動上色（.gn-card-colored）用 :not() 排除 → 右鍵指定的色永遠優先。 */
+.gn-card.gn-card-tinted:not(.gn-card-colored),
+.gn-root.gn-imgcard-editorial .gn-card.gn-card-tinted:not(.gn-card-colored),
+.gn-root.gn-imgcard-editorial .gn-card.gn-has-img.gn-card-tinted:not(.gn-card-colored) {
+  background: color-mix(in srgb, var(--gn-tint) 14%, var(--background-primary));
+}
 
 /* 手機：圖片卡最小比例 1:1（2026-07-19）——寬幅圖不再變成扁扁一小條。
    container query 單位：100cqw = 卡片寬 → min-height 撐到正方形，object-fit: cover 裁切不變形；
@@ -2706,7 +2897,14 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 
 @media (max-width: 480px) {
   .lcp-card { max-width: 100%; }
+  .lcp-lp-inner { max-width: 100%; }   /* 漏網之魚：Live Preview 的包裝層也要解除 420px 上限 */
 }
+/* 手機（Obsidian 行動版）：連結卡一律填滿內容寬度，與內嵌圖片同寬（2026-07-20 修）。
+   ⚠️ 原本只有 max-width:480px 的媒體查詢、且只解除 .lcp-card ——
+      .lcp-lp-inner 仍卡 420px → Live Preview 下連結卡比內嵌圖片窄一截（右緣對不齊）。
+   用 .is-mobile 而非螢幕寬度判斷，iPad/橫向等較寬螢幕也一致。 */
+.is-mobile .lcp-card,
+.is-mobile .lcp-lp-inner { max-width: 100%; }
 
 /* ============ Live Preview ============ */
 .lcp-lp-container {
