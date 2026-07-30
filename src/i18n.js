@@ -259,6 +259,11 @@ const ZH_TW = {
   'Editorial index card (thumbnail + big date)': '編輯風索引卡（小縮圖＋大日期）',
   'Auto card color from cover image': '依封面圖自動決定卡片底色',
   'Tints each card with the dominant color of its cover image. Cards you colored manually are left alone.': '用封面圖的主色染卡片底色。手動上色過的卡片不受影響。',
+  'Peek image': '預覽圖片',
+  'Action failed: {{msg}}': '操作失敗：{{msg}}',
+  'Image lightbox actions': '圖片放大檢視的動作膠囊',
+  'Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.':
+    '在 Obsidian 點圖片放大時，於畫面底部加一條浮動動作列（複製、找相似、在 Finder 顯示）。Obsidian 沒有提供 lightbox 的擴充 API，日後改版若導致這條動作列異常，把它關掉即可。',
   'Swap image…': '交換圖片…',
   'Swap image': '交換圖片',
   'Filter by file name…': '搜尋檔名…',

@@ -789,6 +789,18 @@ function setFolderIcon(el, open) {
   setSvg(el, open ? FOLDER_OPEN_SVG : FOLDER_CLOSED_SVG);
 }
 
+/* 樹列的圖示欄（2026-07-31）：圖示與展開箭頭疊在同一格，hover 時交叉淡入。
+   以前是「箭頭一欄 + 圖示一欄」，箭頭欄對不能展開的資料夾永遠是空的，
+   白白吃掉 26px 又讓視線多一個落點。合併後列更緊湊，而且因為兩者疊在
+   同一格，有沒有箭頭都不會讓列寬跳動。
+   回傳 { slot, thumb, caret }；不需要箭頭的列（根目錄、最愛）不碰 caret 即可。 */
+function makeIconSlot(row) {
+  const slot = row.createSpan('gn-tslot');
+  const thumb = slot.createSpan('gn-tthumb');
+  const caret = slot.createSpan('gn-tcaret');
+  return { slot, thumb, caret };
+}
+
 function iconForExt(ext) {
   if (ext === 'canvas') return 'frame';        // 畫布（artboard 風）
   if (ext === 'pdf') return 'file-text';
@@ -1879,8 +1891,8 @@ class GalleryView extends ItemView {
     for (const { f, af } of favs) {
       const row = sec.createDiv('gn-tnode gn-fav-row');
       row.style.setProperty('--gn-depth', '1');
-      row.createSpan('gn-tcaret');
-      const thumb = row.createSpan('gn-tthumb');
+      // 最愛是捷徑、不能展開 → 只用圖示欄的圖示
+      const { thumb } = makeIconSlot(row);
       // 資料夾用和樹狀圖同一個自訂資料夾圖示（並加 folder class 一起藏）；筆記用 lucide file-text（保留）
       if (f.type === 'folder') { thumb.addClass('gn-tthumb-folder'); setFolderIcon(thumb, false); }
       else setIcon(thumb, 'file-text');
@@ -2624,8 +2636,10 @@ class GalleryView extends ItemView {
     const rootRow = treeScroll.createDiv('gn-tnode');
     rootRow.style.setProperty('--gn-depth', '0');
     rootRow.toggleClass('gn-tsel', !this.path);
-    rootRow.createSpan('gn-tcaret');
-    setIcon(rootRow.createSpan('gn-tthumb gn-tthumb-home'), 'home');   // 根目錄＝家（2026-07-18）
+    // 根目錄不能展開 → 只用圖示欄的圖示，箭頭留空
+    const rootSlot = makeIconSlot(rootRow);
+    rootSlot.thumb.addClass('gn-tthumb-home');
+    setIcon(rootSlot.thumb, 'home');   // 根目錄＝家（2026-07-18）
     rootRow.createSpan('gn-tname').setText(this.app.vault.getName());  // 動態 vault 名（原本寫死 Yaoting）
     rootRow.onclick = () => this.navigate('');
     this.wireMoveTarget(rootRow, '', 'gn-tmove');
@@ -2659,17 +2673,20 @@ class GalleryView extends ItemView {
         if (isHidden) row.addClass('gn-thidden');
         if (hasKids && isOpen) row.addClass('gn-topen');
 
-        const caret = row.createSpan('gn-tcaret');
-        if (hasKids) {
-          // 固定用 chevron-right，展開狀態靠 CSS 轉 90°（換圖示無法做旋轉動畫）
-          setIcon(caret, 'chevron-right');
-          caret.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
-        }
-
-        const thumb = row.createSpan('gn-tthumb gn-tthumb-folder');   // folder class 保留：日後要再藏資料夾圖示用
+        // 圖示欄：平常是資料夾圖示，hover 時換成箭頭（可展開的話）
+        const { slot, thumb, caret } = makeIconSlot(row);
+        thumb.addClass('gn-tthumb-folder');   // folder class 保留：日後要再藏資料夾圖示用
         setFolderIcon(thumb, hasKids && isOpen);
         // 資料夾配色套在圖示上（2026-07-25 還原；07-20 曾因藏圖示改套在名稱文字）
         if (folderColors[it.folder.path]) thumb.style.color = paletteFor(it, folderColors).bg;
+
+        if (hasKids) {
+          row.addClass('gn-thaskids');   // CSS 靠它決定 hover 要不要換成箭頭
+          // 固定用 chevron-right，展開狀態靠 CSS 轉 90°（換圖示無法做旋轉動畫）
+          setIcon(caret, 'chevron-right');
+          // 點整格都能展開（不只箭頭本身），觸控才好按
+          slot.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
+        }
 
         const nameEl = row.createSpan('gn-tname');
         nameEl.setText(it.name);
@@ -3180,12 +3197,18 @@ class GalleryView extends ItemView {
       row.style.setProperty('--gn-depth', String(depth));
       if (depth > 1) row.addClass('gn-tchild');
       if (activeTag === node.path) row.addClass('gn-tsel');
-      const caret = row.createSpan('gn-tcaret');
+      // data-path + gn-topen：讓標籤樹也吃到 treePlay() 的展開/收合與箭頭旋轉動畫
+      // （兩棵樹不會同時顯示，所以 path 不會跟資料夾撞）
+      row.dataset.path = 'tag:' + node.path;
+      if (hasKids && isOpen) row.addClass('gn-topen');
+      // 圖示欄：平常是 #，hover 時換成箭頭（與資料夾樹同一套行為）
+      const { slot, thumb, caret } = makeIconSlot(row);
+      setIcon(thumb, 'hash');
       if (hasKids) {
-        setIcon(caret, isOpen ? 'chevron-down' : 'chevron-right');
-        caret.onclick = (e) => { e.stopPropagation(); this.toggleTag(node.path); };
+        row.addClass('gn-thaskids');
+        setIcon(caret, 'chevron-right');   // 展開狀態靠 CSS 轉 90°
+        slot.onclick = (e) => { e.stopPropagation(); this.toggleTag(node.path); };
       }
-      setIcon(row.createSpan('gn-tthumb'), 'hash');
       row.createSpan('gn-tname').setText(node.name);
       row.createSpan('gn-tcount').setText(String(node.count));
       if (this._tagSel && this._tagSel.has(node.path)) row.addClass('gn-tmsel');
@@ -3267,8 +3290,8 @@ class GalleryView extends ItemView {
     const uRow = container.createDiv('gn-tnode');
     uRow.style.setProperty('--gn-depth', '1');
     if (activeTag === '__untagged__') uRow.addClass('gn-tsel');
-    uRow.createSpan('gn-tcaret');
-    setIcon(uRow.createSpan('gn-tthumb'), 'file-question');
+    // 未標籤不能展開 → 只用圖示欄的圖示
+    setIcon(makeIconSlot(uRow).thumb, 'file-question');
     uRow.createSpan('gn-tname').setText(t('Untagged'));
     uRow.createSpan('gn-tcount').setText(String(untagged.length));
     uRow.onclick = () => { this.plugin.state.activeTag = '__untagged__'; this.plugin.saveState(); this.render(); this.gotoCardsMobile(); };
@@ -4184,6 +4207,12 @@ class CalendarSettingTab extends PluginSettingTab {
       .addToggle((tg) => tg.setValue(!!st.enablePinterest)
         .onChange((v) => { st.enablePinterest = v; save(); this.plugin.refreshViews(); }));
 
+    new Setting(containerEl)
+      .setName(t('Image lightbox actions'))
+      .setDesc(t('Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.'))
+      .addToggle((tg) => tg.setValue(st.enableLightboxActions !== false)
+        .onChange((v) => { st.enableLightboxActions = v; save(); }));
+
     /* ══ 2. 圖片預覽 ══ */
     this.group(containerEl, t('Image peek'), t('Double-click an image or press Space for a Quick Look style preview; includes Pinterest visual search.'));
     new Setting(containerEl)
@@ -4861,13 +4890,14 @@ class GalleryPlugin extends Plugin {
       this.openGalleryTag(tag);
     }, true);
 
-    // 桌機：右鍵
-    this.registerDomEvent(document, 'contextmenu', (evt) => {
-      const src = imgSrcOf(evt.target);
-      if (!src) return;
-      evt.preventDefault();
-      buildImageMenu(evt.target, src).showAtPosition({ x: evt.clientX, y: evt.clientY });
-    });
+    // 桌機右鍵改走 file-menu（見 setupImageFileMenu）——
+    // 以前這裡攔 document 的 contextmenu 再 preventDefault，但 Obsidian 自己的
+    // 處理器掛在更內層、先跑完就把原生選單顯示出來了，這段等於從來沒生效過。
+    // 而且劫持原生選單是上架審查的減分項，所以直接拿掉，改成把項目「加進」原生選單。
+    this.setupImageFileMenu();
+
+    // 原生 lightbox（Obsidian 1.13+）補上動作膠囊
+    this.setupLightboxActions();
 
     // 手機：長按（自製計時器；移動或放開即取消，並攔掉後續 click）
     let lpTimer = null, lpX = 0, lpY = 0;
@@ -4942,6 +4972,135 @@ class GalleryPlugin extends Plugin {
 
   /* 這張 <img> 是筆記裡「第幾個指向同一個檔案的嵌入」——交換時才不會改到別張。
      閱讀檢視：同 src 的 .internal-embed 依 DOM 順序數。數不出來就回 0（改第一個）。 */
+  /* 把 GN 的圖片功能掛進 Obsidian 原生的檔案選單（筆記內右鍵圖片、檔案總管右鍵圖檔都會觸發）。
+     這是 Text Extractor、Claudian 用的同一個 API —— 加進去，而不是取代掉原生選單。
+     只加「原生沒有」的三項；複製圖片、刪除、在 Finder 顯示原生本來就有，重複只是噪音。 */
+  setupImageFileMenu() {
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (!(file instanceof TFile) || !IMG_EXT.test(file.path)) return;
+
+      const img = this.findImgEl(file);          // 畫面上這張圖的 <img>（找不到＝不在目前筆記裡）
+      const note = this.app.workspace.getActiveFile();
+
+      // ① 圖片預覽：peek 需要真正的 DOM 元素來收集同一篇的圖做 ← → 導覽，
+      //    所以只在圖確實顯示於畫面上時提供。
+      if (img && this.peek && this.state.enablePeek !== false) {
+        menu.addItem((i) => i.setTitle(t('Peek image')).setIcon('scan-eye')
+          .onClick(() => { try { this.peek.open(img); } catch (e) {} }));
+      }
+
+      // ② Pinterest 找相似：不需要 DOM，vault 的 resource path 就夠
+      if (this.state.enablePinterest) {
+        const srcFolder = note && note.parent && note.parent.path !== '/' ? note.parent.path : '';
+        menu.addItem((i) => i.setTitle(t('Pinterest visual search')).setIcon('search')
+          .onClick(() => new PinterestModal(
+            this.app, this.app.vault.getResourcePath(file), (img && img.alt) || '', srcFolder).open()));
+      }
+
+      // ③ 交換圖片：要改寫來源筆記，所以必須確定「這張圖真的被目前這篇引用」——
+      //    否則在檔案總管右鍵時會去改到一篇不相干的筆記。
+      if (note && note.extension === 'md' && this.noteEmbeds(note, file)) {
+        menu.addItem((i) => i.setTitle(t('Swap image…')).setIcon('image-plus')
+          .onClick(() => {
+            const nth = img ? this.imgEmbedIndex(img, file) : 0;   // 沒有 DOM 就換第一個
+            new SwapImageModal(this.app, file, (picked) => this.swapImage(note, file, picked, nth)).open();
+          }));
+      }
+    }));
+  }
+
+  /* ── 原生 lightbox 的動作膠囊（2026-07-31）──
+     Obsidian 1.13 點圖片會開一個 div.lightbox（app.js 是 activeDocument.body.appendChild），
+     但它沒有「複製 / 在 Finder 顯示 / 找相似」這些動作。這裡在它出現時補一條底部膠囊，
+     外觀沿用 Image Peek 手機版那顆。
+
+     ⚠️ Obsidian 沒有給 lightbox 任何擴充 API，只能靠 MutationObserver 認私有 class。
+        1.12→1.13 就整套換過一次（舊的 .mod-image-lightbox 已成廢棄 CSS），
+        所以這裡全程防禦性寫法：認不得就安靜不做，絕不拋錯、不影響原生行為。
+        observer 只看 body 的直接子節點（不開 subtree），成本極低。 */
+  setupLightboxActions() {
+    const LB = 'lightbox';
+    const build = (lb) => {
+      if (this.state.enableLightboxActions === false) return;
+      if (lb.querySelector('.gn-lb-actions')) return;          // 已經加過
+      const media = lb.querySelector('.lightbox-media');
+      if (!media) return;                                      // 結構不認得 → 放棄
+
+      // 每次點擊都重新讀當下的 img：lightbox 可左右換圖，不能把檔案抓死
+      const curImg = () => lb.querySelector('.lightbox-media img');
+      const curFile = () => { const im = curImg(); return im ? this.imgToVaultFile(im) : null; };
+
+      const bar = lb.createDiv('gn-lb-actions');
+      const add = (icon, label, onClick) => {
+        const b = bar.createDiv({ cls: 'gn-lb-btn', attr: { 'aria-label': label } });
+        setIcon(b, icon);
+        b.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();   // 不要讓點擊穿透到背景（背景點擊＝關閉 lightbox）
+          try { onClick(); } catch (err) { new Notice(t('Action failed: {{msg}}', { msg: err.message })); }
+        });
+      };
+
+      add('copy', t('Copy image'), () => {
+        const im = curImg();
+        if (im) this.copyImage(im.currentSrc || im.src);
+      });
+
+      if (this.state.enablePinterest) {
+        add('search', t('Pinterest visual search'), () => {
+          const im = curImg();
+          if (!im) return;
+          const af = this.app.workspace.getActiveFile();
+          const srcFolder = af && af.parent && af.parent.path !== '/' ? af.parent.path : '';
+          new PinterestModal(this.app, im.currentSrc || im.src, im.alt || '', srcFolder).open();
+        });
+      }
+
+      // 只有 vault 內的圖才有實體檔案可以定位
+      if (typeof this.app.showInFolder === 'function' && curFile()) {
+        add('folder', t('Reveal in system explorer'), () => {
+          const f = curFile();
+          if (f) this.app.showInFolder(f.path);
+        });
+      }
+    };
+
+    const obs = new MutationObserver((muts) => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 1 && n.classList && n.classList.contains(LB)) {
+            try { build(n); } catch (e) {}
+          }
+        }
+      }
+    });
+    // lightbox 是 body 的直接子節點 → 不開 subtree，避免監聽整個 app 的 DOM 變動
+    try { obs.observe(activeDocument.body, { childList: true }); } catch (e) {}
+    this.register(() => obs.disconnect());
+  }
+
+  /* 目前畫面上對應到這個 vault 檔案的 <img>（沒有就回 null） */
+  findImgEl(file) {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const root = view && view.containerEl;
+    if (!root) return null;
+    for (const el of Array.from(root.querySelectorAll('img'))) {
+      const f = this.imgToVaultFile(el);
+      if (f && f.path === file.path) return el;
+    }
+    return null;
+  }
+
+  /* 這篇筆記有沒有嵌入這個檔案（用 metadataCache，不必讀檔） */
+  noteEmbeds(note, file) {
+    const cache = this.app.metadataCache.getFileCache(note) || {};
+    return (cache.embeds || []).some((e) => {
+      const lp = String(e.link || '').split('#')[0].split('|')[0].trim();
+      const f = lp && this.app.metadataCache.getFirstLinkpathDest(lp, note.path);
+      return f && f.path === file.path;
+    });
+  }
+
   imgEmbedIndex(img, oldFile) {
     try {
       const root = img.closest('.markdown-preview-view, .markdown-reading-view, .markdown-source-view, .cm-content');

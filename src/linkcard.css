@@ -357,34 +357,49 @@
 .lcp-lp-inner .lcp-card {
   margin: 0.4em 0;
 }
+/* 卡片右上的小按鈕（2026-07-31 改為比照原生）
+ *
+ * Obsidian 1.13 在筆記圖片 hover 時會浮出 .embed-actions 膠囊（放大 / 檢視原始碼），
+ * 這裡直接沿用它那一整套設計 token，讓連結卡片的按鈕跟原生長得一模一樣：
+ *
+ *   --embed-actions-background : color-mix(in srgb, var(--background-primary) 80%, transparent)
+ *   --embed-actions-blur       : var(--blur-s)        ← 毛玻璃，不是實色底
+ *   --embed-actions-shadow     : 0 1px 2px rgba(0,0,0,.05), 0 0 6px rgba(0,0,0,.05)
+ *   --embed-actions-radius     : calc(--embed-action-radius + --embed-actions-padding)
+ *   --embed-action-color       : var(--text-normal)   ← 不是 text-muted
+ *
+ * 全部帶 fallback，主題若沒定義這些變數（或使用者停在舊版 Obsidian）也不會破版。
+ * 跟原生的差異：原生是「容器包多顆按鈕」，這裡只有一顆，所以容器與按鈕合為同一個元素
+ * —— hover 底色因此改掛在自己身上（原生是掛在內層的 .embed-action）。 */
 .lcp-open-btn {
   position: absolute;
-  top: 14px;
-  right: 8px;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  top: var(--size-2-2, 4px);
+  right: var(--size-2-2, 4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-muted);
+  padding: calc(var(--size-2-2, 4px) + var(--embed-actions-padding, 2px));
+  border-radius: var(--embed-actions-radius, 8px);
+  corner-shape: var(--embed-actions-corner-shape, round);
+  background-color: var(--embed-actions-background, color-mix(in srgb, var(--background-primary) 80%, transparent));
+  backdrop-filter: var(--embed-actions-blur, blur(8px));
+  -webkit-backdrop-filter: var(--embed-actions-blur, blur(8px));
+  box-shadow: var(--embed-actions-shadow, 0 1px 2px 0 rgba(0, 0, 0, .05), 0 0 6px 0 rgba(0, 0, 0, .05));
+  color: var(--embed-action-color, var(--text-normal));
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity 0.07s ease-out;   /* 原生就是 .07s ease-out */
   cursor: pointer;
   z-index: 2;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 .lcp-lp-inner:hover .lcp-open-btn {
   opacity: 1;
 }
 .lcp-open-btn:hover {
-  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
 }
 .lcp-open-btn svg {
-  width: 14px;
-  height: 14px;
+  width: var(--icon-s, 16px);
+  height: var(--icon-s, 16px);
 }
 .lcp-card--canvas .lcp-open-btn {
   top: 8px;
@@ -392,15 +407,17 @@
 }
 
 /* 行動端：沒有 hover 也沒有修飾鍵，按鈕常駐並加大觸控目標（44pt 原則） */
+/* 手機：沒有 hover 所以常駐顯示，並比照原生手機版把觸控面積放大
+   （原生的做法是 --embed-actions-radius: var(--touch-size-l) + .embed-action 的 padding 加大） */
 .is-mobile .lcp-open-btn {
   opacity: 1;
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  padding: var(--size-4-2, 8px);
+  border-radius: var(--touch-size-l, 999px);
+  box-shadow: none;   /* 原生手機版 --embed-actions-shadow: none */
 }
 .is-mobile .lcp-open-btn svg {
-  width: 17px;
-  height: 17px;
+  width: var(--icon-l, 20px);
+  height: var(--icon-l, 20px);
 }
 .is-mobile .lcp-lp-inner .lcp-open-btn {
   top: 12px;

@@ -326,25 +326,41 @@
 .gn-tbefore { box-shadow: inset 0 2px 0 0 var(--interactive-accent); }
 .gn-tafter { box-shadow: inset 0 -2px 0 0 var(--interactive-accent); }
 
-.gn-tcaret {
+/* ── 圖示欄（2026-07-31）──
+   以前是「箭頭一欄 + 圖示一欄」，箭頭欄對不能展開的資料夾永遠空著，
+   白白吃掉 26px。現在合併成一格：圖示與箭頭疊在同一位置交叉淡入，
+   平常看到圖示，hover 到可展開的列才換成箭頭。
+   因為兩者都是絕對定位、疊在固定寬度的格子裡，有沒有箭頭都不會讓列寬跳動。 */
+.gn-tslot {
   flex: none;
+  position: relative;
   width: 22px; height: 22px;
+}
+.gn-tslot > .gn-tthumb,
+.gn-tslot > .gn-tcaret {
+  position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
   color: var(--text-muted);
-  cursor: pointer;
+  transition: opacity .13s ease;
 }
+.gn-tcaret { opacity: 0; }                       /* 預設藏著，hover 才換上來 */
+.gn-thaskids > .gn-tslot { cursor: pointer; }    /* 可展開才給指標，不能展開的別誤導 */
+.gn-thaskids:hover > .gn-tslot > .gn-tthumb { opacity: 0; }
+.gn-thaskids:hover > .gn-tslot > .gn-tcaret { opacity: 1; color: var(--text-normal); }
 /* 展開＝箭頭轉 90°。圖示固定用 chevron-right，靠旋轉表達狀態，
    這樣 refreshTree() 重建後 treePlay() 才能把角度動畫接起來（換圖示無法過渡）。
-   刻意不加 transition：樹是整棵重建的，新元素沒有起始值，動畫由 WAAPI 負責。 */
-.gn-tnode.gn-topen > .gn-tcaret { transform: rotate(90deg); }
-.gn-tnode:hover > .gn-tcaret { color: var(--text-normal); }
-/* 資料夾圖示：hover 時極輕微放大，給一點「可點」的暗示 */
-.gn-tnode > .gn-tthumb { transition: transform .16s cubic-bezier(.2,.7,.2,1); }
-.gn-tnode:hover > .gn-tthumb { transform: scale(1.06); }
+   刻意不加 transform 的 transition：樹是整棵重建的，新元素沒有起始值，
+   旋轉動畫由 WAAPI（treePlay）負責。 */
+.gn-tnode.gn-topen > .gn-tslot > .gn-tcaret { transform: rotate(90deg); }
+/* 不能展開的列：圖示 hover 時極輕微放大，給一點回饋（可展開的列改用換箭頭表達） */
+.gn-tnode:not(.gn-thaskids) > .gn-tslot > .gn-tthumb { transition: opacity .13s ease, transform .16s cubic-bezier(.2,.7,.2,1); }
+.gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb { transform: scale(1.06); }
+/* 手機沒有 hover：可展開的列一律直接顯示箭頭，否則沒有辦法展開 */
+.is-mobile .gn-thaskids > .gn-tslot > .gn-tthumb { opacity: 0; }
+.is-mobile .gn-thaskids > .gn-tslot > .gn-tcaret { opacity: 1; }
 .gn-tcaret svg { width: 18px; height: 18px; color: inherit; }
-.is-mobile .gn-tcaret { width: 28px; height: 28px; }
+.is-mobile .gn-tslot { width: 28px; height: 28px; }
 .is-mobile .gn-tcaret svg { width: 22px; height: 22px; }
-.gn-tcaret:hover { color: var(--text-normal); }
 /* 展開中的資料夾：圖示 + 名稱上強調色，一眼可辨（同原生檔案總管） */
 /* 展開中的資料夾：只加粗、不染主題色（2026-07-18 使用者要求；配色留給資料夾自訂色） */
 .gn-topen > .gn-tname { font-weight: 600; }
@@ -570,7 +586,7 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 /* （2026-07-25 還原）最愛列的資料夾／檔案圖示加回來。
    ⚠️ 這條要蓋掉上面 .gn-tthumb-folder 的規則（若日後又把資料夾圖示藏起來），
    所以最愛列的 thumb 一律明確設 display:flex。 */
-.gn-fav-row .gn-tthumb { display: flex; color: var(--text-muted); }
+.gn-fav-row .gn-tslot > .gn-tthumb { display: flex; color: var(--text-muted); }
 .gn-fav-row .gn-tthumb svg { width: 16px; height: 16px; }
 
 /* （2026-07-20 移除）連結牆 .gn-links-* 全部樣式：連結牆功能整套下架 */
@@ -813,7 +829,7 @@ body.is-mobile {
 .is-mobile .gn-bar-title-text { font-size: 17px; }
 
 .is-mobile .gn-tnode { padding-top: 9px; padding-bottom: 9px; }   /* 好點一點 */
-.is-mobile .gn-tthumb { width: 22px; height: 22px; }
+/* 手機：圖示欄由 .is-mobile .gn-tslot 撐大，這裡只放大 svg（thumb 本身是 inset:0 絕對定位） */
 .is-mobile .gn-tthumb svg { width: 20px; height: 20px; }
 .is-mobile .gn-tname { font-size: 17px; }                         /* 左欄字再大一點 */
 .is-mobile .gn-tcount { font-size: 12px; }
@@ -1525,10 +1541,49 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
    JS 那側由 motionOk() 擋掉 FLIP，這裡收拾 CSS 的部分。 */
 @media (prefers-reduced-motion: reduce) {
   .gn-grid-enter { animation: none; }
-  .gn-tnode, .gn-tnode > .gn-tthumb { transition: none; }
+  .gn-tnode, .gn-tslot > .gn-tthumb, .gn-tslot > .gn-tcaret { transition: none; }
   .gn-tnode:active { transform: none; }
-  .gn-tnode:hover > .gn-tthumb { transform: none; }
+  .gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb { transform: none; }
 }
+
+/* ═══ 原生 lightbox 的動作膠囊（2026-07-31）═══
+   Obsidian 1.13 的 div.lightbox 沒有「複製 / 找相似 / 在 Finder 顯示」，
+   由 gallery.js 的 setupLightboxActions() 注入這條。
+   外觀沿用 Image Peek 手機版那顆膠囊，桌機手機都用同一套。 */
+.lightbox .gn-lb-actions {
+  position: absolute;
+  left: 50%;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 3;                       /* 要在 .lightbox-content 之上 */
+  display: flex;
+  gap: 2px;
+  padding: 5px;
+  border-radius: 999px;
+  background: rgba(40, 40, 40, .72);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+  opacity: 1;
+  transition: opacity var(--anim-duration-fast, 140ms) ease;
+}
+.lightbox .gn-lb-actions:empty { display: none; }
+
+/* 放大或正在關閉時淡出 —— 跟原生標題列同一個規則，動作一致不打架 */
+.lightbox.is-zoomed .gn-lb-actions,
+.lightbox.is-dismissing .gn-lb-actions { opacity: 0; pointer-events: none; }
+
+.lightbox .gn-lb-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, .92);
+  cursor: pointer;
+  transition: background var(--anim-duration-superfast, 70ms) ease;
+}
+.lightbox .gn-lb-btn:hover { background: rgba(255, 255, 255, .16); }
+.lightbox .gn-lb-btn:active { background: rgba(255, 255, 255, .26); }
+.lightbox .gn-lb-btn svg { width: 20px; height: 20px; }
 
 /* ════════════ 2. Image Peek ════════════ */
 /* Quick Peek — Quick Look 式圖片預覽 */
@@ -2952,34 +3007,49 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .lcp-lp-inner .lcp-card {
   margin: 0.4em 0;
 }
+/* 卡片右上的小按鈕（2026-07-31 改為比照原生）
+ *
+ * Obsidian 1.13 在筆記圖片 hover 時會浮出 .embed-actions 膠囊（放大 / 檢視原始碼），
+ * 這裡直接沿用它那一整套設計 token，讓連結卡片的按鈕跟原生長得一模一樣：
+ *
+ *   --embed-actions-background : color-mix(in srgb, var(--background-primary) 80%, transparent)
+ *   --embed-actions-blur       : var(--blur-s)        ← 毛玻璃，不是實色底
+ *   --embed-actions-shadow     : 0 1px 2px rgba(0,0,0,.05), 0 0 6px rgba(0,0,0,.05)
+ *   --embed-actions-radius     : calc(--embed-action-radius + --embed-actions-padding)
+ *   --embed-action-color       : var(--text-normal)   ← 不是 text-muted
+ *
+ * 全部帶 fallback，主題若沒定義這些變數（或使用者停在舊版 Obsidian）也不會破版。
+ * 跟原生的差異：原生是「容器包多顆按鈕」，這裡只有一顆，所以容器與按鈕合為同一個元素
+ * —— hover 底色因此改掛在自己身上（原生是掛在內層的 .embed-action）。 */
 .lcp-open-btn {
   position: absolute;
-  top: 14px;
-  right: 8px;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  top: var(--size-2-2, 4px);
+  right: var(--size-2-2, 4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-muted);
+  padding: calc(var(--size-2-2, 4px) + var(--embed-actions-padding, 2px));
+  border-radius: var(--embed-actions-radius, 8px);
+  corner-shape: var(--embed-actions-corner-shape, round);
+  background-color: var(--embed-actions-background, color-mix(in srgb, var(--background-primary) 80%, transparent));
+  backdrop-filter: var(--embed-actions-blur, blur(8px));
+  -webkit-backdrop-filter: var(--embed-actions-blur, blur(8px));
+  box-shadow: var(--embed-actions-shadow, 0 1px 2px 0 rgba(0, 0, 0, .05), 0 0 6px 0 rgba(0, 0, 0, .05));
+  color: var(--embed-action-color, var(--text-normal));
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity 0.07s ease-out;   /* 原生就是 .07s ease-out */
   cursor: pointer;
   z-index: 2;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 .lcp-lp-inner:hover .lcp-open-btn {
   opacity: 1;
 }
 .lcp-open-btn:hover {
-  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
 }
 .lcp-open-btn svg {
-  width: 14px;
-  height: 14px;
+  width: var(--icon-s, 16px);
+  height: var(--icon-s, 16px);
 }
 .lcp-card--canvas .lcp-open-btn {
   top: 8px;
@@ -2987,15 +3057,17 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 }
 
 /* 行動端：沒有 hover 也沒有修飾鍵，按鈕常駐並加大觸控目標（44pt 原則） */
+/* 手機：沒有 hover 所以常駐顯示，並比照原生手機版把觸控面積放大
+   （原生的做法是 --embed-actions-radius: var(--touch-size-l) + .embed-action 的 padding 加大） */
 .is-mobile .lcp-open-btn {
   opacity: 1;
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  padding: var(--size-4-2, 8px);
+  border-radius: var(--touch-size-l, 999px);
+  box-shadow: none;   /* 原生手機版 --embed-actions-shadow: none */
 }
 .is-mobile .lcp-open-btn svg {
-  width: 17px;
-  height: 17px;
+  width: var(--icon-l, 20px);
+  height: var(--icon-l, 20px);
 }
 .is-mobile .lcp-lp-inner .lcp-open-btn {
   top: 12px;
