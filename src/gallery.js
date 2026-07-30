@@ -1144,6 +1144,9 @@ class GalleryView extends ItemView {
   }
 
   async onClose() {
+    // gn-leaf 掛在外層的 .workspace-leaf-content 上（不屬於 contentEl，empty() 清不到）
+    // → 關閉時自己收回來，避免這個葉面板被別的 view 重用時殘留樣式
+    if (this.contentEl && this.contentEl.parentElement) this.contentEl.parentElement.removeClass('gn-leaf');
     // 清理 observer，避免關閉分頁後殘留
     for (const m of (this._masonries || [])) { try { m.destroy(); } catch (e) {} }
     this._masonries = [];
@@ -1877,9 +1880,15 @@ class GalleryView extends ItemView {
     const sec = container.createDiv('gn-fav-sec');
     if (collapsed) sec.addClass('gn-fav-collapsed');
     const head = sec.createDiv('gn-fav-head');
-    const caret = head.createSpan('gn-fav-caret');
-    setIcon(caret, collapsed ? 'chevron-right' : 'chevron-down');
-    setIcon(head.createSpan('gn-fav-star'), 'star');
+    /* 2026-07-31：原本是「箭頭一欄 + 星星一欄」，比下面的資料夾列多一欄，
+       所以「最愛」的文字跟「Yaoting」對不齊。改用跟資料夾樹同一個圖示欄：
+       平常顯示星星、hover 才換成箭頭，縮排就跟其他列一致了。
+       整列本來就可點擊收合（head.onclick），箭頭只是視覺提示，藏起來不損失功能。 */
+    const fav = makeIconSlot(head);
+    setIcon(fav.thumb, 'star');
+    setIcon(fav.caret, 'chevron-right');   // 展開狀態由 .gn-topen 轉 90°
+    if (!collapsed) head.addClass('gn-topen');
+    head.addClass('gn-thaskids');           // 讓 hover 換箭頭的規則生效
     head.createSpan('gn-fav-title').setText(t('Favorites'));
     head.createSpan('gn-fav-count').setText(String(favs.length));
     head.onclick = () => {
@@ -2010,6 +2019,7 @@ class GalleryView extends ItemView {
             img.loading = 'lazy';
             card.appendChild(img);   // 滿版圖片
             card.addClass('gn-has-img');
+            card.removeClass('gn-icon-cover');   // 換成真圖 → 文字改回疊圖模式
             if (placeholder) placeholder.remove();
             this.relayoutWalls();
             return;
@@ -2030,6 +2040,7 @@ class GalleryView extends ItemView {
       img.addClass('gn-pdf-thumb');
       card.appendChild(img);   // 滿版圖片
       card.addClass('gn-has-img');
+      card.removeClass('gn-icon-cover');   // 換成真圖 → 文字改回疊圖模式
       if (placeholder) placeholder.remove();
       this.relayoutWalls();
     };
@@ -2312,6 +2323,13 @@ class GalleryView extends ItemView {
     this._treeScrollLock = true;
     root.empty();
     root.addClass('gn-root');
+    /* 以下兩個狀態 class 取代原本的 :has()（2026-07-31）。
+       :has() 的失效範圍很廣，瀏覽器要在整棵子樹變動時重算祖先是否仍匹配；
+       這兩件事 JS 本來就知道，直接掛 class 更省也更明確。
+         • gn-leaf     ← 原 .workspace-leaf-content:has(> .gn-root)
+         • gn-search-on ← 原 .gn-root:has(> .gn-search-row) */
+    if (root.parentElement) root.parentElement.addClass('gn-leaf');
+    root.toggleClass('gn-search-on', !!this._searchOn);
     // （2026-07-20 移除）待辦卡對比色計算：底色已取消，不再需要 --gn-todo-bg
 
     // 手機單欄時掛狀態 class：豁免「卡片最小 1:1」限制（單欄全寬卡不需要，2026-07-19）
@@ -2674,7 +2692,7 @@ class GalleryView extends ItemView {
         if (hasKids && isOpen) row.addClass('gn-topen');
 
         // 圖示欄：平常是資料夾圖示，hover 時換成箭頭（可展開的話）
-        const { slot, thumb, caret } = makeIconSlot(row);
+        const { thumb, caret } = makeIconSlot(row);
         thumb.addClass('gn-tthumb-folder');   // folder class 保留：日後要再藏資料夾圖示用
         setFolderIcon(thumb, hasKids && isOpen);
         // 資料夾配色套在圖示上（2026-07-25 還原；07-20 曾因藏圖示改套在名稱文字）
@@ -2684,8 +2702,9 @@ class GalleryView extends ItemView {
           row.addClass('gn-thaskids');   // CSS 靠它決定 hover 要不要換成箭頭
           // 固定用 chevron-right，展開狀態靠 CSS 轉 90°（換圖示無法做旋轉動畫）
           setIcon(caret, 'chevron-right');
-          // 點整格都能展開（不只箭頭本身），觸控才好按
-          slot.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
+          // 綁在箭頭上：桌機的 caret 是 inset:0 撐滿整格 → 點整格都能展開；
+          // 手機的 caret 只佔箭頭那一格 → 點資料夾圖示是「選取」，點箭頭才展開。
+          caret.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
         }
 
         const nameEl = row.createSpan('gn-tname');
@@ -3202,12 +3221,12 @@ class GalleryView extends ItemView {
       row.dataset.path = 'tag:' + node.path;
       if (hasKids && isOpen) row.addClass('gn-topen');
       // 圖示欄：平常是 #，hover 時換成箭頭（與資料夾樹同一套行為）
-      const { slot, thumb, caret } = makeIconSlot(row);
+      const { thumb, caret } = makeIconSlot(row);
       setIcon(thumb, 'hash');
       if (hasKids) {
         row.addClass('gn-thaskids');
         setIcon(caret, 'chevron-right');   // 展開狀態靠 CSS 轉 90°
-        slot.onclick = (e) => { e.stopPropagation(); this.toggleTag(node.path); };
+        caret.onclick = (e) => { e.stopPropagation(); this.toggleTag(node.path); };
       }
       row.createSpan('gn-tname').setText(node.name);
       row.createSpan('gn-tcount').setText(String(node.count));
@@ -3573,6 +3592,10 @@ class GalleryView extends ItemView {
       // 非 md 且無封面 → 檔型「圖示封面」卡：套 gn-has-img 圖片卡版型（icon 方塊當封面、標題/日期在下），
       //   與圖片卡一致（canvas/base/pdf 皆然）。Canvas 抓到內部圖、PDF 渲染第一頁 → 之後無縫換成真圖封面。
       card.addClass('gn-has-img');
+      // gn-icon-cover 取代原本的 :has(.gn-fileicon)（2026-07-31）：
+      // 「封面其實是檔型圖示、不是真圖」→ 文字不疊在圖上。
+      // canvas/pdf 之後抓到真圖時會在 loadCanvasThumb / loadPdfThumb 移除這個 class。
+      card.addClass('gn-icon-cover');
       const ph = card.createDiv('gn-fileicon');
       setIcon(ph.createDiv('gn-fileicon-ic'), iconForExt(it.ext));       // icon 在上
       ph.createSpan('gn-fileicon-label').setText(it.ext.toUpperCase());  // 文字（BASE / CANVAS…）在下，一起置中

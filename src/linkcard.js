@@ -988,6 +988,9 @@ async function renderCard(wrap, url, meta, opts = {}) {
     body.appendChild(buildTitle(meta));
     body.appendChild(buildDomainRow(meta.hostname));
     if (src && imgKind === 'photo') {
+      // lcp-has-photo 取代原本的 :has(.lcp-thread-photo)（2026-07-31）：
+      // 這個條件 JS 這裡就已經知道了，不必再叫瀏覽器回頭查一次子樹。
+      wrap.classList.add('lcp-has-photo');
       const ph = document.createElement('div');
       ph.className = 'lcp-thread-photo';
       ph.style.backgroundImage = 'url("' + src + '")';

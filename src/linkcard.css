@@ -121,7 +121,7 @@
   overflow: hidden;                      /* 預覽不用全文：純文字貼文最多 6 行 */
 }
 /* 有照片的貼文：文字讓位給照片，最多 3 行 */
-.lcp-card--thread:has(.lcp-thread-photo) .lcp-thread-text { -webkit-line-clamp: 3; }
+.lcp-card--thread.lcp-has-photo .lcp-thread-text { -webkit-line-clamp: 3; }
 /* 貼文照片（-15/ 系）：內縮圓角、依實際比例顯示，過長截頂 */
 .lcp-card--thread .lcp-thread-photo {
   margin: 0 16px 14px;
@@ -373,8 +373,10 @@
  * —— hover 底色因此改掛在自己身上（原生是掛在內層的 .embed-action）。 */
 .lcp-open-btn {
   position: absolute;
-  top: var(--size-2-2, 4px);
-  right: var(--size-2-2, 4px);
+  /* 位置沿用原本的內縮：原生那顆是貼在「圖片」邊緣所以 4px 剛好，
+     但卡片有 12px 圓角，貼太近會卡在圓弧上（2026-07-31 調回） */
+  top: 14px;
+  right: 8px;
   display: flex;
   align-items: center;
   justify-content: center;

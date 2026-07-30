@@ -337,27 +337,62 @@
 .gn-tslot > .gn-tthumb,
 .gn-tslot > .gn-tcaret {
   position: absolute; inset: 0;
+  /* ⚠️ 必須把寬高歸零成 auto：.gn-tthumb 的基底規則有 width/height: 18px，
+     絕對定位元素只要有明確寬高，inset: 0 就只剩 top/left 生效 →
+     18px 的方塊會被釘在 22px 格子的左上角，圖示就偏左上 2px。 */
+  width: auto; height: auto;
   display: flex; align-items: center; justify-content: center;
   color: var(--text-muted);
   transition: opacity .13s ease;
 }
 .gn-tcaret { opacity: 0; }                       /* 預設藏著，hover 才換上來 */
-.gn-thaskids > .gn-tslot { cursor: pointer; }    /* 可展開才給指標，不能展開的別誤導 */
-.gn-thaskids:hover > .gn-tslot > .gn-tthumb { opacity: 0; }
-.gn-thaskids:hover > .gn-tslot > .gn-tcaret { opacity: 1; color: var(--text-normal); }
+.gn-thaskids > .gn-tslot > .gn-tcaret { cursor: pointer; }    /* 可展開才給指標，不能展開的別誤導 */
+/* ⚠️ 一定要排除手機：觸控的 :hover 點過會「黏住」，
+   沒有 body:not(.is-mobile) 的話，手機點過的資料夾圖示會直接消失。 */
+body:not(.is-mobile) .gn-thaskids:hover > .gn-tslot > .gn-tthumb { opacity: 0; }
+body:not(.is-mobile) .gn-thaskids:hover > .gn-tslot > .gn-tcaret { opacity: 1; color: var(--text-normal); }
 /* 展開＝箭頭轉 90°。圖示固定用 chevron-right，靠旋轉表達狀態，
    這樣 refreshTree() 重建後 treePlay() 才能把角度動畫接起來（換圖示無法過渡）。
    刻意不加 transform 的 transition：樹是整棵重建的，新元素沒有起始值，
    旋轉動畫由 WAAPI（treePlay）負責。 */
-.gn-tnode.gn-topen > .gn-tslot > .gn-tcaret { transform: rotate(90deg); }
+.gn-topen > .gn-tslot > .gn-tcaret { transform: rotate(90deg); }   /* 不綁 .gn-tnode：最愛標題列也要吃到 */
 /* 不能展開的列：圖示 hover 時極輕微放大，給一點回饋（可展開的列改用換箭頭表達） */
 .gn-tnode:not(.gn-thaskids) > .gn-tslot > .gn-tthumb { transition: opacity .13s ease, transform .16s cubic-bezier(.2,.7,.2,1); }
-.gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb { transform: scale(1.06); }
-/* 手機沒有 hover：可展開的列一律直接顯示箭頭，否則沒有辦法展開 */
-.is-mobile .gn-thaskids > .gn-tslot > .gn-tthumb { opacity: 0; }
-.is-mobile .gn-thaskids > .gn-tslot > .gn-tcaret { opacity: 1; }
+body:not(.is-mobile) .gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb { transform: scale(1.06); }
 .gn-tcaret svg { width: 18px; height: 18px; color: inherit; }
-.is-mobile .gn-tslot { width: 28px; height: 28px; }
+
+/* 手機版（2026-07-31 修訂）
+     • 不顯示檔案數 → 右側空出來，展開鈕改放最右邊（iOS 展開列的慣例，好按）
+     • 圖示欄只留資料夾圖示，箭頭移出去、絕對定位在整列的右緣
+     • 完全不吃 hover（上面的 hover 規則已用 body:not(.is-mobile) 排除）
+
+   ⚠️ 兩個容易踩的點：
+     1. 箭頭要相對「整列」定位 → 圖示欄必須 position: static，
+        否則會錨在 22px 的格子上；連帶圖示也要改回文件流。
+     2. 垂直置中用 top: calc(50% - 半高) 而不是 translateY(-50%)——
+        transform 要留給 treePlay() 的旋轉動畫，兩者搶同一個屬性會打架。 */
+.is-mobile .gn-tcount,
+.is-mobile .gn-fav-count { display: none; }
+
+.is-mobile .gn-tslot {
+  position: static;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.is-mobile .gn-tslot > .gn-tthumb {
+  position: static; inset: auto;
+  width: 28px; height: 28px;
+  opacity: 1;
+}
+.is-mobile .gn-fav-head { position: relative; }   /* 讓最愛標題列的箭頭也錨在自己身上 */
+.is-mobile .gn-tslot > .gn-tcaret {
+  position: absolute;
+  inset: auto 4px auto auto;      /* 先清掉繼承來的 inset: 0，再靠右 */
+  top: calc(50% - 17px);
+  width: 34px; height: 34px;      /* 觸控目標放大 */
+  opacity: 1;
+}
+.is-mobile .gn-thaskids { padding-right: 42px; }   /* 幫箭頭留位，長名稱不會被壓到 */
 .is-mobile .gn-tcaret svg { width: 22px; height: 22px; }
 /* 展開中的資料夾：圖示 + 名稱上強調色，一眼可辨（同原生檔案總管） */
 /* 展開中的資料夾：只加粗、不染主題色（2026-07-18 使用者要求；配色留給資料夾自訂色） */
@@ -569,14 +604,10 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
    箭頭色同 .gn-tcaret（text-muted）。 */
 .gn-fav-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; padding-left: 6px; cursor: pointer; border-radius: 8px; }
 .gn-fav-head:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
-.gn-fav-caret { flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
-.gn-fav-caret svg { width: 18px; height: 18px; }   /* 同 .gn-tcaret svg */
-.is-mobile .gn-fav-caret { width: 28px; height: 28px; }   /* 同 .is-mobile .gn-tcaret */
-/* （2026-07-25 還原）最愛標題列的 ★ 星星加回來，尺寸同 .gn-tthumb 的資料夾圖示。 */
-.gn-fav-star { flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
-.gn-fav-star svg { width: 16px; height: 16px; }
-.is-mobile .gn-fav-star { width: 22px; height: 22px; }
-.is-mobile .gn-fav-star svg { width: 20px; height: 20px; }   /* 手機同 .is-mobile .gn-tthumb */
+/* 2026-07-31：.gn-fav-caret / .gn-fav-star 已移除，改用共用的 .gn-tslot
+   （星星平常顯示、hover 換箭頭），縮排才跟下面的資料夾列對齊。
+   標題列的圖示欄要明確設 display:flex —— 蓋掉 .gn-tthumb-folder 那條若日後又把圖示藏起來的規則。 */
+.gn-fav-head > .gn-tslot > .gn-tthumb { display: flex; }
 .gn-fav-title { font-size: 13px; font-weight: 600; color: var(--text-muted); }   /* 與 .gn-tname 同字級（2026-07-18） */
 .is-mobile .gn-fav-title { font-size: 17px; }   /* 手機同 .is-mobile .gn-tname */
 .gn-fav-count { font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: auto; }
@@ -744,7 +775,7 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 .is-mobile .gn-tree-scroll { padding-right: 8px; }
 /* 手機：gn-root 本身就是 .view-content，真正的父層是 .workspace-leaf-content。
    讓父層成為 flex 直向、gn-root 撐滿剩餘高度，底部工具列才會貼底、不留白。 */
-.is-mobile .workspace-leaf-content:has(> .gn-root) {
+.is-mobile .workspace-leaf-content.gn-leaf {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -827,7 +858,7 @@ body.is-mobile {
 .is-mobile .gn-bar-title-text { font-size: 17px; }
 
 .is-mobile .gn-tnode { padding-top: 9px; padding-bottom: 9px; }   /* 好點一點 */
-/* 手機：圖示欄由 .is-mobile .gn-tslot 撐大，這裡只放大 svg（thumb 本身是 inset:0 絕對定位） */
+/* 手機：圖示與箭頭的方框尺寸在上面的 .is-mobile .gn-tslot > … 定義，這裡只放大 svg 本身 */
 .is-mobile .gn-tthumb svg { width: 20px; height: 20px; }
 .is-mobile .gn-tname { font-size: 17px; }                         /* 左欄字再大一點 */
 .is-mobile .gn-tcount { font-size: 12px; }
@@ -1068,8 +1099,8 @@ body.is-mobile {
 /* ⚠️ 搜尋列出現時，取消 .gn-main / .gn-tree-scroll 的 safe-area 內距，
    否則安全區會被算「兩次」（搜尋列一次 + 捲動容器一次）→ 空白爆增。
    選擇器權重要贏過 CSS 片段裡的 `.is-mobile .gn-main`（(0,2,0) + !important）。 */
-.is-mobile .gn-root:has(> .gn-search-row) .gn-main,
-.is-mobile .gn-root:has(> .gn-search-row) .gn-tree-scroll {
+.is-mobile .gn-root.gn-search-on .gn-main,
+.is-mobile .gn-root.gn-search-on .gn-tree-scroll {
   padding-top: 8px !important;
   --gn-top-fade: 16px;   /* 上方已有搜尋列，長淡出沒必要 */
 }
@@ -1351,16 +1382,17 @@ body.is-mobile {
 
 /* overlay 模式例外：沒有真圖的「檔型封面卡」（base / canvas 無縮圖 / pdf 佔位）維持圖上文下（stacked），
    不要把文字疊在灰底 icon 封面上（沒有圖、疊上去會蓋住 icon）。
-   用 :has(.gn-fileicon) 精準命中——canvas/pdf 抓到真圖後 .gn-fileicon 被換成 <img>，就自動改回 overlay。
-   選擇器比上面 overlay 規則多一個 :has()＝特異度更高、又排在其後，穩定覆蓋回堆疊值。 */
-.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:has(.gn-fileicon) .gn-body {
+   用 .gn-icon-cover 精準命中（JS 掛的狀態 class）——canvas/pdf 抓到真圖後會移除它，就自動改回 overlay。
+   （2026-07-31 從 :has(.gn-fileicon) 換過來：:has() 的失效範圍太廣，而這件事 JS 本來就知道。
+     特異度靠 .gn-card.gn-has-img.gn-icon-cover 三個 class 疊加，仍高於上面的 overlay 規則。） */
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img.gn-icon-cover .gn-body {
   position: relative; z-index: 1;
   padding: 9px 12px 10px;
   background: inherit;
   opacity: 1; pointer-events: auto;
 }
-.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:has(.gn-fileicon) .gn-title { color: var(--text-normal); text-shadow: none; }
-.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img:has(.gn-fileicon) .gn-date { color: var(--text-faint); text-shadow: none; }
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img.gn-icon-cover .gn-title { color: var(--text-normal); text-shadow: none; }
+.gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img.gn-icon-cover .gn-date { color: var(--text-faint); text-shadow: none; }
 
 /* ===== 圖片卡版面③「編輯風索引卡」（imageCardLayout='editorial'，2026-07-20 新增）=====
    版型：左上角小方縮圖 ＋ 右上角大日數/小月年 ＋ 下方大標題。無圖時同版型、卡片自然較矮。
