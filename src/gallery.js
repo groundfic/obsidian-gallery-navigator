@@ -2150,9 +2150,66 @@ class GalleryView extends ItemView {
     if (this._treeScroll && this._treeScroll.isConnected && this._buildTree) {
       this.treeScrollStore()[this.treeScrollKey()] = this._treeScroll.scrollTop;   // 清空前先記住
       this._treeScrollLock = true;
+      const before = this.treeSnapshot();   // 動畫：重建前先記位置
       this._treeScroll.empty();
       this._buildTree();   // 內部結尾會 restoreTreeScroll() 並解鎖
+      this.treePlay(before);               // 動畫：把新舊位置差補成滑動
     } else { this.render(); }
+  }
+
+  /* ── 資料夾樹的動態（FLIP）──
+     樹是「整棵重建」的（扁平的 .gn-tnode 清單、靠 --gn-depth 縮排），
+     所以無法用 CSS transition —— 新元素沒有起始值可以過渡。
+     改用 FLIP：重建前記位置，重建後從舊位置動畫到新位置。
+       • 原本就在的列 → 滑動（收合時下方的列自然往上遞補）
+       • 新出現的列   → 淡入 + 微幅下滑（展開時子資料夾滑出來）
+       • 箭頭         → 從舊角度轉到新角度
+     只動 transform / opacity，不觸發版面重算。
+     這一套同時涵蓋展開、收合、拖曳排序、最愛開合——因為全都走 refreshTree()。 */
+
+  motionOk() {
+    if (this.plugin.state.reduceMotion) return false;
+    try { return !window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return true; }
+  }
+
+  treeSnapshot() {
+    if (!this.motionOk() || !this._treeScroll) return null;
+    const rows = this._treeScroll.querySelectorAll('.gn-tnode[data-path]');
+    // 樹太大就跳過：offsetTop 會強制版面計算，幾百列以上不划算
+    if (!rows.length || rows.length > 400) return null;
+    const map = new Map();
+    rows.forEach((el) => map.set(el.dataset.path, {
+      top: el.offsetTop,
+      open: el.classList.contains('gn-topen'),
+    }));
+    return map;
+  }
+
+  treePlay(before) {
+    if (!before || !this._treeScroll) return;
+    const DUR = 170, EASE = 'cubic-bezier(.2,.7,.2,1)';
+    this._treeScroll.querySelectorAll('.gn-tnode[data-path]').forEach((el) => {
+      const prev = before.get(el.dataset.path);
+
+      if (!prev) {   // 新出現：淡入
+        el.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }],
+          { duration: DUR, easing: EASE });
+        return;
+      }
+
+      const dy = prev.top - el.offsetTop;   // 位置有變 → 從舊位置滑過來
+      if (dy) el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+        { duration: DUR, easing: EASE });
+
+      // 箭頭：展開狀態改變時轉 90°（靜態角度由 CSS 的 .gn-topen 決定）
+      const nowOpen = el.classList.contains('gn-topen');
+      const caret = el.querySelector('.gn-tcaret');
+      if (caret && prev.open !== nowOpen) {
+        caret.animate(
+          [{ transform: `rotate(${prev.open ? 90 : 0}deg)` }, { transform: `rotate(${nowOpen ? 90 : 0}deg)` }],
+          { duration: DUR, easing: EASE });
+      }
+    });
   }
 
   toggleExpand(path) {
@@ -2604,7 +2661,8 @@ class GalleryView extends ItemView {
 
         const caret = row.createSpan('gn-tcaret');
         if (hasKids) {
-          setIcon(caret, isOpen ? 'chevron-down' : 'chevron-right');
+          // 固定用 chevron-right，展開狀態靠 CSS 轉 90°（換圖示無法做旋轉動畫）
+          setIcon(caret, 'chevron-right');
           caret.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
         }
 
@@ -3371,6 +3429,11 @@ class GalleryView extends ItemView {
   // 建一個瀑布流 grid。一面牆可以有多個（連結 / 反向連結各一區）
   makeGrid(container, zoom) {
     const grid = container.createDiv('gn-grid');
+    // 換資料夾／換標籤時，整面牆淡入一次（同一個位置重畫則不動，避免捲動時閃）
+    if (this.motionOk()) {
+      const key = (this.plugin.state.leftMode === 'tag' ? 'tag:' : 'dir:') + (this.path || '');
+      if (this._lastGridKey !== key) { this._lastGridKey = key; grid.addClass('gn-grid-enter'); }
+    }
     // 桌機：依滑桿的最小欄寬自動算欄數。
     // 手機：改用**固定欄數**（設定頁可選 1 / 2 / 3 欄），不吃桌機調大後的 cardWidth，
     //       免得在窄螢幕被撐成 1 欄。
@@ -4139,6 +4202,17 @@ class CalendarSettingTab extends PluginSettingTab {
         .onChange((v) => { st.enableLinkCards = v; save(); reloadHint(); this.display(); }));
     if (st.enableLinkCards !== false && this.plugin.renderLinkCardSettings) {
       this.plugin.renderLinkCardSettings(containerEl, this.plugin);
+    }
+
+    /* ══ 3.5 淨化連結 ══ */
+    this.group(containerEl, t('Clean links'),
+      t('Adds a right-click item in the editor that strips tracking parameters (utm_*, xmt, slof, fbclid, gclid…) from URLs. Everything else in the query string is kept.'));
+    new Setting(containerEl)
+      .setName(t('Enable clean links'))
+      .addToggle((tg) => tg.setValue(st.enableCleanLink !== false)
+        .onChange((v) => { st.enableCleanLink = v; save(); this.display(); }));
+    if (st.enableCleanLink !== false && this.plugin.renderCleanLinkSettings) {
+      this.plugin.renderCleanLinkSettings(containerEl, this.plugin);
     }
 
     /* ══ 4. 行事曆 ══ */

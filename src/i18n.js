@@ -273,6 +273,40 @@ const ZH_TW = {
   'Pinterest visual search (experimental)': 'Pinterest 找相似（實驗性）',
   'Adds a reverse-image search entry to image menus. Uses an unofficial Pinterest endpoint that may stop working at any time; the image you search with is uploaded to Pinterest.':
     '在圖片選單加入「找相似」（以圖搜圖）。使用 Pinterest 非官方端點，可能隨時失效；搜尋時該張圖片會上傳到 Pinterest。',
+
+  // ── 淨化連結 ──
+  'Clean links': '淨化連結',
+  'Clean this link': '淨化這個連結',
+  'Clean links in selection ({{n}})': '淨化選取範圍的連結（{{n}}）',
+  'Clean all links in this note ({{n}})': '淨化整篇筆記的連結（{{n}}）',
+  'Clean tracking links in this note': '淨化整篇筆記的追蹤連結',
+  'Cleaned {{n}} link(s)': '已淨化 {{n}} 條連結',
+  'No tracking parameters found': '沒有找到追蹤參數',
+  'Enable clean links': '啟用淨化連結',
+  'Adds a right-click item in the editor that strips tracking parameters (utm_*, xmt, slof, fbclid, gclid…) from URLs. Everything else in the query string is kept.':
+    '在編輯器右鍵選單加入「淨化連結」，把網址中的追蹤參數（utm_*、xmt、slof、fbclid、gclid…）拿掉，其餘 query 參數原樣保留。',
+  'Extra parameters to remove': '額外要刪除的參數',
+  'Comma separated. Added to the built-in blacklist, e.g. my_ref, src_id': '用逗號分隔，會加進內建黑名單，例如：my_ref, src_id',
+  'Cleaned {{n}} link(s) on paste': '貼上時已淨化 {{n}} 條連結',
+  'Restore original URL': '還原成原始網址',
+  'Restore original URL (needs network)': '還原成原始網址（需連線）',
+  'Restore all share links in this note ({{n}})': '還原整篇的分享連結（{{n}}）',
+  'Restore share links in this note': '還原整篇筆記的分享連結',
+  'Restored {{n}} share link(s)': '已還原 {{n}} 條分享連結',
+  'No share links found': '沒有找到分享連結',
+  'Could not resolve this share link': '無法還原這條分享連結（可能離線或已失效）',
+  'Restore Threads / Instagram share links': '還原 Threads / Instagram 分享連結',
+  'Share links like threads.com/share/XXXX hide the tracking code in the path, so it can only be removed by asking the site for the real post URL. This is the only part of clean links that uses the network.':
+    'threads.com/share/XXXX 這類分享連結把追蹤碼藏在路徑裡，砍 query 參數完全無效，只能連網問出原始的貼文網址。這是「淨化連結」唯一會用到網路的部分。',
+  'Copy cleaned link': '複製淨化後的連結',
+  'Copied cleaned link': '已複製淨化後的連結',
+  'Could not locate the source note': '找不到這張卡片的來源筆記',
+  'Clean failed: {{msg}}': '淨化失敗：{{msg}}',
+  'Clean links on paste': '貼上時自動淨化',
+  'Strips tracking parameters the moment you paste, so they never enter the note. Pasting rich content copied from a web page is left alone.':
+    '網址在貼進筆記的當下就已經去掉追蹤參數，不必事後再淨化。從網頁複製的排版內容不受影響（仍照常轉成 Markdown）。',
+  'Parameters to always keep': '永遠保留的參數',
+  'Comma separated. Never removed, even if blacklisted. Wins over everything else.': '用逗號分隔。列在這裡的參數絕不刪除，優先權最高。',
 };
 
 const LANGS = { 'zh-TW': ZH_TW, zh: ZH_TW, 'zh-cn': ZH_TW };

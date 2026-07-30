@@ -1,4 +1,5 @@
 /* ═══ Gallery Navigator（合併版）樣式：1. Gallery .gn-* / 2. Image Peek .qp-.ip-pin-* / 3. Link Cards .lcp-* ═══ */
+
 /* Gallery Navigator — 視覺化導覽器樣式 */
 
 .gn-root {
@@ -302,9 +303,11 @@
   cursor: pointer;
   color: var(--text-normal);
   user-select: none;
-  transition: background .12s, box-shadow .12s;
+  transition: background .12s, box-shadow .12s, transform .12s cubic-bezier(.2,.7,.2,1);
 }
 .gn-tnode:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
+/* 按壓回饋：整列微縮。克制到只有「手感」、看不出在動（2026-07-30） */
+.gn-tnode:active { transform: scale(.99); }
 /* 選取：主題色淡底圓角膠囊（透明側欄也清楚） */
 .gn-tsel, .gn-tsel:hover {
   background: color-mix(in srgb, var(--interactive-accent) 15%, transparent);
@@ -330,6 +333,14 @@
   color: var(--text-muted);
   cursor: pointer;
 }
+/* 展開＝箭頭轉 90°。圖示固定用 chevron-right，靠旋轉表達狀態，
+   這樣 refreshTree() 重建後 treePlay() 才能把角度動畫接起來（換圖示無法過渡）。
+   刻意不加 transition：樹是整棵重建的，新元素沒有起始值，動畫由 WAAPI 負責。 */
+.gn-tnode.gn-topen > .gn-tcaret { transform: rotate(90deg); }
+.gn-tnode:hover > .gn-tcaret { color: var(--text-normal); }
+/* 資料夾圖示：hover 時極輕微放大，給一點「可點」的暗示 */
+.gn-tnode > .gn-tthumb { transition: transform .16s cubic-bezier(.2,.7,.2,1); }
+.gn-tnode:hover > .gn-tthumb { transform: scale(1.06); }
 .gn-tcaret svg { width: 18px; height: 18px; color: inherit; }
 .is-mobile .gn-tcaret { width: 28px; height: 28px; }
 .is-mobile .gn-tcaret svg { width: 22px; height: 22px; }
@@ -1356,8 +1367,13 @@ body.is-mobile {
 .gn-root.gn-imgcard-editorial .gn-card.gn-has-img > img,
 .gn-root.gn-imgcard-editorial .gn-card .gn-fileicon {
   order: 1;
-  width: calc(72px * var(--gn-ed-img)); height: calc(72px * var(--gn-ed-img));
-  min-height: 0; aspect-ratio: auto;
+  /* 寬度上限＝卡片寬的 46%：卡片窄時縮圖自動縮小，右邊永遠留得下日期塊
+     （「JUN 26」比「29」寬，會往左延伸，窄卡片時原本會貼到縮圖，2026-07-27 修）。
+     height:auto + aspect-ratio 1/1 → 高度跟著（被夾住的）寬度走，配 object-fit:cover 不變形。 */
+  width: calc(72px * var(--gn-ed-img));
+  max-width: 46%;
+  height: auto; aspect-ratio: 1 / 1;
+  min-height: 0;
   object-fit: cover;
   border-radius: calc(8px * var(--gn-ed-img));
   margin: 0 0 calc(14px * var(--gn-ed));
@@ -1428,7 +1444,7 @@ body.is-mobile {
 /* 手機：基準尺寸略縮（同樣吃 --gn-ed） */
 .is-mobile .gn-root.gn-imgcard-editorial .gn-card.gn-has-img > img,
 .is-mobile .gn-root.gn-imgcard-editorial .gn-card .gn-fileicon {
-  width: calc(56px * var(--gn-ed-img)); height: calc(56px * var(--gn-ed-img));
+  width: calc(56px * var(--gn-ed-img)); height: auto;   /* 高度交給 aspect-ratio，沿用 46% 上限 */
   margin-bottom: calc(10px * var(--gn-ed));
 }
 .is-mobile .gn-root.gn-imgcard-editorial .gn-datebox-day { font-size: calc(15px * var(--gn-ed)); }
@@ -1493,6 +1509,26 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
   background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
 }
 
+/* ═══ 動態效果（2026-07-30）═══
+   原則：克制。只動 transform / opacity，150–200ms、ease-out，
+   跟 Obsidian 原生側欄一致，天天用不會膩也不會暈。
+   資料夾樹的展開/收合動畫在 gallery.js 的 treeSnapshot()/treePlay()（FLIP）。 */
+
+/* 換資料夾／換標籤：整面卡片牆淡入一次 */
+@keyframes gn-grid-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.gn-grid-enter { animation: gn-grid-in .18s cubic-bezier(.2,.7,.2,1); }
+
+/* 尊重系統的「減少動態效果」：全部關掉，不是縮短。
+   JS 那側由 motionOk() 擋掉 FLIP，這裡收拾 CSS 的部分。 */
+@media (prefers-reduced-motion: reduce) {
+  .gn-grid-enter { animation: none; }
+  .gn-tnode, .gn-tnode > .gn-tthumb { transition: none; }
+  .gn-tnode:active { transform: none; }
+  .gn-tnode:hover > .gn-tthumb { transform: none; }
+}
 
 /* ════════════ 2. Image Peek ════════════ */
 /* Quick Peek — Quick Look 式圖片預覽 */
@@ -2556,7 +2592,6 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar-track {
 	background: transparent;
 }
-
 
 /* ════════════ 3. Link Cards ════════════ */
 /* ============ 基底（Apple 風格） ============ */

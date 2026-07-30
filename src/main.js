@@ -20,18 +20,25 @@ const { t } = require('./i18n.js');
 const { GalleryPlugin } = require('./gallery.js');
 const { PeekModule, renderPeekSettings } = require('./peek.ts');
 const { LinkCardModule, renderLinkCardSettings } = require('./linkcard.js');
+const { CleanLinkModule, renderCleanLinkSettings } = require('./cleanlink.js');
 
 module.exports = class GalleryNavigatorPlugin extends GalleryPlugin {
   async onload() {
     // 設定分頁要用到的渲染器（gallery.js 的設定分頁會去找這兩個）
     this.renderPeekSettings = renderPeekSettings;
     this.renderLinkCardSettings = renderLinkCardSettings;
+    this.renderCleanLinkSettings = renderCleanLinkSettings;
 
     await super.onload();   // Gallery 核心（載入 this.state、註冊 view/指令/設定分頁）
 
     // 模組預設全開
     if (this.state.enablePeek === undefined) this.state.enablePeek = true;
     if (this.state.enableLinkCards === undefined) this.state.enableLinkCards = true;
+    if (this.state.enableCleanLink === undefined) this.state.enableCleanLink = true;
+
+    // 淨化連結：只註冊右鍵選單與指令，沒有背景成本，開關即時生效不必重載
+    this.cleanlink = new CleanLinkModule(this);
+    this.cleanlink.start();
 
     if (this.state.enablePeek) {
       this.peek = new PeekModule(this);

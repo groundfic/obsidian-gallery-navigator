@@ -1,7 +1,8 @@
 'use strict';
 
-const { Plugin, MarkdownView, Notice, requestUrl, editorLivePreviewField, Platform, PluginSettingTab, Setting } = require('obsidian');
+const { Plugin, MarkdownView, Menu, Notice, requestUrl, editorLivePreviewField, Platform, PluginSettingTab, Setting } = require('obsidian');
 const { t } = require('./i18n.js');
+const { cleanUrl, isMetaShortUrl, resolveShortUrl, primeShortUrl, canonicalFromHtml } = require('./cleanlink.js');
 
 /* CodeMirror 6（Live Preview 用）。防禦性載入：失敗時編輯模式不渲染卡片，
    但 Reading Mode 與 Canvas 完全不受影響 */
@@ -270,6 +271,13 @@ function decodeHtml(res) {
 
 function parseMetadata(html, url) {
   const hostname = hostOf(url);
+
+  /* 這頁已經抓回來了，順手把 canonical 記給「淨化連結」用：
+     之後在卡片上右鍵展開短連結就是零額外網路請求。 */
+  if (isMetaShortUrl(url)) {
+    try { primeShortUrl(url, canonicalFromHtml(html)); } catch (e) {}
+  }
+
   let doc = null;
   try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch {}
 
@@ -793,6 +801,90 @@ function buildDesc(meta) {
   return el;
 }
 
+/* ============ 卡片右鍵：淨化連結 ============ */
+
+/** 在卡片上掛「淨化連結」右鍵選單。
+ *  這條網址沒有追蹤參數就不掛 —— 右鍵維持 Obsidian 原本的行為，不多事。 */
+function attachCleanMenu(wrap, url, opts) {
+  const plugin = state.plugin;
+  if (!plugin || plugin.state.enableCleanLink === false) return;
+
+  const cleaned = cleanUrl(url, { state: plugin.state });
+  const isShort = isMetaShortUrl(url) && plugin.state.cleanLinkExpandShort !== false;
+  if (cleaned === url && !isShort) return;   // 沒事可做就別掛，右鍵維持原本行為
+
+  wrap.addEventListener('contextmenu', (evt) => {
+    evt.preventDefault();
+    evt.stopPropagation();
+    const menu = new Menu();
+
+    if (isShort) {
+      // 短連結：追蹤碼在路徑裡，要換成正式網址才算真的乾淨。
+      // 卡片渲染時已經抓過這頁，canonical 通常已在快取中 → 即時完成。
+      menu.addItem((i) => i.setTitle(t('Restore original URL')).setIcon('unfold-horizontal')
+        .onClick(async () => {
+          const full = await resolveShortUrl(url, { state: plugin.state });
+          if (full === url) { new Notice(t('Could not resolve this share link')); return; }
+          applyCleanToSource(url, full, opts);
+        }));
+    }
+
+    if (cleaned !== url) {
+      menu.addItem((i) => i.setTitle(t('Clean this link')).setIcon('eraser')
+        .onClick(() => applyCleanToSource(url, cleaned, opts)));
+    }
+
+    menu.addItem((i) => i.setTitle(t('Copy cleaned link')).setIcon('copy')
+      .onClick(async () => {
+        try {
+          const best = isShort ? await resolveShortUrl(url, { state: plugin.state }) : cleaned;
+          await navigator.clipboard.writeText(best);
+          new Notice(t('Copied cleaned link'));
+        } catch (e) { new Notice(t('Clean failed: {{msg}}', { msg: e.message })); }
+      }));
+
+    menu.showAtMouseEvent(evt);
+  });
+}
+
+/** 把淨化後的網址寫回來源。
+ *  Live Preview 走 CodeMirror（卡片即時重繪、只算一步 undo）；
+ *  閱讀模式沒有 editor，只能改寫檔案本身。 */
+async function applyCleanToSource(url, cleaned, opts) {
+  const plugin = state.plugin;
+  if (!plugin) return;
+
+  // ① Live Preview：直接改 CM 文件
+  if (opts.lpView && opts.lpContainer) {
+    try {
+      const view = opts.lpView;
+      const pos = view.posAtDOM(opts.lpContainer);
+      const line = view.state.doc.lineAt(pos);
+      const next = line.text.split(url).join(cleaned);
+      if (next !== line.text) {
+        view.dispatch({ changes: { from: line.from, to: line.to, insert: next } });
+        new Notice(t('Cleaned {{n}} link(s)', { n: 1 }));
+        return;
+      }
+    } catch (e) { /* 落到檔案改寫 */ }
+  }
+
+  // ② 閱讀模式 / 其他：改寫來源檔案
+  const app = plugin.app;
+  const path = opts.sourcePath || app.workspace.getActiveFile()?.path;
+  const file = path ? app.vault.getAbstractFileByPath(path) : null;
+  if (!file) { new Notice(t('Could not locate the source note')); return; }
+
+  try {
+    const rewrite = (data) => data.split(url).join(cleaned);
+    if (app.vault.process) await app.vault.process(file, rewrite);
+    else await app.vault.modify(file, rewrite(await app.vault.read(file)));
+    new Notice(t('Cleaned {{n}} link(s)', { n: 1 }));
+  } catch (e) {
+    new Notice(t('Clean failed: {{msg}}', { msg: e.message }));
+  }
+}
+
 async function renderCard(wrap, url, meta, opts = {}) {
   /* 快速路徑（同步、不閃骨架）只在「能安全直接顯示」時啟用：
      A. 已有本地 base64 圖 + 尺寸 → 直接用，最安全
@@ -982,6 +1074,9 @@ async function renderCard(wrap, url, meta, opts = {}) {
     }
   }
 
+  // 右鍵：淨化連結（Canvas 例外——節點網址存在 .canvas 的 JSON 裡，改寫方式不同）
+  if (!opts.canvas) attachCleanMenu(wrap, url, opts);
+
   const handler = () => window.open(url, '_blank');
   if (opts.canvas) {
     wrap.addEventListener('dblclick', (e) => {
@@ -1034,7 +1129,8 @@ function buildLivePreviewExtension() {
       const skeleton = createSkeleton(this.url);
       inner.appendChild(skeleton);
       fetchMeta(this.url).then((meta) =>
-        renderCard(skeleton, this.url, meta, { editor: true })
+        // lpView / lpContainer：右鍵「淨化連結」用來定位這張卡在文件中的哪一行
+        renderCard(skeleton, this.url, meta, { editor: true, lpView: view, lpContainer: container })
       );
 
       // 編輯按鈕（鉛筆）：還原並反白裸網址供編輯
@@ -1186,6 +1282,9 @@ class LinkCardModule {
     this.plugin.state.linkcard = Object.assign({}, DEFAULT_SETTINGS, this.plugin.state.linkcard);
     this.settings = this.plugin.state.linkcard;
 
+    // 卡片右鍵「淨化連結」要用到宿主外掛（讀 state、寫檔案）
+    state.plugin = this.plugin;
+
     // 圖片倉庫：<vault>/.obsidian/plugins/gallery-navigator/linkcard-images/
     state.adapter = this.app.vault.adapter;
     state.imgDir = this.manifest.dir + '/' + IMG_SUBDIR;
@@ -1224,14 +1323,15 @@ class LinkCardModule {
     });
 
     // 預覽模式：渲染卡片
-    this.plugin.registerMarkdownPostProcessor((el) => {
+    this.plugin.registerMarkdownPostProcessor((el, ctx) => {
       const paragraphs = el.querySelectorAll('p');
       paragraphs.forEach((p) => {
         if (!isSoloParagraph(p)) return;
         const url = p.querySelector('a').getAttribute('href');
         const skeleton = createSkeleton(url);
         p.replaceWith(skeleton);
-        fetchMeta(url).then((meta) => renderCard(skeleton, url, meta));
+        // sourcePath：右鍵「淨化連結」要靠它知道該改哪個檔案
+        fetchMeta(url).then((meta) => renderCard(skeleton, url, meta, { sourcePath: ctx?.sourcePath }));
       });
     });
 

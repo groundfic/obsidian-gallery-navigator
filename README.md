@@ -40,6 +40,7 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 ### Extras (can be disabled individually)
 - **Image peek**: Quick Look-style image preview with share/copy actions
 - **Link cards**: bare URLs rendered as rich preview cards
+- **Clean links**: strips tracking parameters (`utm_*`, `xmt`, `slof`, `fbclid`, `igsh`, `gclid`…) from URLs — automatically on paste, from the editor right-click menu (one link, the selection, or the whole note), or by right-clicking a link card. Blacklist-based, so functional parameters like YouTube's `?v=` are never touched; extra/keep lists are configurable. Parameter stripping is entirely offline. Threads/Instagram `/share/` links hide their tracking code in the path instead, so expanding those to the real post URL is an opt-out network request (see below).
 - **Pinterest visual search** (experimental, off by default): reverse-image search from any cover. This uses an unofficial Pinterest endpoint and may stop working at any time — see the network disclosure below.
 
 ## Network use disclosure
@@ -51,6 +52,7 @@ This plugin makes network requests only for the features below. Nothing is colle
 | Calendar | GET requests for the ICS URLs you configure | Your calendar provider (e.g. Google) |
 | Link previews / link cards | GET requests for URLs found in your notes, to read `og:image`/metadata | The sites your notes link to |
 | Pinterest visual search (optional, experimental) | The image you explicitly search with | `api.pinterest.com` (unofficial endpoint) |
+| Clean links — short link expansion (on by default, can be turned off) | A GET request for the `threads.com/share/…` or `instagram.com/share/…` link being expanded, to read its `canonical` URL | Threads / Instagram |
 
 All caches (link previews, calendar events, PDF thumbnails) are stored locally in the plugin folder.
 
@@ -68,11 +70,26 @@ Or use [BRAT](https://github.com/TfTHacker/obsidian42-brat) with this repository
 
 ```bash
 npm install
-npm run dev     # esbuild watch
-npm run build   # production bundle → main.js
+npm run dev        # build CSS once, then esbuild watch for JS
+npm run dev:css    # watch the CSS parts only (handy while styling)
+npm run build      # production bundle → main.js + styles.css
 ```
 
-Source lives in `src/` (`main.js` is the bundled artifact — don't edit it directly). UI strings use `src/i18n.js` — English text as keys, with a zh-TW dictionary.
+Source lives in `src/`. **Both `main.js` and `styles.css` in the plugin root are build artifacts — don't edit them directly.**
+
+- **JS** — `src/main.js` is the entry point, bundled by esbuild.
+- **CSS** — Obsidian only loads a single `styles.css`, but 3000 lines in one file is unmaintainable, so it is assembled from parts by `scripts/build-css.mjs`:
+
+  | Part | Scope |
+  |---|---|
+  | `src/header.css` | File header comment |
+  | `src/gallery.css` | `.gn-*` — tree, card wall, toolbar, calendar |
+  | `src/peek.css` | `.qp-*`, `.ip-pin-*` — image peek |
+  | `src/linkcard.css` | `.lcp-*` — link cards |
+
+  Order matters (later parts can override earlier ones). The build refuses to write `styles.css` if braces are unbalanced, so a truncated part fails loudly instead of silently breaking the stylesheet.
+
+- **UI strings** — `src/i18n.js`, English text as keys, with a zh-TW dictionary.
 
 ## License
 
