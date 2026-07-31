@@ -4842,50 +4842,10 @@ class GalleryPlugin extends Plugin {
     this.registerEvent(this.app.vault.on('delete', onVaultChange));
     this.registerEvent(this.app.vault.on('rename', onVaultChange));
 
-    // 筆記/Canvas 內的圖片：找出可接手的目標（回傳 src 或 null）
-    const IMG_AREAS = '.markdown-preview-view, .markdown-source-view, .markdown-reading-view, .cm-content, .markdown-embed, .canvas-node, .canvas-wrapper';
-    const imgSrcOf = (img) => {   // ⚠️ 參數勿叫 t，會遮蔽 i18n 的 t()
-      if (!(img instanceof HTMLImageElement)) return null;
-      if (!img.closest(IMG_AREAS)) return null;
-      return img.currentSrc || img.src || null;
-    };
-    const buildImageMenu = (img, src) => {
-      const af = this.app.workspace.getActiveFile();
-      const srcFolder = af && af.parent && af.parent.path !== '/' ? af.parent.path : '';
-      const file = this.imgToVaultFile(img);   // 對應回 vault 檔案（本機圖才有）
-      const menu = new Menu();
-      menu.addItem((i) => i.setTitle(t('Copy image')).setIcon('copy')
-        .onClick(() => this.copyImage(src)));
-      menu.addItem((i) => i.setTitle(t('Copy image URL')).setIcon('link')
-        .onClick(() => copyToClipboard(src)));
-      if (this.state.enablePinterest) menu.addItem((i) => i.setTitle(t('Pinterest visual search')).setIcon('search')
-        .onClick(() => new PinterestModal(this.app, src, img.alt || '', srcFolder).open()));
-      if (file) {
-        // 交換圖片（2026-07-20）：開「最近圖片瀑布牆」挑一張，替換筆記裡的這個嵌入。
-        // 只在「筆記內的本機圖」提供（af 存在才有可改寫的來源筆記）。
-        if (af) {
-          menu.addSeparator();
-          menu.addItem((i) => i.setTitle(t('Swap image…')).setIcon('image-plus')
-            .onClick(() => {
-              const nth = this.imgEmbedIndex(img, file);
-              new SwapImageModal(this.app, file, (picked) => this.swapImage(af, file, picked, nth)).open();
-            }));
-        }
-        menu.addSeparator();
-        const a = this.app.vault.adapter;
-        if (a && typeof a.getFullPath === 'function') {
-          menu.addItem((i) => i.setTitle(t('Reveal in system explorer')).setIcon('folder-open')
-            .onClick(() => { try { if (typeof this.app.showInFolder === 'function') this.app.showInFolder(file.path); } catch (e) {} }));
-        }
-        menu.addSeparator();
-        menu.addItem((i) => i.setTitle(t('Delete image')).setIcon('trash').setWarning(true)
-          .onClick(() => new ConfirmModal(this.app, t('Delete image "{{name}}"? (moves to trash)', { name: file.name }), async () => {
-            try { await this.app.fileManager.trashFile(file); new Notice(t('Deleted {{name}}', { name: file.name })); }
-            catch (e) { new Notice(t('Delete failed: {{msg}}', { msg: e && e.message ? e.message : e })); }
-          }).open()));
-      }
-      return menu;
-    };
+    // （2026-07-31 移除）imgSrcOf / buildImageMenu / IMG_AREAS 與手機長按選單：
+    //   圖片選單改走 setupImageFileMenu() 的 file-menu，桌機右鍵與手機長按都由
+    //   Obsidian 原生選單承接。舊的長按計時器會在原生選單之前先彈出自己那一份，
+    //   使用者會看到「先舊選單、再新選單」兩層，所以整組拿掉。
 
     // 點筆記內的 #標籤 → 開畫廊標籤模式（2026-07-19；Cmd/Ctrl+點 = 保留原生全域搜尋）
     this.registerDomEvent(document, 'click', (evt) => {
@@ -4922,34 +4882,6 @@ class GalleryPlugin extends Plugin {
     // 原生 lightbox（Obsidian 1.13+）補上動作膠囊
     this.setupLightboxActions();
 
-    // 手機：長按（自製計時器；移動或放開即取消，並攔掉後續 click）
-    let lpTimer = null, lpX = 0, lpY = 0;
-    this.registerDomEvent(document, 'touchstart', (evt) => {
-      if (evt.touches.length !== 1) return;
-      const t = evt.target;
-      const src = imgSrcOf(t);
-      if (!src) return;
-      lpX = evt.touches[0].clientX; lpY = evt.touches[0].clientY;
-      lpTimer = setTimeout(() => {
-        lpTimer = null;
-        if (navigator.vibrate) { try { navigator.vibrate(15); } catch (er) {} }
-        buildImageMenu(t, src).showAtPosition({ x: lpX, y: lpY });
-        const kill = (ev) => { ev.stopPropagation(); ev.preventDefault(); document.removeEventListener('click', kill, true); };
-        document.addEventListener('click', kill, true);
-        setTimeout(() => document.removeEventListener('click', kill, true), 700);
-      }, 500);
-    }, { passive: true });
-    const cancelLp = (evt) => {
-      if (!lpTimer) return;
-      if (evt && evt.touches && evt.touches[0]) {
-        const t = evt.touches[0];
-        if (Math.abs(t.clientX - lpX) < 10 && Math.abs(t.clientY - lpY) < 10) return;
-      }
-      clearTimeout(lpTimer); lpTimer = null;
-    };
-    this.registerDomEvent(document, 'touchmove', cancelLp, { passive: true });
-    this.registerDomEvent(document, 'touchend', () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } });
-    this.registerDomEvent(document, 'touchcancel', () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } });
   }
 
   // 筆記內的 <img> 對應回 vault 檔案（本機圖才有；外部網址圖回 null）
