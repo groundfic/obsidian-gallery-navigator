@@ -321,8 +321,22 @@
 .gn-tmove { background: var(--interactive-accent) !important; box-shadow: inset 0 0 0 1px var(--interactive-accent); }
 .gn-tmove .gn-tname, .gn-tmove .gn-tcount { color: var(--text-on-accent); }
 /* 同層排序落點：上緣 / 下緣一條主題色線 */
-.gn-tbefore { box-shadow: inset 0 2px 0 0 var(--interactive-accent); }
-.gn-tafter { box-shadow: inset 0 -2px 0 0 var(--interactive-accent); }
+/* 同層排序落點：上緣 / 下緣一條完整直線（2026-08-01）
+   以前用 inset box-shadow —— 但陰影會跟著列的 border-radius: 8px 一起彎進去，
+   兩端變成往內收的弧線，看起來像斷掉的線而不是一條插入位置指示。
+   改用絕對定位的 ::after：left/right 貼齊列寬、不吃圓角，是完整的一直線。
+   （.gn-tnode 已經是 position: relative，可以直接當定位基準） */
+.gn-tbefore::after,
+.gn-tafter::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: var(--interactive-accent);
+  pointer-events: none;   /* 不要擋到底下列的 dragover 判定 */
+}
+.gn-tbefore::after { top: -1px; }
+.gn-tafter::after { bottom: -1px; }
 
 /* ── 圖示欄（2026-07-31）──
    以前是「箭頭一欄 + 圖示一欄」，箭頭欄對不能展開的資料夾永遠空著，
@@ -413,16 +427,37 @@ body:not(.is-mobile) .gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb 
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 原地改名輸入框（macOS Finder 風格） */
+/* 行內改名的輸入框（2026-08-01）
+   ⚠️ 這裡有三層同色系會互相干擾，是這個元件最容易做醜的地方：
+        選取列底色  color-mix(--interactive-accent 15%)   ← 淡強調色
+        輸入框底色  var(--background-primary)             ← 白
+        外框        原本也是 --interactive-accent          ← 強調色
+      外框跟選取列底色同色只差濃度 → 框浮在淡色底上分不開，看起來糊成一團。
+
+   解法：外框改用**中性灰**（--background-modifier-border），
+   把「強調色」留給選取列自己用，一次只有一個元素在講強調色。
+   這樣主題換成任何色系都不會打架。
+
+   其餘沿用上一版的決定：
+     • 用 outline 不用 border —— outline 不佔版面空間，列高與對齊完全不變，
+       所以不需要負 margin 去補償（舊版 margin: -2px 就是在補償 border）
+     • 字級／行高／字型 inherit → 框起來的位置就是原本文字的位置，不跳動
+     • 寬度撐滿剩餘空間 → 改長名稱時看得到全部，不必橫向捲動 */
 .gn-tname-input {
   width: 100%; min-width: 0; box-sizing: border-box;
-  font-size: inherit; line-height: 1.3; font-family: inherit;
+  font-size: inherit; line-height: inherit; font-family: inherit;
   color: var(--text-normal);
   background: var(--background-primary);
-  border: 1px solid var(--interactive-accent);
-  border-radius: 4px;
-  padding: 1px 5px; margin: -2px 0;
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+  border: none;
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin: 0;
+  outline: 1px solid var(--background-modifier-border);
+  outline-offset: -1px;
+}
+/* 聚焦時才把強調色帶回來（細細一圈），給「游標在這裡」的回饋但不喧賓奪主 */
+.gn-tname-input:focus {
+  outline-color: var(--background-modifier-border-focus, var(--interactive-accent));
 }
 .gn-tcount {
   flex: none;
@@ -622,8 +657,13 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 
 
 /* 確認刪除對話框按鈕列 */
-.gn-modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-.gn-input { width: 100%; padding: 8px 10px; border-radius: 8px; font-size: 14px; }
+/* （2026-08-01 移除）.gn-modal-btns：改用原生的 .modal-button-container，
+   排版與按鈕樣式交給 Obsidian 與主題，自訂 class 反而會讓主題的規則套不到。 */
+/* 對話框輸入框：只撐滿寬度，其餘（padding / 圓角 / 字級 / focus 樣式）交給主題。
+   以前這裡另外設了 padding 8px 10px、border-radius 8px、font-size 14px，
+   但主題的 input 選擇器特異度更高 → 有些吃到、有些被蓋掉，兩套混在一起最難看。
+   交出去之後，這個輸入框就跟該主題其他輸入框長得一樣。 */
+.gn-input { width: 100%; }
 
 
 /* Pinterest 找相似：結果視窗（左原圖 / 右結果） */
@@ -1614,3 +1654,156 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 .lightbox .gn-lb-btn:hover { background: rgba(255, 255, 255, .16); }
 .lightbox .gn-lb-btn:active { background: rgba(255, 255, 255, .26); }
 .lightbox .gn-lb-btn svg { width: 20px; height: 20px; }
+
+/* ═══ 外掛圖示的線寬（2026-07-31）═══
+   Obsidian 用 CSS 設 `svg.svg-icon { stroke-width: var(--icon-stroke) }`，
+   **CSS 會蓋掉 SVG 上的 stroke-width presentation attribute** —— 所以寫在
+   addIcon() 的 SVG 裡的線寬完全無效，這是圖示怎麼調都很細的真正原因。
+
+   而 --icon-stroke（2px / 1.75px）是為 lucide 的 **24** viewBox 訂的；
+   addIcon() 的圖示是 **100** viewBox（app.js 寫死 viewBox="0 0 100 100"），
+   同一個數值在我們這裡只有 24/100 的視覺粗細 → 細了 4.17 倍。
+
+   按 100/24 = 4.1667 放大還原。用 calc 吃 var 而不是寫死數字，
+   左側欄／分頁標籤／選單各自的 --icon-stroke 不同，這樣在每個情境都跟 lucide 同粗。
+   選擇器能成立是因為 addIcon 會把 icon id 一起加成 class（app.js: classList.add("svg-icon", e)）。 */
+.svg-icon.gallery-navigator {
+  stroke-width: calc(var(--icon-stroke, 1.75px) * 4.1667);
+}
+
+/* ═══ 區域關聯圖面板（2026-08-01）═══
+   絕對定位掛在 .gn-split 上，left 對齊右欄起點（左欄寬 + 分隔把手 9px）。
+   ⚠️ 不能改成「把 .gn-main 包一層」——手機的雙欄平移仰賴 .gn-main
+      是 .gn-split 的直接 flex 子元素，包一層會壞。 */
+.gn-split { position: relative; }
+.gn-dock,
+.gn-graph {
+  position: absolute;
+  /* 左右邊界由 syncGraphBounds() 實測 .gn-main 的內容框後寫成 inline style。
+     ⚠️ 不要改回用 --gn-treew 反推：左欄收合時那個變數會被設成 -1px
+        （為了讓交界線一起滑出畫面），算出來的位置會差 17px。
+     這裡的值只是還沒量到之前的保底。 */
+  left: 16px;
+  right: 14px;
+  bottom: 16px;
+  height: var(--gn-dock-h, 180px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;          /* 讓 canvas 被圓角裁切 */
+
+  /* 外框跟著卡片的設計語言走（2026-08-01）：
+     同一組圓角、同一條底色公式、同一組陰影 —— 它就是一張「浮在牆上的卡」，
+     不是另外發明一種容器。下面的 editorial 覆寫讓它在切換版面時也一起變。 */
+  border-radius: 10px;
+  background: color-mix(in srgb, #fff 4%, var(--background-primary));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .06);
+
+  /* 關聯圖自己的色票，主題可覆寫；預設全部從主題變數推導 */
+  --gn-graph-line: color-mix(in srgb, var(--text-normal) 18%, transparent);
+  --gn-graph-node: color-mix(in srgb, var(--text-normal) 55%, transparent);
+  --gn-graph-center: var(--interactive-accent);
+  --gn-graph-unresolved: color-mix(in srgb, var(--text-normal) 30%, transparent);
+  --gn-graph-text: var(--text-muted);
+}
+/* 編輯風索引卡模式：卡片是 16px 圓角 + 雙層浮起陰影，面板同步跟上。
+   連 --gn-ed 縮放旋鈕都吃，卡片變大變小時面板的圓角比例不會脫節。 */
+.gn-root.gn-imgcard-editorial .gn-dock,
+.gn-root.gn-imgcard-editorial .gn-graph {
+  border-radius: calc(16px * var(--gn-ed, 1));
+  background: var(--background-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .05);
+}
+.gn-graph-head {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px 4px;
+}
+.gn-graph-title {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gn-graph-canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.gn-graph-empty {
+  display: none;
+  position: absolute; inset: 0;
+  align-items: center; justify-content: center;
+  font-size: 12px; color: var(--text-faint);
+  pointer-events: none;
+}
+.gn-graph-is-empty .gn-graph-canvas { visibility: hidden; }
+.gn-graph-is-empty .gn-graph-empty { display: flex; }
+/* 面板存在時，卡片牆底部留出空間，最後一排卡片不會被蓋住 */
+/* 面板存在時，卡片牆底部留出空間，最後一排卡片不會被蓋住。
+   用 JS 掛的 .gn-has-graph，不用 :has()——本專案已全面移除 :has()（上架規範）。 */
+.gn-split.gn-has-dock .gn-main { padding-bottom: calc(16px + var(--gn-dock-h, 180px) + 16px); }
+
+
+/* ═══ 標籤面板（2026-08-01）═══
+   容器沿用上面的 .gn-dock（＝卡片的圓角／底色／陰影），這裡只寫內容與收合態。 */
+.gn-dock-tags { --gn-dock-h: auto; max-height: 168px; }
+.gn-dock-head {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px 6px;
+}
+.gn-dock-title {
+  flex: 1; min-width: 0;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gn-dock-clear {
+  flex: none; font-size: 11px; color: var(--text-muted); cursor: pointer;
+}
+.gn-dock-clear:hover { color: var(--interactive-accent); }
+.gn-dock-toggle {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  color: var(--text-faint); cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.gn-dock-toggle:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.gn-dock-toggle svg { width: 14px; height: 14px; }
+.gn-dock-body {
+  flex: 1; min-height: 0;
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px;
+  padding: 0 12px 12px;
+  overflow-y: auto;
+}
+.gn-dock-body .gn-more-chip { align-self: flex-start; }
+
+/* ── 收合態：右下角的懸浮按鈕 ──
+   同一個元素變形，不是換一個 DOM —— 這樣圓角／陰影／底色都自動沿用卡片語言。 */
+.gn-dock-fab {
+  display: none;
+  position: relative;
+  width: 100%; height: 100%;
+  align-items: center; justify-content: center;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.gn-dock-fab:hover { color: var(--text-normal); }
+.gn-dock-fab-ic { display: flex; }
+.gn-dock-fab-ic svg { width: 18px; height: 18px; }
+.gn-dock-fab-badge {
+  position: absolute; top: 4px; right: 4px;
+  min-width: 15px; height: 15px; padding: 0 4px;
+  border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+.gn-dock-mini {
+  width: 44px; height: 44px;
+  max-height: none;
+  border-radius: 999px;      /* 蓋掉卡片的方角，收合態是圓的 */
+}
+.gn-dock-mini .gn-dock-head,
+.gn-dock-mini .gn-dock-body { display: none; }
+.gn-dock-mini .gn-dock-fab { display: flex; }
+/* 收合時卡片牆不需要留那麼多底部空間。
+   class 由 JS 的 setOpen() 掛在 .gn-split 上 —— 本專案不用 :has()（上架規範）。 */
+.gn-split.gn-dock-collapsed .gn-main { padding-bottom: 16px; }

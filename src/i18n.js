@@ -260,6 +260,9 @@ const ZH_TW = {
   'Auto card color from cover image': '依封面圖自動決定卡片底色',
   'Tints each card with the dominant color of its cover image. Cards you colored manually are left alone.': '用封面圖的主色染卡片底色。手動上色過的卡片不受影響。',
   'Peek image': '預覽圖片',
+  'Local graph': '關聯圖',
+  'Skipped {{n}} note(s) — reopen them and try again': '有 {{n}} 則筆記因為索引不同步被跳過，重新開啟後再試一次',
+  'Open a note to see its connections': '開啟一則筆記以顯示它的關聯',
   'Action failed: {{msg}}': '操作失敗：{{msg}}',
   'Image lightbox actions': '圖片放大檢視的動作膠囊',
   'Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.':

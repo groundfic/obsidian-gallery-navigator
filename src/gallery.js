@@ -8,6 +8,7 @@
 
 const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
+const { LocalGraph } = require('./graph.js');
 
 /* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
    ⚠️ addIcon() 的內容必須適配 0 0 100 100 的 viewBox，但原稿是 24×24
@@ -17,11 +18,25 @@ const { t, setLang, isZh } = require('./i18n.js');
 const GN_EDITORIAL_MIN_COL = 150;
 
 const GN_ICON_ID = 'gallery-navigator';
+/* 線條版 logo（2026-08-01 圖稿再更新）。原稿：vault 的 img/icon-line.svg（18.5×19.4，直式）
+   換算：addIcon() 要求適配 0 0 100 100
+     • 等比 scale 80/19.4 = 4.12371（取長邊，內容佔 80%、留 10% 邊距）
+     • 渲染後 76.29 × 80.00 → translate(11.86, 10) 置中
+     • 縮放倍率與前幾版相同 → 換圖稿不會忽大忽小
+   ⚠️ 原稿的 stroke 是 #000（Illustrator 匯出），一定要改成 currentColor，
+      否則深色主題下會變成看不見的黑線，也不會跟著 hover 變色。
+   ⚠️ 線寬**不能在這裡控制**：Obsidian 有一條 `svg.svg-icon { stroke-width: var(--icon-stroke) }`，
+      CSS 會蓋掉 SVG 的 presentation attribute。實際粗細由 gallery.css 的
+      `.svg-icon.gallery-navigator` 決定（那裡把 --icon-stroke 按 100/24 放大還原）。
+      這裡留 stroke-width="2" 只是萬一 class 沒掛上時的保底值。
+   註：原稿裡兩個方框各被畫了兩次（幾何相同、只差 .9 / 1 的線寬，Illustrator 的重複圖層）。
+      我們統一線寬後兩份會完全重疊，所以這裡只留一份，視覺零差異。
+      兩個方框刻意不同大小（右上 4.5、左下 4.3），照原稿保留。 */
 const GN_ICON_SVG =
-  '<g transform="scale(4.16667)" fill="currentColor">' +
-  '<path d="M13.06,9.41v-4.66c0-1.05-.85-1.9-1.9-1.9h-6.05c-1.05,0-1.9.85-1.9,1.9v6.05c0,1.05.85,1.9,1.9,1.9h3.93c1.05,0,1.9.85,1.9,1.9v4.66c0,1.05.85,1.9,1.9,1.9h6.05c1.05,0,1.9-.85,1.9-1.9v-6.05c0-1.05-.85-1.9-1.9-1.9h-3.93c-1.05,0-1.9-.85-1.9-1.9Z"/>' +
-  '<rect x="2.75" y="14.57" width="6.4" height="6.4" rx="1.9" ry="1.9"/>' +
-  '<rect x="14.84" y="3.02" width="6.4" height="6.4" rx="1.9" ry="1.9"/>' +
+  '<g transform="translate(11.86 10) scale(4.12371)" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-miterlimit="10">' +
+  '<path d="M10.4,7.1V2.4c0-1-.9-1.9-1.9-1.9H2.4c-1.1,0-1.9.8-1.9,1.9v6.1c0,1.1.8,1.9,1.9,1.9h3.9c1.1,0,1.9.9,1.9,1.9v4.7c0,1,.9,1.9,1.9,1.9h6c1,0,1.9-.9,1.9-1.9v-6.1c0-1.1-.9-1.9-1.9-1.9h-3.9c-1.1,0-1.8-.9-1.8-1.9h0Z"/>' +
+  '<rect x="13.5" y="1.5" width="4.5" height="4.5" rx="1.4" ry="1.4"/>' +
+  '<rect x=".9" y="13.7" width="4.3" height="4.3" rx="1.3" ry="1.3"/>' +
   '</g>';
 
 
@@ -1017,7 +1032,7 @@ class ConfirmModal extends Modal {
       const list = box.createDiv('gn-confirm-extra-list');
       for (const p of this.extra.items) list.createDiv({ cls: 'gn-confirm-extra-item', text: p });
     }
-    const btns = contentEl.createDiv('gn-modal-btns');
+    const btns = contentEl.createDiv('modal-button-container');   // 原生 class，主題才吃得到
     const cancel = btns.createEl('button', { text: t('Cancel') });
     cancel.onclick = () => this.close();
     const ok = btns.createEl('button', { text: t('Delete') });
@@ -1039,10 +1054,15 @@ class InputModal extends Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl('h3', { text: this.titleText });
+    /* 用 Obsidian 的標準結構（2026-08-01）：
+       以前是裸 <h3> + 自訂的 .gn-modal-btns → 主題針對 .modal-title /
+       .modal-button-container 寫的規則全部套不到，按鈕只吃得到通用 <button>
+       樣式（在 Velocity 就變成兩顆巨大膠囊）。改用原生 class 之後，
+       這個對話框在任何主題下都會跟該主題其他對話框長得一樣。 */
+    this.setTitle(this.titleText);
     const input = contentEl.createEl('input', { type: 'text', cls: 'gn-input' });
     input.value = this.initial;
-    const btns = contentEl.createDiv('gn-modal-btns');
+    const btns = contentEl.createDiv('modal-button-container');
     const cancel = btns.createEl('button', { text: t('Cancel') });
     cancel.onclick = () => this.close();
     const ok = btns.createEl('button', { text: this.okLabel });
@@ -1111,6 +1131,7 @@ class GalleryView extends ItemView {
     this.render();
     // 開啟任一筆記時，若同步開著 → 定位到它的資料夾（從日曆開的會設跳過旗標）
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
+      if (this._graph) this._graph.setFile(file);
       // 只跳過「從行事曆開的那個特定檔案」——用路徑比對，不用無差別旗標
       // （否則日記若已開著、不觸發 file-open，旗標會殘留 → 被之後點的連結誤消耗 → 連結不定位）
       if (file && this.plugin._skipSyncPath === file.path) { this.plugin._skipSyncPath = null; return; }
@@ -1144,6 +1165,8 @@ class GalleryView extends ItemView {
   }
 
   async onClose() {
+    if (this._dockRO) { try { this._dockRO.disconnect(); } catch (e) {} this._dockRO = null; }
+    if (this._graph) { this._graph.destroy(); this._graph = null; }   // 停掉 RAF 與 ResizeObserver
     // gn-leaf 掛在外層的 .workspace-leaf-content 上（不屬於 contentEl，empty() 清不到）
     // → 關閉時自己收回來，避免這個葉面板被別的 view 重用時殘留樣式
     if (this.contentEl && this.contentEl.parentElement) this.contentEl.parentElement.removeClass('gn-leaf');
@@ -2004,30 +2027,6 @@ class GalleryView extends ItemView {
   }
 
   // Canvas 縮圖：解析 .canvas JSON，取第一個圖片節點當封面
-  async loadCanvasThumb(file, card, placeholder) {
-    try {
-      const raw = await this.app.vault.cachedRead(file);
-      const data = JSON.parse(raw);
-      const nodes = (data && data.nodes) || [];
-      for (const nd of nodes) {
-        if (nd && nd.type === 'file' && nd.file && IMG_EXT.test(nd.file)) {
-          const f = this.app.metadataCache.getFirstLinkpathDest(nd.file, file.path)
-            || this.app.vault.getAbstractFileByPath(nd.file);
-          if (f) {
-            const img = card.createEl('img');
-            img.src = this.app.vault.getResourcePath(f);
-            img.loading = 'lazy';
-            card.appendChild(img);   // 滿版圖片
-            card.addClass('gn-has-img');
-            card.removeClass('gn-icon-cover');   // 換成真圖 → 文字改回疊圖模式
-            if (placeholder) placeholder.remove();
-            this.relayoutWalls();
-            return;
-          }
-        }
-      }
-    } catch (e) { /* 解析失敗就保留圖示 */ }
-  }
 
   // PDF 縮圖：用 Obsidian 內建 pdf.js 把第一頁渲染成圖當封面（失敗保留圖示）
   async loadPdfThumb(file, card, placeholder) {
@@ -2166,6 +2165,142 @@ class GalleryView extends ItemView {
     };
     apply();
     requestAnimationFrame(() => { apply(); this._treeScrollLock = false; });
+  }
+
+  /* 右欄底部的浮動面板（2026-08-01）
+     ⚠️ 刻意用「絕對定位掛在 .gn-split 上」而不是把 .gn-main 包一層：
+        手機的雙欄平移仰賴 .gn-main 是 .gn-split 的直接 flex 子元素
+        （flex: 0 0 100% + translateX），包一層就會壞掉。
+     ⚠️ 手機不啟用：螢幕太窄，面板會跟左右滑動的換欄手勢搶觸控。
+
+     目前預設內容是「本資料夾的標籤」。區域關聯圖（graph.js）先收起來不顯示，
+     程式碼保留 —— 開 state.enableGraph 就會改掛關聯圖。 */
+  mountDock(split) {
+    if (document.body.classList.contains('is-mobile')) return;
+
+    if (this.plugin.state.enableGraph) {
+      this._graph = this._graph || new LocalGraph(this.plugin);
+      this._graph.mount(split);
+      this._dockEl = this._graph.el;
+      this._graph.setFile(this.app.workspace.getActiveFile());
+    } else {
+      this._dockEl = this.buildTagDock(split);
+    }
+    if (!this._dockEl) return;
+
+    split.addClass('gn-has-dock');
+    this.syncDockBounds();
+    if (this._dockRO) { try { this._dockRO.disconnect(); } catch (e) {} }
+    try {
+      this._dockRO = new ResizeObserver(() => this.syncDockBounds());
+      this._dockRO.observe(this._main);   // 涵蓋：拖曳分隔線、左欄收合、視窗縮放
+    } catch (e) {}
+  }
+
+  /* 標籤面板：本資料夾出現過的 tag，點擊即篩選卡片牆。
+     可收合成右下角的懸浮按鈕（狀態存在 state.tagDockOpen）。 */
+  buildTagDock(split) {
+    const tags = this.folderTags();
+    if (!tags.length) return null;          // 沒有標籤就整個不出現，不佔空間
+
+    const open = this.plugin.state.tagDockOpen !== false;
+    const dock = split.createDiv('gn-dock gn-dock-tags');
+    dock.toggleClass('gn-dock-mini', !open);
+    split.toggleClass('gn-dock-collapsed', !open);
+
+    const setOpen = (v) => {
+      this.plugin.state.tagDockOpen = v;
+      this.plugin.saveState();
+      dock.toggleClass('gn-dock-mini', !v);
+      split.toggleClass('gn-dock-collapsed', !v);   // 卡片牆的底部留白（取代 :has()）
+      this.syncDockBounds();
+    };
+
+    /* 收合態＝一顆懸浮按鈕。整顆可點，展開後才顯示內容。
+       標籤數當作角標，收起來也知道這個資料夾有多少種標籤。 */
+    const fab = dock.createDiv('gn-dock-fab');
+    setIcon(fab.createDiv('gn-dock-fab-ic'), 'tags');
+    fab.createDiv('gn-dock-fab-badge').setText(String(tags.length));
+    fab.setAttr('aria-label', t('Tags in this folder'));
+    fab.onclick = () => setOpen(true);
+
+    const head = dock.createDiv('gn-dock-head');
+    head.createDiv('gn-dock-title').setText(t('Tags in this folder'));
+    const active = this._tagFilter && this._tagFilter.size;
+    if (active) {
+      const clear = head.createDiv('gn-dock-clear');
+      clear.setText(t('Clear'));
+      clear.onclick = (e) => { e.stopPropagation(); this._tagFilter = new Set(); this.render(); };
+    }
+    const collapse = head.createDiv('gn-dock-toggle');
+    setIcon(collapse, 'chevron-down');
+    collapse.setAttr('aria-label', t('Collapse'));
+    collapse.onclick = () => setOpen(false);
+
+    const body = dock.createDiv('gn-dock-body');
+    for (const it of tags) {
+      const chip = body.createDiv('gn-more-chip');   // 沿用「⋯ 更多」面板的晶片樣式
+      chip.toggleClass('gn-more-chip-on', !!(this._tagFilter && this._tagFilter.has(it.tag)));
+      chip.setText('#' + it.tag + ' ' + it.n);
+      chip.onclick = () => {
+        if (!this._tagFilter) this._tagFilter = new Set();
+        if (this._tagFilter.has(it.tag)) this._tagFilter.delete(it.tag);
+        else this._tagFilter.add(it.tag);
+        chip.toggleClass('gn-more-chip-on', this._tagFilter.has(it.tag));
+        this.rerenderMain();   // 只重畫卡片牆，面板留著繼續點
+      };
+
+      /* 右鍵（手機長按）→ 改名 / 刪除。
+         沿用標籤樹那一套 renameTag / deleteTag —— 它們會同時處理
+         frontmatter 的 tags 與子標籤（#a/b 會跟著 #a 一起改）。 */
+      this.wireContextMenu(chip, () => {
+        const menu = new Menu();
+        menu.addItem((i) => i.setTitle(t('Rename tag')).setIcon('pencil').onClick(() => {
+          new InputModal(this.app, t('Rename tag'), it.tag, async (name) => {
+            const target = String(name || '').trim().replace(/^#/, '');
+            if (!target || target === it.tag) return;
+            await this.renameTag(it.tag, target);
+            // 篩選中的舊名要跟著換，否則改完卡片牆會突然變空
+            if (this._tagFilter && this._tagFilter.has(it.tag)) {
+              this._tagFilter.delete(it.tag);
+              this._tagFilter.add(target);
+            }
+            this.render();
+          }, t('Rename')).open();
+        }));
+        menu.addItem((i) => i.setTitle(t('Copy path')).setIcon('link')
+          .onClick(() => copyToClipboard('#' + it.tag)));
+        menu.addSeparator();
+        menu.addItem((i) => i.setTitle(t('Delete tag')).setIcon('trash').setWarning(true).onClick(() => {
+          new ConfirmModal(this.app,
+            t('Remove #{{tag}} (and its sub-tags) from all notes?', { tag: it.tag }),
+            async () => {
+              await this.deleteTag(it.tag);
+              if (this._tagFilter) this._tagFilter.delete(it.tag);
+              this.render();
+            }).open();
+        }));
+        return menu;
+      });
+    }
+    return dock;
+  }
+
+  /** 把面板的左右邊界對齊 .gn-main 的內容框（padding 以內）。
+      收合成懸浮按鈕時不撐寬，只靠右下角定位。 */
+  syncDockBounds() {
+    const el = this._dockEl, main = this._main, split = this._split;
+    if (!el || !el.isConnected || !main || !split) return;
+    const cs = getComputedStyle(main);
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const right = split.clientWidth - (main.offsetLeft + main.offsetWidth) + padR;
+    el.style.right = Math.max(0, right) + 'px';
+    if (el.hasClass('gn-dock-mini')) {
+      el.style.left = 'auto';               // 懸浮按鈕不撐寬
+    } else {
+      const padL = parseFloat(cs.paddingLeft) || 0;
+      el.style.left = (main.offsetLeft + padL) + 'px';
+    }
   }
 
   // 只重畫左樹（展開/收合/最愛/資料夾配色用）；沒左樹快取就退回整頁
@@ -2528,6 +2663,7 @@ class GalleryView extends ItemView {
     const splitter = split.createDiv('gn-split-handle');
     const main = split.createDiv('gn-main');
     this._split = split; this._main = main;   // 供手機「點資料夾 → 跳右欄」使用
+    this.mountDock(split);                    // 右欄底部的浮動面板（桌機）
     this.wireOverlayScrollbar(treeScroll);    // overlay 捲軸：捲動才浮現
     this.wireOverlayScrollbar(main);
     if (treeHidden) { tree.style.display = 'none'; splitter.style.display = 'none'; }
@@ -2717,7 +2853,19 @@ class GalleryView extends ItemView {
         };
 
         // 點整列 = 只選取（右欄載入）；展開/收合交給箭頭
-        row.onclick = () => {
+        row.onclick = (e) => {
+          /* 已選取的資料夾，再點一次「名稱」→ 原地改名（2026-08-01）。
+             照 Finder 的慢速雙擊邏輯：第一下先選取，第二下才進編輯，
+             所以不會犧牲「點名稱＝選取」這個最常用的動作。
+             ⚠️ 手機不啟用：觸控要連續點同一個資料夾導覽很常見，
+                容易誤觸；手機改名走長按選單的「重新命名」。 */
+          if (!document.body.classList.contains('is-mobile')
+              && this.path === it.folder.path
+              && e.target === nameEl && !nameEl._editing) {
+            e.preventDefault();
+            this.inlineRenameFolder(it.folder, nameEl);
+            return;
+          }
           this.path = it.folder.path;
           state.lastPath = it.folder.path;
           this._focusTreeSel = it.folder.path;   // 選後聚焦此列，讓 Enter 能改名
@@ -3133,8 +3281,66 @@ class GalleryView extends ItemView {
         if (touched) changed++;
       } catch (e) {}
     }
-    if (!silent) new Notice(t('Renamed #{{old}} → #{{new}} in {{n}} note(s)', { old: oldPath, new: newPath, n: changed }));
+    // 內文的 #標籤（frontmatter 以外）
+    const body = await this.renameTagInBody(oldPath, newPath, files);
+    changed += body.changed;
+
+    if (!silent) {
+      new Notice(t('Renamed #{{old}} → #{{new}} in {{n}} note(s)', { old: oldPath, new: newPath, n: changed }));
+      // 快取過期而跳過的檔案要講出來，不然使用者會以為全部改完了
+      if (body.skipped) new Notice(t('Skipped {{n}} note(s) — reopen them and try again', { n: body.skipped }), 6000);
+    }
     return changed;
+  }
+
+  /* 改寫內文裡的 #標籤（2026-08-01）
+     ⚠️ 刻意**不用正則**掃文字。內文的 # 有太多陷阱：程式碼區塊裡的註解、
+        網址的 #fragment、Markdown 標題、以及 #life 會誤中 #lifestyle 的前綴問題。
+        改用 metadataCache 的 cache.tags —— 它已經是 Obsidian 解析器的結果，
+        帶精確的字元偏移量，上面那些情況全都不在裡面。
+
+     ⚠️ 偏移量來自「上次解析時」的內容。若檔案在那之後被改過，位置就不準了 →
+        替換前先比對該位置的字串是否真的等於預期的標籤，不符就**整個檔案跳過**
+        並回報，寧可少改也不要改壞內容。 */
+  async renameTagInBody(oldPath, newPath, files) {
+    let changed = 0, skipped = 0;
+    for (const p of files) {
+      const f = this.app.vault.getAbstractFileByPath(p);
+      if (!(f instanceof TFile)) continue;
+      const cache = this.app.metadataCache.getFileCache(f) || {};
+      const hits = (cache.tags || []).filter((x) => {
+        const c = String(x.tag || '').replace(/^#/, '');
+        return c === oldPath || c.startsWith(oldPath + '/');
+      });
+      if (!hits.length) continue;
+
+      // 由後往前替換，前面的偏移量才不會被位移影響
+      const ordered = [...hits].sort((a, b) => b.position.start.offset - a.position.start.offset);
+      const rewrite = (data) => {
+        let out = data;
+        for (const h of ordered) {
+          const st = h.position.start.offset, en = h.position.end.offset;
+          if (out.slice(st, en) !== h.tag) return null;   // 快取過期
+          const c = h.tag.replace(/^#/, '');
+          const next = '#' + (c === oldPath ? newPath : newPath + c.slice(oldPath.length));
+          out = out.slice(0, st) + next + out.slice(en);
+        }
+        return out;
+      };
+
+      try {
+        let ok = true;
+        if (this.app.vault.process) {
+          await this.app.vault.process(f, (data) => { const r = rewrite(data); if (r === null) { ok = false; return data; } return r; });
+        } else {
+          const data = await this.app.vault.read(f);
+          const r = rewrite(data);
+          if (r === null) ok = false; else await this.app.vault.modify(f, r);
+        }
+        if (ok) changed++; else skipped++;
+      } catch (e) { skipped++; }
+    }
+    return { changed, skipped };
   }
 
   // 標籤刪除（2026-07-19）：從所有筆記的 frontmatter 移除該標籤（含子孫）。內文行內標籤不動。
@@ -3590,17 +3796,20 @@ class GalleryView extends ItemView {
       }
     } else if (!isMd) {
       // 非 md 且無封面 → 檔型「圖示封面」卡：套 gn-has-img 圖片卡版型（icon 方塊當封面、標題/日期在下），
-      //   與圖片卡一致（canvas/base/pdf 皆然）。Canvas 抓到內部圖、PDF 渲染第一頁 → 之後無縫換成真圖封面。
+      //   與圖片卡一致（canvas/base/pdf 皆然）。PDF 渲染第一頁 → 之後無縫換成真圖封面。
       card.addClass('gn-has-img');
       // gn-icon-cover 取代原本的 :has(.gn-fileicon)（2026-07-31）：
       // 「封面其實是檔型圖示、不是真圖」→ 文字不疊在圖上。
-      // canvas/pdf 之後抓到真圖時會在 loadCanvasThumb / loadPdfThumb 移除這個 class。
+      // PDF 之後渲染出封面時會在 loadPdfThumb 移除這個 class。
       card.addClass('gn-icon-cover');
       const ph = card.createDiv('gn-fileicon');
       setIcon(ph.createDiv('gn-fileicon-ic'), iconForExt(it.ext));       // icon 在上
       ph.createSpan('gn-fileicon-label').setText(it.ext.toUpperCase());  // 文字（BASE / CANVAS…）在下，一起置中
-      if (it.ext === 'canvas') this.loadCanvasThumb(it.file, card, ph);
-      else if (it.ext === 'pdf' && window.pdfjsLib) { card._pdfFile = it.file; card._pdfPh = ph; }   // 捲到才渲染
+      /* Canvas 不抓縮圖（2026-08-01 使用者要求）：以前會把 canvas 裡第一張嵌入圖當封面，
+         但那張圖是隨機的、跟 canvas 的內容無關，同一面牆上每張 canvas 卡長得都不一樣。
+         改成一律灰底 + CANVAS 字樣，跟 base 一致、也一眼看得出檔案類型。
+         PDF 保留渲染第一頁——那確實代表該檔案的內容。 */
+      if (it.ext === 'pdf' && window.pdfjsLib) { card._pdfFile = it.file; card._pdfPh = ph; }   // 捲到才渲染
     } else {
       // md 無封面 → 顯示內文預覽；同時試抓外部連結 og:image，抓到則以圖代文
       if (!skipPreview) {
