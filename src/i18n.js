@@ -268,6 +268,16 @@ const ZH_TW = {
   'Image lightbox actions': '圖片放大檢視的動作膠囊',
   'Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.':
     '在 Obsidian 點圖片放大時，於畫面底部加一條浮動動作列（複製、找相似、在 Finder 顯示）。Obsidian 沒有提供 lightbox 的擴充 API，日後改版若導致這條動作列異常，把它關掉即可。',
+  // ── 效能（2026-08-04）──
+  'Virtualized card wall': '卡片牆虛擬化',
+  'In large folders, keeps only the cards near the viewport in the DOM and recycles the rest. Greatly reduces memory and scrolling lag. Turn off if you see layout jumps while scrolling.':
+    '大資料夾只在 DOM 裡保留視窗附近的卡片，其餘回收重用。大幅降低記憶體與捲動卡頓。若捲動時看到版面跳動，可以關掉。',
+  'Image thumbnails': '圖片縮圖',
+  'Large images are downscaled once and cached, so cards no longer decode full-resolution originals. This is what keeps big image folders from exhausting memory on mobile.':
+    '大圖只縮小一次並快取，卡片不再解碼完整解析度的原圖。這是大型圖片資料夾在手機上不會把記憶體吃爆的關鍵。',
+  'Clear thumbnail cache': '清除失效縮圖',
+  'Removed {{n}} stale thumbnails': '已移除 {{n}} 張失效縮圖',
+
   'Swap image…': '交換圖片…',
   'Swap image': '交換圖片',
   'Filter by file name…': '搜尋檔名…',

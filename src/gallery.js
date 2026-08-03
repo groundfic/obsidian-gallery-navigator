@@ -9,6 +9,8 @@
 const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
 const { LocalGraph } = require('./graph.js');
+const { ThumbCache } = require('./thumbs.js');
+const { VirtualWall } = require('./virtual.js');
 
 /* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
    ⚠️ addIcon() 的內容必須適配 0 0 100 100 的 viewBox，但原稿是 24×24
@@ -174,9 +176,9 @@ class MasonryLayout {
     el.style.top = '0';
     el.style.left = '0';
     this.items.push(el);
-    // 圖片載入後高度會變 → 重排（rAF 合併多次）
-    (el.querySelectorAll ? el.querySelectorAll('img') : []).forEach(
-      (im) => im.addEventListener('load', () => this.scheduleLayout()));
+    // ⚠️ 這裡**不要**再逐張 img 掛 load：建構式已在 container 用捕獲階段接了所有
+    //    後代的 load（見上方註解），逐張再掛一次等於同一張圖觸發兩次 scheduleLayout。
+    //    rAF 會合併所以不致命，但 layout() 是 O(全部卡片)，白跑一次代價不小。
     this.scheduleLayout();
   }
   clear() {
@@ -959,6 +961,38 @@ function notesInDeep(app, folder, hiddenSet) {
   return out;
 }
 
+/* 路徑字串或 TFile 都收，一律回 TFile / null。
+   ⚠️ 為什麼需要這層：buildTagIndex() 的 map 存的是 **TFile 物件**（不是路徑字串），
+      而 renameTag / renameTagInBody / deleteTag 都把它當路徑餵給 getAbstractFileByPath()。
+      原生實作是 `this.fileMap.hasOwnProperty(e) ? this.fileMap[e] : null`，
+      物件會被轉成 "[object Object]" → 永遠查無 → `instanceof TFile` 檢查把**每一個**
+      檔案都跳過，改名靜默失敗（顯示「已更新 0 則筆記」且不報錯）。
+      統一走這個函式，之後兩種型別都不會再踩到。 */
+function asFile(app, p) {
+  return p instanceof TFile ? p : app.vault.getAbstractFileByPath(p);
+}
+
+/* 反向連結索引：被引用的路徑 → 引用它的來源路徑 Set。
+   resolvedLinks 的方向是 src → { target: 次數 }，要問「誰引用了我」只能反查。
+   ⚠️ 舊寫法是在 candidate 迴圈**裡面**跑 `for (const src of Object.keys(res))`，
+      每個附件都重新配置一次全 vault 長度的陣列 → O(附件數 × vault 大小)。
+      多選 200 則圖多的筆記時 candidate 可達上千個，乘上萬檔 vault 就是上千萬次迭代，
+      刪除確認框會凍住好幾秒。改成一次 O(V+E) 建表，之後每個 candidate 都是 O(1) 查詢。 */
+function buildBacklinkIndex(mc) {
+  const res = mc.resolvedLinks || {};
+  const back = new Map();
+  for (const src of Object.keys(res)) {
+    const targets = res[src];
+    if (!targets) continue;
+    for (const tgt of Object.keys(targets)) {
+      let s = back.get(tgt);
+      if (!s) { s = new Set(); back.set(tgt, s); }
+      s.add(src);
+    }
+  }
+  return back;
+}
+
 // 只算資料夾底下的檔案總數（樹狀清單用；不排序、不讀 metadata，比 folderStats 輕很多）
 function folderFileCount(folder) {
   let n = 0;
@@ -1173,6 +1207,8 @@ class GalleryView extends ItemView {
     // 清理 observer，避免關閉分頁後殘留
     for (const m of (this._masonries || [])) { try { m.destroy(); } catch (e) {} }
     this._masonries = [];
+    for (const v of (this._virtuals || [])) { try { v.destroyAll(); } catch (e) {} }
+    this._virtuals = [];
     if (this._ogObserver) { this._ogObserver.disconnect(); this._ogObserver = null; }
     if (this._wallIO) { this._wallIO.disconnect(); this._wallIO = null; }
     if (this._paneRO) { this._paneRO.disconnect(); this._paneRO = null; }
@@ -1186,6 +1222,7 @@ class GalleryView extends ItemView {
   // 重排所有瀑布流。（手機兩欄改用 transform 平移後，重排不會影響「顯示哪一欄」，這裡不必再顧捲動）
   relayoutWalls() {
     for (const m of (this._masonries || [])) m.scheduleLayout();
+    for (const v of (this._virtuals || [])) v.notifyContentChanged();
   }
 
   // 把左側樹定位到某檔案：展開祖先、選取資料夾、捲到位、標記 active 卡片
@@ -1713,7 +1750,7 @@ class GalleryView extends ItemView {
     const cache = mc.getFileCache(file);
     if (!cache) return [];
     const raws = [...(cache.embeds || []), ...(cache.links || [])];
-    const res = mc.resolvedLinks || {};
+    const back = buildBacklinkIndex(mc);   // 一次建表，取代迴圈內的全 vault 掃描
     const seen = new Set();
     const out = [];
     for (const r of raws) {
@@ -1723,8 +1760,8 @@ class GalleryView extends ItemView {
       if (!(f instanceof TFile) || f.extension === 'md' || seen.has(f.path)) continue;
       seen.add(f.path);
       let used = false;
-      for (const src of Object.keys(res)) {
-        if (src !== file.path && res[src] && res[src][f.path]) { used = true; break; }
+      for (const src of (back.get(f.path) || [])) {
+        if (src !== file.path) { used = true; break; }
       }
       if (!used) out.push(f);
     }
@@ -1735,7 +1772,7 @@ class GalleryView extends ItemView {
   // 就算孤兒——單筆版的 orphanAttachmentsOf 會把「被另一個也要刪的筆記引用」誤判成非孤兒。
   orphanAttachmentsOfMany(paths) {
     const mc = this.app.metadataCache;
-    const res = mc.resolvedLinks || {};
+    const back = buildBacklinkIndex(mc);   // 一次建表，取代 candidate 迴圈內的全 vault 掃描
     const delSet = new Set(paths);
     const candidates = new Set();   // 被刪筆記引用到的非 md 附件路徑
     const byPath = new Map();
@@ -1756,9 +1793,9 @@ class GalleryView extends ItemView {
     const out = [];
     for (const ap of candidates) {
       let externalRef = false;
-      for (const src of Object.keys(res)) {
+      for (const src of (back.get(ap) || [])) {
         if (delSet.has(src)) continue;                       // 被刪的來源不算引用
-        if (res[src] && res[src][ap]) { externalRef = true; break; }
+        externalRef = true; break;
       }
       if (!externalRef) out.push(byPath.get(ap));
     }
@@ -2065,6 +2102,59 @@ class GalleryView extends ItemView {
     finally { try { if (doc) doc.destroy(); } catch (e) {} }
   }
 
+  /* 用長寬比索引先佔好圖片高度，並在真的載入後回填 / 校正索引。
+     沒有這一步的話：img 只有 width:100%、height:auto，載入前高度是 0，
+     載入後才撐開 → 每張圖都改變卡片高度 → 每張圖都觸發一次 O(全部卡片) 的重排。
+     圖片是陸續載入的，於是連續數十上百個 frame 都在跑滿版重排。
+     key 用去掉查詢字串的資源路徑：getResourcePath() 會在尾巴加 ?mtime，
+     去掉之後 vault 圖片與 og-cache 圖片都能得到穩定的鍵。 */
+  dimKeyOf(src) { return String(src || '').split('?')[0]; }
+
+  /* 決定卡片圖片實際要載入哪一個檔案：縮圖優先，原圖是退路。
+     ⚠️ 沒有縮圖時**不先塞原圖再替換**——那樣峰值記憶體跟完全沒做縮圖一樣
+        （見 thumbs.js 設計說明 2）。寧可先留白，縮圖好了再填。 */
+  setCardImage(img, it) {
+    const file = it.file;
+    const useOriginal = () => {
+      this.applyDim(img, it.src);
+      img.src = it.src;
+    };
+    // 非圖片檔（md 的封面 / og 圖）與小圖、GIF、SVG：本來就不貴，直接用原圖
+    if (!it.isImg || this.plugin.thumbs.shouldSkip(file)) { useOriginal(); return; }
+
+    const ready = this.plugin.thumbs.urlFor(file);
+    if (ready) { this.applyDim(img, it.src); img.src = ready; return; }
+
+    // 先用長寬比佔好高度（若已知），避免縮圖填入時整牆重排
+    this.applyDim(img, it.src);
+    img.addClass('gn-img-pending');
+    this.plugin.thumbs.request(file, (url) => {
+      if (!img.isConnected) return;                 // 已經捲走 / 重畫過了
+      img.removeClass('gn-img-pending');
+      img.src = url || it.src;                      // 做不出縮圖 → 退回原圖
+    });
+  }
+
+  applyDim(img, src) {
+    const key = this.dimKeyOf(src);
+    if (!key) return;
+    const idx = this.plugin._dimIndex || (this.plugin._dimIndex = {});
+    const d = idx[key];
+    if (d && d[0] > 0 && d[1] > 0) img.style.aspectRatio = d[0] + ' / ' + d[1];
+    // 一律掛一次性 load：沒快取時建立、有快取時校正（圖片被換掉長寬比會變）。
+    // {once:true} 會自動解除，不會累積監聽器；這裡也**不呼叫** scheduleLayout——
+    // 重排交給 masonry container 的捕獲監聽統一處理，避免同一張圖排兩次。
+    img.addEventListener('load', () => {
+      const w = img.naturalWidth, h = img.naturalHeight;
+      if (!w || !h) return;
+      const prev = idx[key];
+      if (prev && prev[0] === w && prev[1] === h) return;   // 沒變就不寫、不存檔
+      idx[key] = [w, h];
+      img.style.aspectRatio = w + ' / ' + h;
+      this.plugin.saveDimIndex();
+    }, { once: true });
+  }
+
   // 連結預覽縮圖：無封面的 md 若含外部連結，抓該網頁 og:image、
   // 把圖片下載到外掛的 og-cache/ 資料夾持久保存（跨工作階段/裝置沿用，只抓一次）。
   async loadLinkPreview(file, card) {
@@ -2075,6 +2165,7 @@ class GalleryView extends ItemView {
     const put = (resUrl) => {
       if (!resUrl || !card.isConnected) return;
       const img = card.createEl('img');
+      this.applyDim(img, resUrl);   // 同樣先佔高度（用 addEventListener，不與下面的 onload 衝突）
       img.src = resUrl;
       img.loading = 'lazy';
       img.addClass('gn-linkimg');
@@ -2394,7 +2485,7 @@ class GalleryView extends ItemView {
       const paths = [...this.selected];
       (async () => {
         for (const p of paths) {
-          const f = this.app.vault.getAbstractFileByPath(p);
+          const f = asFile(this.app, p);
           if (f) await this.moveItem(f, targetFolder);
         }
         this.selected.clear();
@@ -3263,7 +3354,7 @@ class GalleryView extends ItemView {
     const files = [...(idx.map.get(oldPath) || [])];
     let changed = 0;
     for (const p of files) {
-      const f = this.app.vault.getAbstractFileByPath(p);
+      const f = asFile(this.app, p);
       if (!(f instanceof TFile)) continue;
       try {
         let touched = false;
@@ -3307,7 +3398,7 @@ class GalleryView extends ItemView {
   async renameTagInBody(oldPath, newPath, files) {
     let changed = 0, skipped = 0;
     for (const p of files) {
-      const f = this.app.vault.getAbstractFileByPath(p);
+      const f = asFile(this.app, p);
       if (!(f instanceof TFile)) continue;
       const cache = this.app.metadataCache.getFileCache(f) || {};
       const hits = (cache.tags || []).filter((x) => {
@@ -3351,7 +3442,7 @@ class GalleryView extends ItemView {
     const files = [...(idx.map.get(tagPath) || [])];
     let changed = 0;
     for (const p of files) {
-      const f = this.app.vault.getAbstractFileByPath(p);
+      const f = asFile(this.app, p);
       if (!(f instanceof TFile)) continue;
       try {
         let touched = false;
@@ -3594,7 +3685,7 @@ class GalleryView extends ItemView {
     const paths = order.length ? order : [...this.selected];
     const lines = [];
     for (const p of paths) {
-      const f = this.app.vault.getAbstractFileByPath(p);
+      const f = asFile(this.app, p);
       if (!(f instanceof TFile)) continue;
       const link = this.app.metadataCache.fileToLinktext(f, '', true);
       lines.push('[[' + link + ']]');
@@ -3606,7 +3697,7 @@ class GalleryView extends ItemView {
     const paths = [...this.selected];
     new FolderSuggest(this.app, async (target) => {
       for (const p of paths) {
-        const f = this.app.vault.getAbstractFileByPath(p);
+        const f = asFile(this.app, p);
         if (f) await this.moveItem(f, target);
       }
       this.selected.clear();
@@ -3624,7 +3715,7 @@ class GalleryView extends ItemView {
     } : null;
     new ConfirmModal(this.app, t('Delete the {{n}} selected items? (moves to trash)', { n: paths.length }), async (withExtra) => {
       for (const p of paths) {
-        const f = this.app.vault.getAbstractFileByPath(p);
+        const f = asFile(this.app, p);
         if (f) { try { await this.app.fileManager.trashFile(f); } catch (e) {} }
       }
       let n = 0;
@@ -3646,6 +3737,13 @@ class GalleryView extends ItemView {
   beginWall(container) {
     for (const m of (this._masonries || [])) { try { m.destroy(); } catch (e) {} }
     this._masonries = [];
+    for (const v of (this._virtuals || [])) { try { v.destroyAll(); } catch (e) {} }
+    this._virtuals = [];
+
+    /* 換頁/重畫 → 丟掉還沒開工的縮圖任務。
+       使用者已經捲走了，繼續做只會排擠新畫面該做的那幾張
+       （正在解碼中的 1–2 張無法中斷，讓它做完，反正結果會進快取）。 */
+    if (this.plugin.thumbs) this.plugin.thumbs.dropPending();
 
     // 多選狀態：換頁重置
     this.selected.clear();
@@ -3703,6 +3801,7 @@ class GalleryView extends ItemView {
       const v = Number(zoom.value);
       this.plugin.state.cardWidth = v;
       for (const m of this._masonries) m.setMinCol(v);   // 兩區一起縮放
+      for (const vw of (this._virtuals || [])) vw.setMinCol(v);
       this.plugin.saveState();
     };
     return { grid, masonry };
@@ -3742,6 +3841,9 @@ class GalleryView extends ItemView {
     }
     this._cardEls.get(it.file.path).push(card);
     if (it.file.path === this.activePath) card.addClass('gn-card-active');
+    // 虛擬化下卡片會被卸載再重建 → 選取狀態要從 this.selected 補回來，
+    // 否則捲出去再捲回來，勾選的卡就變成沒選（狀態其實還在，只是沒畫出來）
+    if (this.selected.has(it.file.path)) card.addClass('gn-card-selected');
     const isMd = it.ext === 'md';
     // 全自動樣式（2026-07-19，手動樣式選單已移除）：
     // 有核取方塊的筆記 → 自動待辦卡（metadataCache.listItems 同步判斷，零讀檔）
@@ -3786,9 +3888,9 @@ class GalleryView extends ItemView {
       // 有封面 → 圖片在上、標題/日期在下
       card.addClass('gn-has-img');
       const img = card.createEl('img');
-      img.src = it.src;
       img.loading = 'lazy';
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
+      this.setCardImage(img, it);
       this.autoTintCard(card, img, it.file.path + ':' + it.file.stat.mtime);   // 自動卡片底色（設定可開關）
       // 圖片卡預設不顯示內文（2026-07-18 移除 hover 內文，省讀檔）；
       // 但「編輯風索引卡」要有內文預覽（2026-07-20）→ 該模式下補建，走既有延遲載入管線（捲到才 cachedRead）。
@@ -3848,9 +3950,34 @@ class GalleryView extends ItemView {
     card.setAttr('draggable', 'true');
     card.addEventListener('dragstart', (e) => {
       ndrag = true;
-      this.drag = { kind: 'note', path: it.file.path };
+      this.drag = { kind: 'note', path: it.file.path };   // GN 內部用（拖到樹狀圖搬檔案）
       card.addClass('gn-card-dragging');
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'all';
+
+      /* 讓 Canvas / 編輯器 / 其他外掛也收得到（2026-08-01）。
+         以前只設了 effectAllowed，dataTransfer 裡什麼都沒放 → 卡片只能在 GN 內部拖，
+         拖到 Canvas 完全沒反應。
+
+         Obsidian 自己的檔案總管走 app.dragManager：
+           dragFile(evt, file, source) 會 ① 把 obsidian:// 網址寫進 dataTransfer
+                                        ② 回傳 { type:'file', file, icon, title } 描述物件
+           再交給 onDragStart(evt, draggable)。
+         Canvas 是用 dragManager.handleDrop 接收，走同一條路才會變成「檔案節點」，
+         而不是純文字節點。
+
+         ⚠️ app.dragManager 未列在官方 API typings（雖然大量外掛都在用）。
+            這裡做特徵偵測，取不到就退回 text/plain 的 wiki 連結 ——
+            至少還能拖出一個文字節點，不會整個沒反應。 */
+      try {
+        const dm = this.app.dragManager;
+        if (dm && typeof dm.dragFile === 'function' && typeof dm.onDragStart === 'function') {
+          dm.onDragStart(e, dm.dragFile(e, it.file, 'gallery-navigator'));
+        } else if (e.dataTransfer) {
+          e.dataTransfer.setData('text/plain', '[[' + it.file.basename + ']]');
+        }
+      } catch (err) {
+        if (e.dataTransfer) e.dataTransfer.setData('text/plain', '[[' + it.file.basename + ']]');
+      }
     });
     card.addEventListener('dragend', () => {
       this.drag = null;
@@ -3910,8 +4037,35 @@ class GalleryView extends ItemView {
     // 有延遲工作（內文預覽 / 連結圖 / PDF 縮圖）→ 掛觀察器，捲到附近才載入
     if (card._prevFile || card._ogFile || card._pdfFile) this._ogObserver.observe(card);
 
-    masonry.add(card);
+    // masonry 為 null＝虛擬化模式：位置與寬度由 VirtualWall 統一寫，這裡只設定位方式
+    if (masonry) masonry.add(card);
+    else { card.style.position = 'absolute'; card.style.top = '0'; card.style.left = '0'; }
     return card;
+  }
+
+  /* 虛擬化卸載一張卡片前的清理。
+     ⚠️ 一定要把 el 從 _cardEls 裡拿掉：那個 Map 是選取、範圍選取、捲動定位共用的
+        參照表，留著已移除的節點會讓後續操作對著殭屍元素設 class（看起來像沒反應）。 */
+  unregisterCard(el, it) {
+    if (this._ogObserver) { try { this._ogObserver.unobserve(el); } catch (e) {} }
+    const arr = this._cardEls && this._cardEls.get(it.file.path);
+    if (!arr) return;
+    const i = arr.indexOf(el);
+    if (i >= 0) arr.splice(i, 1);
+  }
+
+  /* 卡片還沒建出來時的高度估計。準不準只影響捲動時的跳動幅度，
+     不影響正確性——卡片真的掛上去後 VirtualWall.measure() 會用實測值取代。 */
+  estimateCardHeight(it, colW) {
+    const editorial = this.plugin.state.imageCardLayout === 'editorial';
+    if (it.src) {
+      const d = (this.plugin._dimIndex || {})[this.dimKeyOf(it.src)];
+      // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設
+      const ratio = (d && d[0] > 0 && d[1] > 0) ? (d[1] / d[0]) : 0.75;
+      // 編輯風索引卡的文字在圖片下方會另外佔高度；一般模式文字是疊在圖上的，不加
+      return colW * ratio + (editorial ? 96 : 0);
+    }
+    return editorial ? 150 : 180;   // 無封面：內文預覽卡
   }
 
   // keepOrder: 保持傳入順序，不套日期排序、不把釘選浮到最前
@@ -3995,9 +4149,58 @@ class GalleryView extends ItemView {
     this.endWall(container);
   }
 
+  /* 虛擬化瀑布流：只保留視窗上下各一屏的卡片，其餘拆掉（見 virtual.js）。
+     小資料夾不走這條——幾十張卡全留著沒有成本，反而省下估計/校正的複雜度與跳動。 */
+  renderVirtual(container, grid, masonry, notes, opts) {
+    // masonry 不再管理項目，收掉以免它的 ResizeObserver 跟 VirtualWall 打架
+    try { masonry.destroy(); } catch (e) {}
+    const mi = (this._masonries || []).indexOf(masonry);
+    if (mi >= 0) this._masonries.splice(mi, 1);
+
+    /* 順序表一次填滿：範圍選取（shift 點選）要能跨到還沒建出來的卡片。
+       ⚠️ _cardEls 也要一起預填空陣列。makeCard 是用「_cardEls 沒有這個 path」
+          當作「第一次見到，推進 _cardOrder」的判斷；只填 _cardOrder 不填 _cardEls
+          的話，每張卡第一次掛載時都會再推一次 → 順序表出現重複 → 範圍選取抓錯範圍。 */
+    this._cardOrder = [];
+    this._cardEls = new Map();
+    for (const n of notes) {
+      const p = n.file.path;
+      if (this._cardEls.has(p)) continue;   // 同一檔案重複出現時只登記一次（與原本語意一致）
+      this._cardEls.set(p, []);
+      this._cardOrder.push(p);
+    }
+
+    const vw = new VirtualWall({
+      scroller: container.closest('.gn-main') || container,
+      grid,
+      gap: masonry.gap,
+      minCol: masonry.minCol,
+      fixedCols: masonry.fixedCols,
+      create: (it) => this.makeCard(grid, null, it, opts || {}),
+      destroy: (el, it) => this.unregisterCard(el, it),
+      estimate: (it, colW) => this.estimateCardHeight(it, colW),
+    });
+    // 圖片載入完成 → 卡片高度變了 → 重新量測。
+    // 捕獲階段一條就涵蓋所有後續插入的圖（load 不冒泡）。
+    grid.addEventListener('load', () => vw.notifyContentChanged(), true);
+    if (!this._virtuals) this._virtuals = [];
+    this._virtuals.push(vw);
+    vw.setItems(notes);
+    /* 保險：setItems 當下 grid 可能還沒完成版面（容器仍在組裝中），
+       此時量到的 gridTop / clientWidth 會是錯的 → 下一個 frame 再算一次。 */
+    requestAnimationFrame(() => { if (grid.isConnected) vw.relayout(); });
+  }
+
   // 分批把卡片畫進瀑布流：先畫第一批，捲到接近底部才補下一批
   renderInChunks(container, grid, masonry, notes, opts) {
     const isMobileUI = document.body.classList.contains('is-mobile');
+    /* 超過這個量才虛擬化。門檻不能太低：虛擬化靠估計高度排版，
+       第一次瀏覽（長寬比還沒進索引）捲動會有輕微跳動，小資料夾不值得付這個代價。 */
+    const VIRTUAL_MIN = isMobileUI ? 150 : 300;
+    if (this.plugin.state.virtualWall !== false && notes.length >= VIRTUAL_MIN) {
+      this.renderVirtual(container, grid, masonry, notes, opts);
+      return;
+    }
     const CHUNK = isMobileUI ? 40 : 120;      // 手機一次 40 張、桌機 120 張
     let drawn = 0;
 
@@ -4446,6 +4649,20 @@ class CalendarSettingTab extends PluginSettingTab {
       .setDesc(t('Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.'))
       .addToggle((tg) => tg.setValue(st.enableLightboxActions !== false)
         .onChange((v) => { st.enableLightboxActions = v; save(); }));
+
+    new Setting(containerEl)
+      .setName(t('Virtualized card wall'))
+      .setDesc(t('In large folders, keeps only the cards near the viewport in the DOM and recycles the rest. Greatly reduces memory and scrolling lag. Turn off if you see layout jumps while scrolling.'))
+      .addToggle((tg) => tg.setValue(st.virtualWall !== false)
+        .onChange((v) => { st.virtualWall = v; save(); this.plugin.refreshViews(); }));
+
+    new Setting(containerEl)
+      .setName(t('Image thumbnails'))
+      .setDesc(t('Large images are downscaled once and cached, so cards no longer decode full-resolution originals. This is what keeps big image folders from exhausting memory on mobile.'))
+      .addButton((b) => b.setButtonText(t('Clear thumbnail cache')).onClick(async () => {
+        const n = await this.plugin.thumbs.prune();
+        new Notice(t('Removed {{n}} stale thumbnails', { n }));
+      }));
 
     /* ══ 2. 圖片預覽 ══ */
     this.group(containerEl, t('Image peek'), t('Canvas has no built-in image viewer, so this fills that gap: double-click an image or press Space. Matches the look of the lightbox Obsidian shows in notes. Notes themselves are left to Obsidian.'));
@@ -5047,6 +5264,14 @@ class GalleryPlugin extends Plugin {
     this._ogIndex = {};
     this.loadOgIndex();
 
+    // 圖片長寬比索引（資源路徑 → [w, h]）：讓卡片在圖片載入前就把高度佔好
+    this._dimIndex = {};
+    this.loadDimIndex();
+
+    // 縮圖快取：卡片牆不再直接解碼原圖（見 thumbs.js 開頭的說明）
+    this.thumbs = new ThumbCache(this);
+    this.thumbs.load();
+
     // 檔案增刪/改名時，若 View 開著就重畫；同時讓日曆筆記索引失效
     const onVaultChange = () => { this._calNoteDirty = true; this.refreshViews(); };
     this.registerEvent(this.app.vault.on('create', onVaultChange));
@@ -5344,6 +5569,32 @@ class GalleryPlugin extends Plugin {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => { this.saveData(this.state); }, 400);
     return Promise.resolve();
+  }
+
+  /* 圖片長寬比索引：去查詢字串的資源路徑 → [w, h]。
+     用途是在圖片**載入前**就把卡片高度佔好（img 設 aspect-ratio），
+     否則每張圖載完都會改變卡片高度 → 觸發一次 O(全部卡片) 的瀑布流重排。
+     捲過兩千張之後，這等於每張新圖都要重排兩千張，是滾動掉幀的主因。
+     只存兩個數字，一萬張圖約 300KB，跟 og 索引同一個資料夾。 */
+  dimIndexPath() { return this.ogCacheDir() + '/dims.json'; }
+  async loadDimIndex() {
+    try {
+      const a = this.app.vault.adapter;
+      const p = this.dimIndexPath();
+      if (await a.exists(p)) this._dimIndex = JSON.parse(await a.read(p)) || {};
+    } catch (e) { this._dimIndex = {}; }
+  }
+  saveDimIndex() {
+    clearTimeout(this._dimSaveT);
+    // 1500ms：比 og 索引更鬆，因為捲一面牆會連續記錄上百筆，沒必要頻繁落地
+    this._dimSaveT = setTimeout(async () => {
+      try {
+        const a = this.app.vault.adapter;
+        const dir = this.ogCacheDir();
+        if (!(await a.exists(dir))) await a.mkdir(dir);
+        await a.write(this.dimIndexPath(), JSON.stringify(this._dimIndex));
+      } catch (e) {}
+    }, 1500);
   }
 
   // 連結預覽快取：資料夾與索引檔（放外掛資料夾，不污染 vault 筆記）

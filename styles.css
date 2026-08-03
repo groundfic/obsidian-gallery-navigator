@@ -523,6 +523,10 @@ body:not(.is-mobile) .gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb 
 .gn-selbar-warn:hover { background: var(--background-modifier-error, rgba(220,60,60,.15)); color: var(--text-error); }
 .gn-card img { width: 100%; height: auto; display: block; pointer-events: none; }
 .gn-card img.gn-pdf-thumb { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }   /* PDF 頁面：白底 + 細邊 */
+/* 縮圖還在背景產生中（首次瀏覽該圖時）。此時 <img> 沒有 src、高度會是 0，
+   卡片先縮成一條再撐開，整面牆會跳一次。給一個中性比例佔位緩解。
+   ⚠️ 已知長寬比時 applyDim() 會寫 inline aspect-ratio，行內樣式優先，這條不會蓋掉它。 */
+.gn-card img.gn-img-pending { aspect-ratio: 4 / 3; background: var(--background-modifier-hover); }
 
 /* 有預覽圖的卡片：圖片在上、資訊在圖片下方，由上而下＝標題 → 日期
    （DOM 順序是 body 先、img 後，所以用 flex order 排版，動態插入的 og/PDF/Canvas 縮圖也一體適用） */
@@ -614,7 +618,10 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
   display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
 }
 
-/* 卡片底色（feature 1）：底色 + 對比字色（--gn-card-fg 由 JS 設定） */
+/* 卡片底色（feature 1）：底色 + 對比字色（--gn-card-fg 由 JS 設定）
+   📌 editorial 的 .gn-datebox-day/-my 不能寫在這裡：那邊本尊規則是
+      `.gn-root.gn-imgcard-editorial .gn-datebox-day`＝(0,3,0)，這裡只有 (0,2,0) 蓋不過。
+      → 補在 editorial 區塊裡（搜 "上過色的卡片"）。 */
 .gn-card-colored .gn-title { color: var(--gn-card-fg); }
 .gn-card-colored .gn-preview,
 .gn-card-colored .gn-date,
@@ -1443,7 +1450,10 @@ body.is-mobile {
 .gn-root:not(.gn-imgcard-stacked):not(.gn-imgcard-editorial) .gn-card.gn-has-img.gn-icon-cover .gn-date { color: var(--text-faint); text-shadow: none; }
 
 /* ===== 圖片卡版面③「編輯風索引卡」（imageCardLayout='editorial'，2026-07-20 新增）=====
-   版型：左上角小方縮圖 ＋ 右上角大日數/小月年 ＋ 下方大標題。無圖時同版型、卡片自然較矮。
+   版型（2026-08-04 大翻面）：**左上標題＋內文 / 左下大日數・小月年 / 右下小方縮圖**。
+   （原版是「左上縮圖 ＋ 右上日期 ＋ 下方標題」，等於上下、左右都對調。）
+   縮圖留在正常流最後（order 3 + align-self:flex-end）＝卡片高度自動含縮圖；
+   日期塊 absolute 在左下，與縮圖底緣切齊。無圖時同版型、卡片自然較矮。
    日期用 JS 另建的 .gn-datebox（大日數＋短月年），原本的 .gn-date（YYYY-MM-DD）在此模式隱藏。
    ⚙️ 兩個縮放旋鈕：
       --gn-ed     ＝內距/字級等「整體」倍率（1 ＝ 基準尺寸）
@@ -1457,48 +1467,64 @@ body.is-mobile {
   background: var(--background-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .05);
 }
-/* 縮圖／檔型圖示：左上角小方卡（不再滿版、不吃 16:9 / 1:1 最小比例） */
+/* 縮圖／檔型圖示：**右下角**小方卡（2026-08-04 改版；原本在左上角）。
+   留在正常流（order 3 ＝ 排在文字之後）→ 卡片高度自動含縮圖，不必手動預留空間。 */
 .gn-root.gn-imgcard-editorial .gn-card.gn-has-img > img,
 .gn-root.gn-imgcard-editorial .gn-card .gn-fileicon {
-  order: 1;
-  /* 寬度上限＝卡片寬的 46%：卡片窄時縮圖自動縮小，右邊永遠留得下日期塊
-     （「JUN 26」比「29」寬，會往左延伸，窄卡片時原本會貼到縮圖，2026-07-27 修）。
+  order: 3;
+  align-self: flex-end;   /* 靠右 → 右下角 */
+  /* 寬度上限（兩道，取小的）：
+     ① 46%——卡片窄時縮圖自動縮小，別把整張卡吃掉。
+     ② calc(100% - 70px)——2026-08-04 日期改單行「29 JUN 26」後變寬（同字級小標籤 ≈62px），
+        最小欄寬 150px 時 46% 會讓左邊只剩 66px → 日期會撞上縮圖。
+        這條**硬性保留 70px 給日期**（隨 --gn-ed 等比放大），縮圖再讓步。
      height:auto + aspect-ratio 1/1 → 高度跟著（被夾住的）寬度走，配 object-fit:cover 不變形。 */
   width: calc(72px * var(--gn-ed-img));
-  max-width: 46%;
+  max-width: min(46%, calc(100% - 70px * var(--gn-ed)));
   height: auto; aspect-ratio: 1 / 1;
   min-height: 0;
   object-fit: cover;
   border-radius: calc(8px * var(--gn-ed-img));
-  margin: 0 0 calc(14px * var(--gn-ed));
-  align-self: flex-start;
+  margin: calc(14px * var(--gn-ed)) 0 0;   /* 與上方文字的間距（原本是 margin-bottom） */
 }
-/* 右上角日期塊（.gn-card 本身是 position:absolute → 直接當定位基準） */
+/* 左下角日期塊（2026-08-04 改版；原本在右上角）。
+   .gn-card 本身是 position:absolute → 直接當定位基準。
+   左／下都用卡片 padding 的 14px：與右下角縮圖的**底緣切齊**，兩者連成同一條基線。 */
 .gn-root.gn-imgcard-editorial .gn-datebox {
   position: absolute;
-  /* 2026-07-20：日期離上／右邊界再多留一點（18px，比卡片 padding 14px 更內縮）。
-     刻意不跟縮圖共用同一條線——小字塊貼太邊會顯得擁擠。 */
-  top: calc(18px * var(--gn-ed)); right: calc(18px * var(--gn-ed));
-  display: flex; flex-direction: column; align-items: flex-end;
+  top: auto; right: auto;
+  left: calc(14px * var(--gn-ed)); bottom: calc(14px * var(--gn-ed));
+  /* 2026-08-04：改成**一條橫的**（原本是日數在上、月年在下兩行）。
+     baseline 對齊而非 center——對基線才是「同一行字」，置中會看起來浮動。 */
+  display: flex; flex-direction: row; align-items: baseline;
+  /* 兩段同字級後間距收窄（5→4px）：letter-spacing .08em 本身已在字尾留了空隙，5px 會鬆開成兩塊。 */
+  gap: calc(4px * var(--gn-ed));
   line-height: 1; pointer-events: none;
 }
+/* 日數：2026-08-04 起與月年**同字級（10px）同字重同字距同顏色**——單行後兩段大小差太多會像兩件東西，
+   統一成一條小標籤才讀得成一句「29 JUN 26」。
+   ⚠️ 曾短暫做成「日數 text-normal、月年 text-muted」想用深淺做層次 → 實際上大小/字重/字距都一樣時，
+      只差顏色不會被讀成層次，只會被讀成「沒對齊的意外」。整條退成 text-muted＝日期是 metadata。
+   （原本是 16px/500/-.03em 的大日數，配兩行版型用的。） */
 .gn-root.gn-imgcard-editorial .gn-datebox-day {
-  font-size: calc(16px * var(--gn-ed)); font-weight: 500; letter-spacing: -.03em;
-  color: var(--text-normal); font-variant-numeric: tabular-nums;
-  /* 光學對齊：行盒上方有字型上伸空間，數字看起來會比縮圖頂端低 → 往上補回。
-     用 em（隨字級自動等比）而非固定 px：字級一改就不必重算補償值（2026-07-20）。 */
-  margin-top: -.12em;
+  font-size: calc(10px * var(--gn-ed)); font-weight: 600; letter-spacing: .08em;
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+  /* （2026-08-04）原本 -.12em 是為了把數字頂端對齊「左上角縮圖」的上緣；
+     現在日期改成左下角、改對**底緣**，上方補償已無意義 → 歸零。 */
+  margin-top: 0;
 }
 .gn-root.gn-imgcard-editorial .gn-datebox-my {
-  margin-top: calc(4px * var(--gn-ed));
+  margin-top: 0;            /* 2026-08-04 單行化：原本是第二行的上間距，改用 .gn-datebox 的 gap */
+  white-space: nowrap;      /* 「JUN 26」中間那個空格不准斷行 */
   font-size: calc(10px * var(--gn-ed)); font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--text-muted);
-  /* 字距會在「最後一個字之後」也加一份空隙 → 右緣比上面的日數縮進。抵銷掉尾隙才對得齊。 */
-  margin-right: -.08em;
+  /* （2026-08-04）改成靠左對齊後，letter-spacing 的尾隙落在右邊、不影響左緣 → 補償歸零。 */
+  margin-right: 0;
 }
-/* 文字區：一般流排版（覆蓋 overlay 模式的 absolute/漸層/淡出） */
+/* 文字區：一般流排版（覆蓋 overlay 模式的 absolute/漸層/淡出）。
+   order 1 ＝**排在縮圖之前**（2026-08-04：文字上、縮圖下；原本相反）。 */
 .gn-root.gn-imgcard-editorial .gn-body {
-  position: static; order: 2;
+  position: static; order: 1;
   padding: 0; background: transparent;
   opacity: 1; pointer-events: auto;
   display: flex; flex-direction: column;
@@ -1510,16 +1536,26 @@ body.is-mobile {
   -webkit-line-clamp: 3;
 }
 .gn-root.gn-imgcard-editorial .gn-date { display: none; }        /* 由 .gn-datebox 取代 */
+/* 上過色的卡片：日期要跟著換成對比字色（2026-08-04 補漏）。
+   ⚠️ 特異度：本模式的日期本尊是 `.gn-root.gn-imgcard-editorial .gn-datebox-day`＝(0,3,0)，
+      通用的 `.gn-card-colored .gn-datebox-day` 只有 (0,2,0)**蓋不過** → 必須寫成下面這種
+      (0,4,0) 的形式，而且排在本尊之後。同理，日後 datebox 要吃任何條件字色都得補在這一區。 */
+.gn-root.gn-imgcard-editorial .gn-card-colored .gn-datebox-day,
+.gn-root.gn-imgcard-editorial .gn-card-colored .gn-datebox-my {
+  color: color-mix(in srgb, var(--gn-card-fg) 72%, transparent);
+}
 /* base / canvas / pdf 的檔型封面：此模式下只留文字，不要 icon（2026-07-20 使用者要求）。
    縮圖只有 94px，icon+文字並排會太擠 → 文字獨撐、字級略縮以塞進小方塊。 */
 .gn-root.gn-imgcard-editorial .gn-fileicon-ic { display: none; }
 .gn-root.gn-imgcard-editorial .gn-fileicon-label { font-size: 12px; letter-spacing: .1em; }
-/* 釘選角標：內縮距離與縮圖一致（＝卡片 padding），角標貼齊縮圖的左上角（2026-07-20）。
-   （曾試過右下角、日期下方，最後回到左上角圓形角標。） */
+/* 釘選角標：2026-08-04 移到**右上角**——左上角現在是標題，圓形角標壓在字上會看不清。
+   右上角是新版面唯一的空白角落。標題同時讓出右側寬度，避免長標題鑽到角標下面。 */
 .gn-root.gn-imgcard-editorial .gn-card-pin {
-  top: calc(14px * var(--gn-ed));
-  left: calc(14px * var(--gn-ed));
+  top: calc(10px * var(--gn-ed));
+  right: calc(10px * var(--gn-ed));
+  left: auto;
 }
+.gn-root.gn-imgcard-editorial .gn-card.gn-card-pinned .gn-title { padding-right: calc(30px * var(--gn-ed)); }
 /* 內文預覽：此模式**有圖的卡也要顯示**（覆蓋通用的 .gn-has-img .gn-preview{display:none}；
    JS 端也已在 editorial 模式為圖片卡補建 .gn-preview 並掛延遲載入）。 */
 .gn-root.gn-imgcard-editorial .gn-preview,
@@ -1530,19 +1566,22 @@ body.is-mobile {
   line-height: 1.45;
   -webkit-line-clamp: 3;
 }
-/* 無圖卡：沒有縮圖佔位 → 標題要讓開右上角日期塊的高度；並解除「最小 16:9 / 1:1」撐高 */
+/* 無圖卡：沒有縮圖撐高 → 底部要自己留出日期塊的高度（日期是 absolute，不佔流）。
+   2026-08-04：日期從右上移到左下 → 讓位方向也從 padding-top 改成 padding-bottom。
+   並解除「最小 16:9 / 1:1」撐高。 */
 .gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-body {
-  min-height: 0; padding-top: calc(58px * var(--gn-ed));   /* 日期塊往下移 4px → 讓位高度跟著加 */
+  min-height: 0; padding-top: 0; padding-bottom: calc(42px * var(--gn-ed));
 }
 .gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-date { margin-top: 0; padding-top: 0; }
 /* 手機：基準尺寸略縮（同樣吃 --gn-ed） */
 .is-mobile .gn-root.gn-imgcard-editorial .gn-card.gn-has-img > img,
 .is-mobile .gn-root.gn-imgcard-editorial .gn-card .gn-fileicon {
   width: calc(56px * var(--gn-ed-img)); height: auto;   /* 高度交給 aspect-ratio，沿用 46% 上限 */
-  margin-bottom: calc(10px * var(--gn-ed));
+  margin: calc(10px * var(--gn-ed)) 0 0;                /* 2026-08-04：縮圖改在下方 → 改留上間距 */
 }
-.is-mobile .gn-root.gn-imgcard-editorial .gn-datebox-day { font-size: calc(15px * var(--gn-ed)); }
-.is-mobile .gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-body { padding-top: calc(40px * var(--gn-ed)); }
+/* （2026-08-04 移除）手機日數 15px 的放大覆寫：桌機已統一成 10px 小標籤，
+   手機再放大會又變回「大日數＋小月年」的混排，與單行版型不符 → 手機吃同一組尺寸。 */
+.is-mobile .gn-root.gn-imgcard-editorial .gn-card:not(.gn-has-img) .gn-body { padding-top: 0; padding-bottom: calc(38px * var(--gn-ed)); }
 /* 手機也吃 7pt／3 行（通用 .is-mobile .gn-preview 是 11px，特異度較高會蓋掉，這裡補回） */
 .is-mobile .gn-root.gn-imgcard-editorial .gn-preview { font-size: calc(7pt * var(--gn-ed)); -webkit-line-clamp: 3; }
 
