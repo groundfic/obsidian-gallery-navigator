@@ -2220,8 +2220,8 @@ class GalleryView extends ItemView {
        標籤數當作角標，收起來也知道這個資料夾有多少種標籤。 */
     const fab = dock.createDiv('gn-dock-fab');
     setIcon(fab.createDiv('gn-dock-fab-ic'), 'tags');
-    fab.createDiv('gn-dock-fab-badge').setText(String(tags.length));
-    fab.setAttr('aria-label', t('Tags in this folder'));
+    // 標籤種類數移到 tooltip，收合態就是一顆乾淨的圓鈕
+    fab.setAttr('aria-label', t('Tags in this folder') + ' · ' + tags.length);
     fab.onclick = () => setOpen(true);
 
     const head = dock.createDiv('gn-dock-head');
@@ -2241,7 +2241,9 @@ class GalleryView extends ItemView {
     for (const it of tags) {
       const chip = body.createDiv('gn-more-chip');   // 沿用「⋯ 更多」面板的晶片樣式
       chip.toggleClass('gn-more-chip-on', !!(this._tagFilter && this._tagFilter.has(it.tag)));
-      chip.setText('#' + it.tag + ' ' + it.n);
+      // 只顯示標籤名，數量移到 tooltip —— 晶片並排時數字會讓每個寬度不一、視覺很碎
+      chip.setText('#' + it.tag);
+      chip.setAttr('aria-label', '#' + it.tag + ' · ' + it.n);
       chip.onclick = () => {
         if (!this._tagFilter) this._tagFilter = new Set();
         if (this._tagFilter.has(it.tag)) this._tagFilter.delete(it.tag);
@@ -4446,9 +4448,9 @@ class CalendarSettingTab extends PluginSettingTab {
         .onChange((v) => { st.enableLightboxActions = v; save(); }));
 
     /* ══ 2. 圖片預覽 ══ */
-    this.group(containerEl, t('Image peek'), t('Double-click an image or press Space for a Quick Look style preview; includes Pinterest visual search.'));
+    this.group(containerEl, t('Image peek'), t('Canvas has no built-in image viewer, so this fills that gap: double-click an image or press Space. Matches the look of the lightbox Obsidian shows in notes. Notes themselves are left to Obsidian.'));
     new Setting(containerEl)
-      .setName(t('Enable image peek'))
+      .setName(t('Enable image peek (Canvas)'))
       .addToggle((tg) => tg.setValue(st.enablePeek !== false)
         .onChange((v) => { st.enablePeek = v; save(); reloadHint(); this.display(); }));
     if (st.enablePeek !== false && this.plugin.renderPeekSettings) {

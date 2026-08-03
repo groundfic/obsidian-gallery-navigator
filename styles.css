@@ -24,6 +24,17 @@
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+/* ⚠️ 上面 .gn-root 的 padding / overflow 特異度不夠，會被原生規則蓋掉（2026-08-01）：
+       原生  .workspace-leaf-content .view-content  (0,2,0)
+             → padding: 12px 12px 32px; overflow: auto;
+       我們  .gn-root                               (0,1,0)  ← 輸
+     .gn-root 就是 contentEl 本身（＝ .view-content），所以那 32px 底部內距一直都在，
+     表現成「內容下方多一條灰帶」。Obsidian 對自己的 view 是用 [data-type='markdown']
+     之類的選擇器歸零，外掛的 view 拿不到，只能自己把特異度提上來。 */
+.workspace-leaf-content .gn-root {
+  padding: 0;
+  overflow: hidden;
+}
 /* 細捲軸（macOS overlay 風）：平常「隱形」，捲動中（JS 掛 .gn-scrolling）才浮現 */
 .gn-tree-scroll::-webkit-scrollbar, .gn-main::-webkit-scrollbar,
 .gn-pin-right::-webkit-scrollbar, .gn-todo-list::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -657,7 +668,6 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 
 /* （2026-07-20 移除）連結牆 .gn-links-* 全部樣式：連結牆功能整套下架 */
 
-
 /* 確認刪除對話框按鈕列 */
 /* （2026-08-01 移除）.gn-modal-btns：改用原生的 .modal-button-container，
    排版與按鈕樣式交給 Obsidian 與主題，自訂 class 反而會讓主題的規則套不到。 */
@@ -666,7 +676,6 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
    但主題的 input 選擇器特異度更高 → 有些吃到、有些被蓋掉，兩套混在一起最難看。
    交出去之後，這個輸入框就跟該主題其他輸入框長得一樣。 */
 .gn-input { width: 100%; }
-
 
 /* Pinterest 找相似：結果視窗（左原圖 / 右結果） */
 .gn-pin-modal { width: min(1040px, 94vw); }
@@ -1281,7 +1290,6 @@ body.is-mobile {
 /* 分批渲染的哨兵（捲到它就補下一批卡片）——本身不佔視覺空間 */
 .gn-wall-sentinel { height: 1px; margin-top: 8px; }
 
-
 /* ===== 懸浮搜尋（GnSearchModal，Spotlight 風）===== */
 .gn-search-modal .gn-search-sug {
   display: flex; flex-direction: row; align-items: center; gap: 10px;
@@ -1319,7 +1327,6 @@ body.is-mobile {
   overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-
 
 /* ===== 刪除確認：附件勾選清單 ===== */
 .gn-confirm-extra { margin: 4px 0 10px; }
@@ -1400,7 +1407,6 @@ body.is-mobile {
 }
 .gn-card.gn-style-book.gn-has-img .gn-title { color: var(--text-normal); text-shadow: none; }
 .gn-card.gn-style-book.gn-has-img .gn-date { color: var(--text-faint); }
-
 
 /* ===== 圖片卡版面：兩種可選（2026-07-20 設定 → 卡片牆 → 圖片卡版面）=====
    預設＝「白字疊圖」（本區）；.gn-root 掛 .gn-imgcard-stacked 時整組不生效，
@@ -1570,7 +1576,6 @@ body.is-mobile {
 }
 .is-mobile .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padding-top: 7px; }
 
-
 /* 手機單欄：豁免最小 1:1（全寬卡照原比例即可，2026-07-19） */
 .gn-mobile-1col .gn-card.gn-has-img > img { min-height: 0; }
 .gn-mobile-1col .gn-card:not(.gn-has-img) .gn-body { min-height: 0; }
@@ -1590,7 +1595,6 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
    已移除：.gn-card-todos 版位、.gn-card.gn-style-todo 底色與 padding、
           右下角 .gn-todo-toggle 切換鈕、對比底色 --gn-todo-bg（JS 計算一併移除）。
    待辦清單現在只有一個入口＝工具列的浮動面板（.gn-todo-pop）。 */
-
 
 /* 標籤複選（Cmd+點，合併用）：與單選 gn-tsel 區隔的主題色膠囊 */
 .gn-tnode.gn-tmsel {
@@ -1741,7 +1745,6 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
    用 JS 掛的 .gn-has-graph，不用 :has()——本專案已全面移除 :has()（上架規範）。 */
 .gn-split.gn-has-dock .gn-main { padding-bottom: calc(16px + var(--gn-dock-h, 180px) + 16px); }
 
-
 /* ═══ 標籤面板（2026-08-01）═══
    容器沿用上面的 .gn-dock（＝卡片的圓角／底色／陰影），這裡只寫內容與收合態。 */
 .gn-dock-tags { --gn-dock-h: auto; max-height: 168px; }
@@ -1789,15 +1792,7 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 .gn-dock-fab:hover { color: var(--text-normal); }
 .gn-dock-fab-ic { display: flex; }
 .gn-dock-fab-ic svg { width: 18px; height: 18px; }
-.gn-dock-fab-badge {
-  position: absolute; top: 4px; right: 4px;
-  min-width: 15px; height: 15px; padding: 0 4px;
-  border-radius: 999px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 9px; font-weight: 600; font-variant-numeric: tabular-nums;
-  color: var(--text-on-accent);
-  background: var(--interactive-accent);
-}
+
 .gn-dock-mini {
   width: 44px; height: 44px;
   max-height: none;
@@ -2871,6 +2866,70 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .ip-pin-layer .ip-pin-panel::-webkit-scrollbar-track,
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar-track {
 	background: transparent;
+}
+
+/* ═══ lightbox 模式（2026-08-01）═══
+   Image Peek 現在只服務 Canvas（筆記交給 Obsidian 1.13 的原生 lightbox），
+   外觀也對齊原生：元素上同時掛了原生的 class（lightbox / lightbox-bg /
+   lightbox-content / lightbox-media / media-wrapper / lightbox-titlebar），
+   所以版面與配色直接由 app.css 提供，這裡只負責**關掉原本的視窗式外觀**。
+
+   ⚠️ 特異度：既有規則是 .image-peek-overlay .qp-panel (0,2,0)，
+      這裡一律加上 .lightbox 湊到 (0,3,0) 才蓋得過。
+      （這場對話已經因為特異度踩過三次坑，不再靠「寫在後面」賭。） */
+.image-peek-overlay.lightbox .qp-panel {
+  position: static;
+  width: 100%; height: 100%;
+  max-width: none; max-height: none;
+  margin: 0; padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  resize: none;
+}
+.image-peek-overlay.lightbox .qp-main,
+.image-peek-overlay.lightbox .qp-left {
+  width: 100%; height: 100%;
+  min-width: 0; min-height: 0;
+}
+/* 舞台交給原生的 .lightbox-media；圖片沿用原生的 .media-wrapper img 規則 */
+.image-peek-overlay.lightbox .qp-stage {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+/* 標題列改吃原生的 .lightbox-titlebar（absolute、置頂、可被使用者的 snippet 隱藏） */
+.image-peek-overlay.lightbox .qp-header {
+  background: transparent;
+  border: none;
+  cursor: default;            /* 不再可拖曳 */
+}
+/* 背景完全對齊原生。原生的做法是兩層疊出來的：
+       .lightbox-bg { background-color: var(--lightbox-background) }   ← body 上是 black
+       JS 開啟時 inline 設 style.opacity = "0.9"
+   所以最終等效是 rgba(0,0,0,.9)。這裡必須把**兩個值都對上**：
+
+     ① 底色：GN 原本是 rgba(0,0,0,.42)，太淡；
+        而且 .image-peek-overlay .qp-backdrop (0,2,0) 贏過原生的 .lightbox-bg (0,1,0)，
+        掛了 class 也不會自動變黑，得明確覆寫。
+     ② 不透明度：GN 開啟時是 opacity: 1，配上不透明的 black 會**比原生更黑**。
+        改成 .9 才等於原生。
+
+   另外原生沒有背景模糊，qp-blur 的 backdrop-filter 要關掉，否則透出來的東西糊糊的、
+   跟筆記內看起來就是兩種材質。 */
+.image-peek-overlay.lightbox .qp-backdrop {
+  background: var(--lightbox-background, black);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.image-peek-overlay.lightbox.qp-open .qp-backdrop {
+  opacity: .9;   /* ＝原生 JS 的 bgOpacity */
+}
+/* 視窗式才需要的元件：全部收起來 */
+.image-peek-overlay.lightbox .qp-resize,
+.image-peek-overlay.lightbox .qp-sidebar {
+  display: none;
 }
 
 /* ════════════ 3. Link Cards ════════════ */

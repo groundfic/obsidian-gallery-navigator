@@ -83,8 +83,9 @@ const ZH_TW = {
   '2 columns': '2 欄',
   '3 columns': '3 欄',
   'Takes effect after reloading the plugin (or restarting Obsidian)': '重新載入外掛（或重啟 Obsidian）後生效',
-  'Double-click an image or press Space for a Quick Look style preview; includes Pinterest visual search.':
-    '雙擊圖片或按 Space，像 Finder 快速預覽一樣浮出大圖；含 Pinterest 以圖搜圖。',
+  'Canvas has no built-in image viewer, so this fills that gap: double-click an image or press Space. Matches the look of the lightbox Obsidian shows in notes. Notes themselves are left to Obsidian.':
+    'Canvas 沒有內建的圖片檢視，這裡補上：雙擊圖片或按 Space。外觀與 Obsidian 在筆記中的 lightbox 一致。筆記本身交給 Obsidian 原生處理。',
+  'Enable image peek (Canvas)': 'Canvas 圖片檢視',
   'Bare URLs on their own line become rich preview cards (reading mode / Live Preview / Canvas).':
     '獨佔一行的裸網址 → Apple 風格圖文卡片（閱讀模式 / Live Preview / Canvas）。',
 

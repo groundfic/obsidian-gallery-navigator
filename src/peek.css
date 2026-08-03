@@ -1060,3 +1060,67 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar-track {
 	background: transparent;
 }
+
+/* ═══ lightbox 模式（2026-08-01）═══
+   Image Peek 現在只服務 Canvas（筆記交給 Obsidian 1.13 的原生 lightbox），
+   外觀也對齊原生：元素上同時掛了原生的 class（lightbox / lightbox-bg /
+   lightbox-content / lightbox-media / media-wrapper / lightbox-titlebar），
+   所以版面與配色直接由 app.css 提供，這裡只負責**關掉原本的視窗式外觀**。
+
+   ⚠️ 特異度：既有規則是 .image-peek-overlay .qp-panel (0,2,0)，
+      這裡一律加上 .lightbox 湊到 (0,3,0) 才蓋得過。
+      （這場對話已經因為特異度踩過三次坑，不再靠「寫在後面」賭。） */
+.image-peek-overlay.lightbox .qp-panel {
+  position: static;
+  width: 100%; height: 100%;
+  max-width: none; max-height: none;
+  margin: 0; padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  resize: none;
+}
+.image-peek-overlay.lightbox .qp-main,
+.image-peek-overlay.lightbox .qp-left {
+  width: 100%; height: 100%;
+  min-width: 0; min-height: 0;
+}
+/* 舞台交給原生的 .lightbox-media；圖片沿用原生的 .media-wrapper img 規則 */
+.image-peek-overlay.lightbox .qp-stage {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+/* 標題列改吃原生的 .lightbox-titlebar（absolute、置頂、可被使用者的 snippet 隱藏） */
+.image-peek-overlay.lightbox .qp-header {
+  background: transparent;
+  border: none;
+  cursor: default;            /* 不再可拖曳 */
+}
+/* 背景完全對齊原生。原生的做法是兩層疊出來的：
+       .lightbox-bg { background-color: var(--lightbox-background) }   ← body 上是 black
+       JS 開啟時 inline 設 style.opacity = "0.9"
+   所以最終等效是 rgba(0,0,0,.9)。這裡必須把**兩個值都對上**：
+
+     ① 底色：GN 原本是 rgba(0,0,0,.42)，太淡；
+        而且 .image-peek-overlay .qp-backdrop (0,2,0) 贏過原生的 .lightbox-bg (0,1,0)，
+        掛了 class 也不會自動變黑，得明確覆寫。
+     ② 不透明度：GN 開啟時是 opacity: 1，配上不透明的 black 會**比原生更黑**。
+        改成 .9 才等於原生。
+
+   另外原生沒有背景模糊，qp-blur 的 backdrop-filter 要關掉，否則透出來的東西糊糊的、
+   跟筆記內看起來就是兩種材質。 */
+.image-peek-overlay.lightbox .qp-backdrop {
+  background: var(--lightbox-background, black);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.image-peek-overlay.lightbox.qp-open .qp-backdrop {
+  opacity: .9;   /* ＝原生 JS 的 bgOpacity */
+}
+/* 視窗式才需要的元件：全部收起來 */
+.image-peek-overlay.lightbox .qp-resize,
+.image-peek-overlay.lightbox .qp-sidebar {
+  display: none;
+}

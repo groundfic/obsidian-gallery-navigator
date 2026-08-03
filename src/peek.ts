@@ -187,8 +187,10 @@ async function fetchImageBlob(
 	throw new Error("Unsupported image source");
 }
 
-const CONTAINER_SELECTOR =
-	".markdown-reading-view, .markdown-source-view, .canvas-wrapper, .popover.hover-popover";
+/* 只在 Canvas 生效（2026-08-01）。
+   Obsidian 1.13 起，筆記內的圖片已有原生 lightbox，Peek 再插一手只會重複；
+   但原生那套**不涵蓋 Canvas**，所以這裡專門補 Canvas 這一塊。 */
+const CONTAINER_SELECTOR = ".canvas-wrapper";
 
 export class PeekModule {
 	plugin: any;
@@ -586,30 +588,36 @@ class PeekOverlay {
 
 		const doc = activeDocument.body;
 
-		this.rootEl = doc.createDiv({ cls: "image-peek-overlay" });
+		/* 外觀對齊 Obsidian 1.13 的原生 lightbox（2026-08-01）：
+		   直接沿用原生的 class 名稱，樣式就整套繼承 —— 不必自己複製一份數值，
+		   Obsidian 之後微調 lightbox 也會自動跟上。
+		   使用者針對原生寫的 snippet（例如隱藏檔名）與我們加的動作膠囊
+		   （.lightbox .gn-lb-actions）也會一併生效。
+		   ⚠️ 代價是綁在私有 class 上；認不得就退回 .qp-* 的樣式，不會壞掉。 */
+		this.rootEl = doc.createDiv({ cls: "image-peek-overlay lightbox" });
 		if (plugin.settings.backdropBlur) this.rootEl.addClass("qp-blur");
 
-		this.backdropEl = this.rootEl.createDiv({ cls: "qp-backdrop" });
+		this.backdropEl = this.rootEl.createDiv({ cls: "qp-backdrop lightbox-bg" });
 		this.backdropEl.addEventListener("click", () => this.close());
 
-		this.panelEl = this.rootEl.createDiv({ cls: "qp-panel" });
+		this.panelEl = this.rootEl.createDiv({ cls: "qp-panel lightbox-content" });
 
 		// 主內容區：左舞台 + 右側欄
 		const mainEl = this.panelEl.createDiv({ cls: "qp-main" });
 		const leftEl = mainEl.createDiv({ cls: "qp-left" });
 
 		// 標題列（移到左側上方）
-		const header = leftEl.createDiv({ cls: "qp-header" });
-		if (!Platform.isMobile) this.bindHeaderDrag(header);
+		const header = leftEl.createDiv({ cls: "qp-header lightbox-titlebar" });
+		// lightbox 是全螢幕、不可拖曳 → 不再綁標題列拖曳
 
 		const closeBtn = header.createDiv({
-			cls: "qp-btn qp-close",
+			cls: "qp-btn qp-close modal-close-button mod-raised clickable-icon",
 			attr: { "aria-label": "Close (Esc / Space)" },
 		});
 		setIcon(closeBtn, "x");
 		closeBtn.addEventListener("click", () => this.close());
 
-		this.titleEl = header.createDiv({ cls: "qp-title" });
+		this.titleEl = header.createDiv({ cls: "qp-title lightbox-titlebar-text" });
 
 		// 手機的動作列是「底部膠囊」，必須掛在面板上、不能掛在標題列底下：
 		// 標題列在手機是 absolute，會變成子元素的 containing block，
@@ -619,8 +627,9 @@ class PeekOverlay {
 			: header.createDiv({ cls: "qp-actions" });
 
 		// 舞台
-		this.stageEl = leftEl.createDiv({ cls: "qp-stage" });
-		this.imgEl = this.stageEl.createEl("img", { cls: "qp-img" });
+		this.stageEl = leftEl.createDiv({ cls: "qp-stage lightbox-media" });
+		const wrapEl = this.stageEl.createDiv({ cls: "media-wrapper" });
+		this.imgEl = wrapEl.createEl("img", { cls: "qp-img" });
 		this.counterEl = leftEl.createDiv({ cls: "qp-counter" });
 
 		// 右側欄：相關圖片
