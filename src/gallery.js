@@ -11,6 +11,7 @@ const { t, setLang, isZh } = require('./i18n.js');
 const { LocalGraph } = require('./graph.js');
 const { ThumbCache } = require('./thumbs.js');
 const { DimPrefetcher } = require('./dims.js');
+const { setupCanvasImageToNote } = require('./canvasnote.js');
 const { VirtualWall } = require('./virtual.js');
 
 /* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
@@ -1111,12 +1112,17 @@ class ConfirmModal extends Modal {
 /* ===== 文字輸入對話框 ===== */
 
 class InputModal extends Modal {
-  constructor(app, title, initial, onSubmit, okLabel) {
+  // onCancel：使用者按取消／Esc／點外面關閉時呼叫。
+  // 批次流程（例如 Canvas 一次轉多張圖）需要靠它知道要中止剩下的，
+  // 沒有的話關掉視窗跟「送出空字串」無法區分。
+  constructor(app, title, initial, onSubmit, okLabel, onCancel) {
     super(app);
     this.titleText = title;
     this.initial = initial || '';
     this.onSubmit = onSubmit;
     this.okLabel = okLabel || t('Create');
+    this.onCancel = onCancel || null;
+    this._submitted = false;
   }
   onOpen() {
     const { contentEl } = this;
@@ -1133,12 +1139,15 @@ class InputModal extends Modal {
     cancel.onclick = () => this.close();
     const ok = btns.createEl('button', { text: this.okLabel });
     ok.addClass('mod-cta');
-    const submit = () => { const v = input.value.trim(); if (v) { this.close(); this.onSubmit(v); } };
+    const submit = () => { const v = input.value.trim(); if (v) { this._submitted = true; this.close(); this.onSubmit(v); } };
     ok.onclick = submit;
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
     setTimeout(() => { input.focus(); input.select(); }, 0);
   }
-  onClose() { this.contentEl.empty(); }
+  onClose() {
+    this.contentEl.empty();
+    if (!this._submitted && this.onCancel) this.onCancel();
+  }
 }
 
 /* ===== 檔案選擇器（選待辦筆記） ===== */
@@ -5680,6 +5689,9 @@ class GalleryPlugin extends Plugin {
 
     // 原生 lightbox（Obsidian 1.13+）補上動作膠囊
     this.setupLightboxActions();
+
+    // Canvas：圖片節點右鍵 → 轉成內嵌該圖的筆記（見 canvasnote.js）
+    setupCanvasImageToNote(this, InputModal);
 
   }
 

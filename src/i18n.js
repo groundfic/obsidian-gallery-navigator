@@ -275,6 +275,14 @@ const ZH_TW = {
   'Open Gallery Navigator first': '請先開啟 Gallery Navigator',
   'Wall diagnostics copied to clipboard (also in console)': '卡片牆診斷已複製到剪貼簿（主控台也有一份）',
 
+  // ── Canvas：圖片轉筆記（2026-08-05）──
+  'Convert to note (embed image)': '轉成筆記（內嵌這張圖）',
+  'Convert {{n}} images to notes': '把 {{n}} 張圖轉成筆記',
+  'Note name': '筆記名稱',
+  'Note name ({{i}}/{{n}})': '筆記名稱（第 {{i}} / {{n}} 張）',
+  'Cannot locate the canvas file': '找不到這張 Canvas 的檔案',
+  'Converted {{n}} image(s) to notes in {{folder}}': '已把 {{n}} 張圖轉成筆記，建在 {{folder}}',
+
   // ── 效能（2026-08-04）──
   'Virtualized card wall': '卡片牆虛擬化',
   'In large folders, keeps only the cards near the viewport in the DOM and recycles the rest. Greatly reduces memory and scrolling lag. Turn off if you see layout jumps while scrolling.':
