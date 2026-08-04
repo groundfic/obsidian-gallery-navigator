@@ -5371,6 +5371,43 @@ class GalleryPlugin extends Plugin {
       name: t('Search (popup)'),
       callback: () => new GnSearchModal(this.app, this).open(),
     });
+    /* 診斷：卡片牆目前實際走的是哪條路。
+       加這支的原因：連續三輪「修虛擬化的捲軸跳動」都沒改善，
+       而低於門檻的資料夾根本不走虛擬化（走舊的分批渲染，那條路本來就會
+       一階一階撐高容器）。與其繼續猜，不如把實際數字印出來。 */
+    this.addCommand({
+      id: 'gn-diag-wall',
+      name: t('Diagnose: card wall'),
+      callback: () => {
+        const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+        const v = leaf && leaf.view;
+        if (!v) { new Notice(t('Open Gallery Navigator first')); return; }
+        const mob = document.body.classList.contains('is-mobile');
+        const vws = v._virtuals || [];
+        const L = [];
+        L.push('── Gallery Navigator 卡片牆診斷 ──');
+        L.push('目前路徑        : ' + (vws.length ? '虛擬化 ✅' : '分批渲染（舊路徑）⚠️'));
+        L.push('虛擬化開關      : ' + (this.state.virtualWall !== false ? '開' : '關'));
+        L.push('門檻            : ' + (mob ? 150 : 300) + '（' + (mob ? '手機' : '桌機') + '）');
+        L.push('這面牆的項目數  : ' + (v._cardOrder ? v._cardOrder.length : '?'));
+        L.push('版型            : ' + (this.state.imageCardLayout || 'overlay'));
+        L.push('長寬比索引筆數  : ' + Object.keys(this._dimIndex || {}).length);
+        L.push('縮圖索引筆數    : ' + Object.keys((this.thumbs && this.thumbs.index) || {}).length);
+        for (const vw of vws) {
+          L.push('');
+          L.push('欄數 / 欄寬     : ' + vw.cols + ' / ' + Math.round(vw.colW) + 'px');
+          L.push('掛載中卡片      : ' + vw.mounted.size + ' / ' + vw.items.length);
+          L.push('容器總高        : ' + Math.round(vw.totalH) + 'px（已寫入 ' + Math.round(vw._writtenH || 0) + '）');
+          const meas = vw.measured.filter(Boolean).length;
+          L.push('已量測項目      : ' + meas + ' / ' + vw.items.length);
+          L.push('學到的版型開銷  : ' + ([...vw._oh].map(([k, o]) => k + '=' + o.mean.toFixed(1) + '(n=' + o.n + ')').join('  ') || '（尚未學到）'));
+        }
+        const txt = L.join('\n');
+        console.log(txt);
+        try { navigator.clipboard.writeText(txt); } catch (e) {}
+        new Notice(t('Wall diagnostics copied to clipboard (also in console)'), 6000);
+      },
+    });
     this.addSettingTab(new CalendarSettingTab(this.app, this));
 
     /* ===== 搜尋索引 =====
