@@ -48,7 +48,10 @@ class VirtualWall {
     this.destroy = o.destroy;
     this.estimate = o.estimate;
     this.kindOf = o.kindOf || null;   // 把卡片分類，讓「版型固定開銷」分開學（見 _resetCorrection）
+    this.isSettled = o.isSettled || null;   // 卡片內容是否已定案（圖片載完）——見 measure()
     this._kindCache = [];
+    this._lastScrollTop = 0;
+    this._settleT = 0;
 
     this.items = [];
     this.h = [];          // 每項高度
@@ -233,9 +236,13 @@ class VirtualWall {
        捲動路徑上每一幀都會跑的。改在 relayout() / measure() 這種真的會
        改變版面的時機才同步。 */
     const viewH = this.scroller.clientHeight || 800;
+    const st = this.scroller.scrollTop;
+    const jump = Math.abs(st - this._lastScrollTop);
+    this._lastScrollTop = st;
+
     // 上下各留一屏當緩衝：快速捲動時來得及補上，不會看到空白
-    const from = this.scroller.scrollTop - this.gridTop - viewH;
-    const to = this.scroller.scrollTop - this.gridTop + viewH * 2;
+    const from = st - this.gridTop - viewH;
+    const to = st - this.gridTop + viewH * 2;
 
     const want = new Set();
     for (let i = 0; i < this.items.length; i++) {
@@ -251,14 +258,24 @@ class VirtualWall {
       el.remove();
       this.mounted.delete(i);
     }
-    // 進入視窗 → 建立
+    /* 進入視窗 → 建立。
+       ⚠️ 但「拖捲軸拖很快」時先不要建。
+          一次 create 要蓋出整張卡（DOM、右鍵選單、各種監聽器），一屏約 40–50 張；
+          拖曳時每一幀都掃過一整個新視窗，等於每幀蓋掉再重蓋五十張卡，
+          主執行緒被吃滿 → 捲軸拖不動、跟不上游標。
+          飛過去的畫面本來也看不清楚，先留白，手一慢下來（_scheduleSettle）再補。 */
+    const flinging = jump > viewH * 2.5;
     let created = false;
-    for (const i of want) {
-      if (this.mounted.has(i)) continue;
-      const el = this.create(this.items[i], i);
-      if (!el) continue;
-      this.mounted.set(i, el);
-      created = true;
+    if (flinging) {
+      this._scheduleSettle();
+    } else {
+      for (const i of want) {
+        if (this.mounted.has(i)) continue;
+        const el = this.create(this.items[i], i);
+        if (!el) continue;
+        this.mounted.set(i, el);
+        created = true;
+      }
     }
     /* 定位（含既有的：高度校正後位置會改變）。
        位置沒變就不要重寫 —— 寫入同樣的值一樣會讓樣式失效，
@@ -273,6 +290,13 @@ class VirtualWall {
       el.style.top = t + 'px';
     }
     if (created) this._scheduleMeasure();
+  }
+
+  /* 快速拖曳期間略過建立卡片，手一慢下來就補畫。
+     60ms：比一幀長、比人察覺得到的停頓短。 */
+  _scheduleSettle() {
+    clearTimeout(this._settleT);
+    this._settleT = setTimeout(() => { this._settleT = 0; this._update(); }, 60);
   }
 
   _scheduleMeasure() {
@@ -308,10 +332,19 @@ class VirtualWall {
   measure() {
     if (this._destroyed || !this.mounted.size) return;
     const idx = [...this.mounted.keys()];
-    const hs = idx.map((i) => this.mounted.get(i).offsetHeight);   // 讀（一次讀完）
+    const els = idx.map((i) => this.mounted.get(i));
+    const hs = els.map((el) => el.offsetHeight);                       // 讀（一次讀完）
+    const ok = els.map((el, k) => !this.isSettled || this.isSettled(el, this.items[idx[k]]));
 
     this._syncGridTop();   // 挑錨點要用到，且這裡本來就要動版面
-    const anchor = this._pickAnchor();
+
+    /* ⚠️ 使用者正在捲動時**不要**錨定。
+       錨定的做法是改 scrollTop，而拖曳捲軸時瀏覽器每一次 pointermove 都會依
+       游標位置重新設定 scrollTop —— 兩邊互相覆蓋，結果就是「拖不動 / 一直被拉回」。
+       錨定真正需要發揮作用的時機是「使用者停著不動、內容自己在收斂」，
+       捲動中本來就在移動，幾像素的位移看不出來。 */
+    const moving = Math.abs(this.scroller.scrollTop - this._lastScrollTop) > 1;
+    const anchor = moving ? -1 : this._pickAnchor();
     const anchorBefore = anchor >= 0 ? this.top[anchor] : 0;
 
     const TOL = 6;   // 容差：必須小於欄距（16px），否則會出現重疊
@@ -319,7 +352,18 @@ class VirtualWall {
     let learned = false;
     for (let k = 0; k < idx.length; k++) {
       const i = idx[k], hv = hs[k];
-      if (!hv) continue;                       // 還沒有內容（圖片沒載完）→ 留著預測值
+      if (!hv) continue;                       // 完全沒高度 → 留著預測值
+
+      /* ⚠️ 內容還沒定案（圖片仍在載入 / 縮圖還在產生）就**不能**採信這個高度。
+         此時量到的是佔位高度（4:3），不是真正的圖片高度。
+         之前沒擋這一關，導致：
+           • h[i] 被寫成佔位高度 → 總高度整個塌陷 → 捲軸拇指變得很長
+           • 更糟的是這個值還被 _learn() 學進「版型固定開銷」，
+             實測 −141px 的常數，把所有尚未量測的卡片也一起壓扁
+           • 圖片陸續載入後高度才長回來 → 拇指再變短
+         這就是「一開始很長再變很短」的成因。 */
+      if (!ok[k]) continue;
+
       if (this.measured[i] && Math.abs(this.h[i] - hv) < 0.5) continue;
 
       if (!this.measured[i]) {
@@ -383,6 +427,7 @@ class VirtualWall {
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this._measureRaf) cancelAnimationFrame(this._measureRaf);
     clearTimeout(this._hT);            // 延後中的高度寫入
+    clearTimeout(this._settleT);       // 快速拖曳後的補畫
     this.unmountAll();
   }
 }

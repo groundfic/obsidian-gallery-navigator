@@ -4115,6 +4115,26 @@ class GalleryView extends ItemView {
      同一類的卡片，實際高度減掉算式基準之後應該幾乎是常數；
      混在一起學的話（例如把純文字卡跟圖片卡算成同一類）平均值會被拉歪，
      預測就永遠命中不了、總高度也就一直在修 → 捲軸拇指一直跳。 */
+  /* 這張卡的高度是否已經定案（可以拿去量測與學習）。
+
+     ⚠️ 沒有這一關會出大事：卡片剛掛上去時圖片還沒載入，量到的是 4:3 佔位高度，
+        不是真正的圖片高度。把它當真值會 (a) 壓扁該卡，(b) 更糟的是被學進
+        「版型固定開銷」——實測會學成 −141px 這種離譜的值，連帶把所有還沒
+        量測的卡片一起壓扁 → 總高度塌陷 → 捲軸拇指變得很長，等圖片陸續載入
+        才長回來、拇指再變短。
+
+     判斷方式：卡片裡每個 <img> 都要 complete 且有 naturalWidth。
+     還沒設 src 的 img（縮圖產生中）complete 是 true 但 naturalWidth 為 0，
+     所以這個條件同時涵蓋「圖片載入中」與「縮圖還在背景產生」。
+     沒有任何圖片的純文字卡直接算定案。 */
+  cardSettled(el) {
+    const imgs = el.querySelectorAll ? el.querySelectorAll('img') : [];
+    for (const im of imgs) {
+      if (!im.complete || !im.naturalWidth) return false;
+    }
+    return true;
+  }
+
   cardKind(it) {
     const layout = this.plugin.state.imageCardLayout || 'overlay';
     if (!it.src) return layout + ':text';
@@ -4256,6 +4276,7 @@ class GalleryView extends ItemView {
       destroy: (el, it) => this.unregisterCard(el, it),
       estimate: (it, colW) => this.estimateCardHeight(it, colW),
       kindOf: (it) => this.cardKind(it),
+      isSettled: (el) => this.cardSettled(el),
     });
     // 圖片載入完成 → 卡片高度變了 → 重新量測。
     // 捕獲階段一條就涵蓋所有後續插入的圖（load 不冒泡）。
