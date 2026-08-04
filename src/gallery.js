@@ -4112,15 +4112,23 @@ class GalleryView extends ItemView {
   /* 卡片還沒建出來時的高度估計。準不準只影響捲動時的跳動幅度，
      不影響正確性——卡片真的掛上去後 VirtualWall.measure() 會用實測值取代。 */
   estimateCardHeight(it, colW) {
-    const editorial = this.plugin.state.imageCardLayout === 'editorial';
+    /* ⚠️ 三種圖片卡版型的文字區定位不同，估計必須分開算，
+          不然整批卡片會被系統性高估或低估，總高度一路被修正 → 捲軸一直跳：
+            overlay（預設）：.gn-body 是 position:absolute 疊在圖上 → **不佔高度**
+            stacked        ：.gn-body 在圖片下方（relative）→ 約 +62px
+            editorial      ：另有日期塊與內文預覽 → 約 +96px
+          （見 gallery.css:540 / 1423 兩組規則） */
+    const layout = this.plugin.state.imageCardLayout;
     if (it.src) {
       const d = (this.plugin._dimIndex || {})[this.dimKeyOf(it.src)];
-      // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設
+      // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設，載入後會校正
       const ratio = (d && d[0] > 0 && d[1] > 0) ? (d[1] / d[0]) : 0.75;
-      // 編輯風索引卡的文字在圖片下方會另外佔高度；一般模式文字是疊在圖上的，不加
-      return colW * ratio + (editorial ? 96 : 0);
+      const imgH = colW * ratio;
+      if (layout === 'editorial') return imgH + 96;
+      if (layout === 'stacked') return imgH + 62;
+      return imgH;
     }
-    return editorial ? 150 : 180;   // 無封面：內文預覽卡
+    return layout === 'editorial' ? 150 : 180;   // 無封面：內文預覽卡
   }
 
   // keepOrder: 保持傳入順序，不套日期排序、不把釘選浮到最前

@@ -61,6 +61,7 @@ class VirtualWall {
     this._raf = 0;
     this._measureRaf = 0;
     this._destroyed = false;
+    this._resetCorrection();
 
     this._onScroll = () => this._schedule();
     this.scroller.addEventListener('scroll', this._onScroll, { passive: true });
@@ -74,6 +75,7 @@ class VirtualWall {
 
   setItems(items) {
     this.unmountAll();
+    this._resetCorrection();
     this.items = items || [];
     this.h = new Array(this.items.length).fill(0);
     this.measured = new Array(this.items.length).fill(false);
@@ -97,12 +99,30 @@ class VirtualWall {
 
     /* 欄寬變了，已量測的高度也失效（圖片會跟著縮放）——全部退回估計值。
        不這麼做的話，轉螢幕或拖分隔桿之後版面會整個錯位。 */
-    if (widthChanged) this.measured.fill(false);
+    if (widthChanged) { this.measured.fill(false); this._resetCorrection(); }
     for (let i = 0; i < this.items.length; i++) {
-      if (!this.measured[i]) this.h[i] = Math.max(1, this.estimate(this.items[i], this.colW));
+      if (!this.measured[i]) this.h[i] = this._estimateFor(i);
     }
     this._pack();
+    this._syncGridTop();
     this._update();
+  }
+
+  /* ── 估計值的自我校正 ──
+     估計高度只考慮圖片本身（欄寬 ÷ 長寬比），但實際卡片還有邊框、內距、
+     標題與日期。少算的那一截對每張卡大致相同，於是**每一張都被低估**，
+     總高度持續被往上修 → 捲軸拇指不停變大 → 看起來就是「一直跳」。
+     這裡從已量測的卡片學出「實測 ÷ 估計」的平均倍率，套回還沒量的項目，
+     讓估計一開始就接近真值，校正幅度自然變小。 */
+  _resetCorrection() { this._corrSum = 0; this._corrN = 0; this._corr = 1; this._rawEst = []; }
+
+  _estimateFor(i) {
+    let raw = this._rawEst[i];
+    if (raw === undefined) {
+      raw = Math.max(1, this.estimate(this.items[i], this.colW));
+      this._rawEst[i] = raw;
+    }
+    return Math.max(1, raw * (this._corr || 1));
   }
 
   /* 貪婪法：每張卡放進目前最矮的那一欄（與 MasonryLayout 相同，但純算術、不碰 DOM） */
@@ -133,7 +153,10 @@ class VirtualWall {
 
   _update() {
     if (this._destroyed || !this.items.length) return;
-    this._syncGridTop();
+    /* ⚠️ 這裡**不**重算 gridTop。它是「內容座標」——捲動並不會改變它，
+       但 getBoundingClientRect() 每次都會強制一次版面計算，而 _update 是
+       捲動路徑上每一幀都會跑的。改在 relayout() / measure() 這種真的會
+       改變版面的時機才同步。 */
     const viewH = this.scroller.clientHeight || 800;
     // 上下各留一屏當緩衝：快速捲動時來得及補上，不會看到空白
     const from = this.scroller.scrollTop - this.gridTop - viewH;
@@ -162,12 +185,17 @@ class VirtualWall {
       this.mounted.set(i, el);
       created = true;
     }
-    // 定位（含既有的：高度校正後位置會改變）
+    /* 定位（含既有的：高度校正後位置會改變）。
+       位置沒變就不要重寫 —— 寫入同樣的值一樣會讓樣式失效，
+       而這段在捲動時每一幀都會跑過所有掛載中的卡片。 */
     for (const [i, el] of this.mounted) {
+      const l = this.left[i], t = this.top[i], w = this.colW;
+      if (el._vwL === l && el._vwT === t && el._vwW === w) continue;
+      el._vwL = l; el._vwT = t; el._vwW = w;
       el.style.position = 'absolute';
-      el.style.width = this.colW + 'px';
-      el.style.left = this.left[i] + 'px';
-      el.style.top = this.top[i] + 'px';
+      el.style.width = w + 'px';
+      el.style.left = l + 'px';
+      el.style.top = t + 'px';
     }
     if (created) this._scheduleMeasure();
   }
@@ -177,23 +205,71 @@ class VirtualWall {
     this._measureRaf = requestAnimationFrame(() => { this._measureRaf = 0; this.measure(); });
   }
 
+  /* 找捲動錨點：目前視窗頂端**之上或之內**、位置最靠下的那一張已掛載卡片。
+     重排後把它保持在原本的視覺位置，使用者才不會覺得內容在腳下滑動。
+     回傳 -1 代表不需要錨定（已經捲到最頂端）。 */
+  _pickAnchor() {
+    const y = this.scroller.scrollTop - this.gridTop;
+    if (y <= 0) return -1;
+    let best = -1, bestTop = -Infinity;
+    for (const i of this.mounted.keys()) {
+      const t = this.top[i];
+      if (t <= y && t > bestTop) { bestTop = t; best = i; }
+    }
+    return best;
+  }
+
   /* 量測掛載中卡片的真實高度；有變動就重排並重新定位。
-     ⚠️ 先把所有 offsetHeight 讀完再寫，不要邊讀邊寫（否則每張卡都強制一次版面重算）。 */
+
+     ⚠️ 兩個關鍵，改動前請先讀懂：
+
+     1. 先把所有 offsetHeight 讀完再寫，不要邊讀邊寫
+        （否則每張卡都強制一次版面重算）。
+
+     2. **一定要做捲動錨定**。重排會改變所有後續項目的位置與總高度；
+        若使用者正停在中段，上方某張卡的高度被修正，下面所有東西就會
+        整體位移 —— 畫面在手指底下滑走、捲軸拇指不停跳動。
+        做法是記住錨點卡在重排前的位置，重排後把差值補進 scrollTop。 */
   measure() {
     if (this._destroyed || !this.mounted.size) return;
     const idx = [...this.mounted.keys()];
-    const hs = idx.map((i) => this.mounted.get(i).offsetHeight);   // 讀
+    const hs = idx.map((i) => this.mounted.get(i).offsetHeight);   // 讀（一次讀完）
+
+    this._syncGridTop();   // 挑錨點要用到，且這裡本來就要動版面
+    const anchor = this._pickAnchor();
+    const anchorBefore = anchor >= 0 ? this.top[anchor] : 0;
+
     let changed = false;
     for (let k = 0; k < idx.length; k++) {
       const i = idx[k], hv = hs[k];
       if (!hv) continue;                       // 還沒有內容（圖片沒載完）→ 留著估計值
       if (this.measured[i] && Math.abs(this.h[i] - hv) < 0.5) continue;
+      // 第一次量到 → 拿來校正往後的估計倍率
+      if (!this.measured[i]) {
+        const raw = this._rawEst[i];
+        if (raw > 0) {
+          this._corrSum += hv / raw;
+          this._corrN++;
+          // 取樣夠多才啟用，且夾在合理範圍，避免少數極端卡片把估計帶歪
+          if (this._corrN >= 8) this._corr = Math.min(3, Math.max(0.4, this._corrSum / this._corrN));
+        }
+      }
       this.h[i] = hv;
       this.measured[i] = true;
       changed = true;
     }
     if (!changed) return;
+
+    // 未量測的項目沿用新的校正倍率，總高度才不會一路被往上修
+    for (let i = 0; i < this.items.length; i++) {
+      if (!this.measured[i]) this.h[i] = this._estimateFor(i);
+    }
+
     this._pack();                              // 寫
+    if (anchor >= 0) {
+      const delta = this.top[anchor] - anchorBefore;
+      if (delta) this.scroller.scrollTop += delta;   // 把錨點卡拉回原本的視覺位置
+    }
     this._update();
   }
 
