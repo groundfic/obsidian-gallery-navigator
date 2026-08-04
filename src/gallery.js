@@ -2131,7 +2131,25 @@ class GalleryView extends ItemView {
      圖片是陸續載入的，於是連續數十上百個 frame 都在跑滿版重排。
      key 用去掉查詢字串的資源路徑：getResourcePath() 會在尾巴加 ?mtime，
      去掉之後 vault 圖片與 og-cache 圖片都能得到穩定的鍵。 */
-  dimKeyOf(src) { return String(src || '').split('?')[0]; }
+  /* 長寬比索引的 key：**vault 相對路徑**，不是資源網址。
+
+     ⚠️ 這裡踩過一個很貴的坑，不要改回去。
+        原本是拿 vault.getResourcePath() 回來的字串（去掉 ?mtime）當 key，
+        長這樣：app://8a1c160e943893115be8616e16ea16b19f23/Users/…
+        但那串十六進位前綴是 Obsidian 每次啟動向主行程要的隨機權杖
+        （app.js：resourcePathPrefix = ipcRenderer.sendSync("file-url")）。
+
+        後果：每重開一次 Obsidian，整份索引就全部對不上。
+          • 卡片拿不到長寬比 → 不預留高度 → 初始高度 0
+          • 圖片陸續載入後容器才長高 → **捲軸一開始很長、然後變短**
+          • dims.json 每次啟動再累積一整份死 key（實測 898 筆幾乎全是廢的）
+
+        檔案路徑跨工作階段穩定，才是正確的 key。 */
+  dimKeyOf(it) {
+    if (!it) return '';
+    if (typeof it === 'string') return it;              // 已經是 key（例如 'og:筆記路徑'）
+    return it.file ? it.file.path : '';
+  }
 
   /* 決定卡片圖片實際要載入哪一個檔案：縮圖優先，原圖是退路。
      ⚠️ 沒有縮圖時**不先塞原圖再替換**——那樣峰值記憶體跟完全沒做縮圖一樣
@@ -2139,17 +2157,17 @@ class GalleryView extends ItemView {
   setCardImage(img, it) {
     const file = it.file;
     const useOriginal = () => {
-      this.applyDim(img, it.src);
+      this.applyDim(img, it);
       img.src = it.src;
     };
     // 非圖片檔（md 的封面 / og 圖）與小圖、GIF、SVG：本來就不貴，直接用原圖
     if (!it.isImg || this.plugin.thumbs.shouldSkip(file)) { useOriginal(); return; }
 
     const ready = this.plugin.thumbs.urlFor(file);
-    if (ready) { this.applyDim(img, it.src); img.src = ready; return; }
+    if (ready) { this.applyDim(img, it); img.src = ready; return; }
 
     // 先用長寬比佔好高度（若已知），避免縮圖填入時整牆重排
-    this.applyDim(img, it.src);
+    this.applyDim(img, it);
     img.addClass('gn-img-pending');
     this.plugin.thumbs.request(file, (url) => {
       if (!img.isConnected) return;                 // 已經捲走 / 重畫過了
@@ -2158,8 +2176,8 @@ class GalleryView extends ItemView {
     });
   }
 
-  applyDim(img, src) {
-    const key = this.dimKeyOf(src);
+  applyDim(img, itOrKey) {
+    const key = this.dimKeyOf(itOrKey);
     if (!key) return;
     const idx = this.plugin._dimIndex || (this.plugin._dimIndex = {});
     const d = idx[key];
@@ -2188,7 +2206,9 @@ class GalleryView extends ItemView {
     const put = (resUrl) => {
       if (!resUrl || !card.isConnected) return;
       const img = card.createEl('img');
-      this.applyDim(img, resUrl);   // 同樣先佔高度（用 addEventListener，不與下面的 onload 衝突）
+      /* key 用 'og:<筆記路徑>'：og 圖存在外掛資料夾、沒有 vault 路徑可用，
+         但一則筆記固定對應一張 og 圖，用筆記路徑當 key 一樣跨工作階段穩定。 */
+      this.applyDim(img, 'og:' + file.path);
       img.src = resUrl;
       img.loading = 'lazy';
       img.addClass('gn-linkimg');
@@ -4140,7 +4160,7 @@ class GalleryView extends ItemView {
     if (!it.src) return layout + ':text';
     // 長寬比已知與未知要分開：未知的用 4:3 猜，算式基準本身就不可靠，
     // 不該把它的誤差混進「已知長寬比」那一類的開銷常數裡
-    const known = !!(this.plugin._dimIndex || {})[this.dimKeyOf(it.src)];
+    const known = !!(this.plugin._dimIndex || {})[this.dimKeyOf(it)];
     return layout + (known ? ':img' : ':img?');
   }
 
@@ -4153,7 +4173,7 @@ class GalleryView extends ItemView {
           （見 gallery.css:540 / 1423 兩組規則） */
     const layout = this.plugin.state.imageCardLayout;
     if (it.src) {
-      const d = (this.plugin._dimIndex || {})[this.dimKeyOf(it.src)];
+      const d = (this.plugin._dimIndex || {})[this.dimKeyOf(it)];
       // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設，載入後會校正
       const ratio = (d && d[0] > 0 && d[1] > 0) ? (d[1] / d[0]) : 0.75;
       const imgH = colW * ratio;
@@ -5391,7 +5411,15 @@ class GalleryPlugin extends Plugin {
         L.push('門檻            : ' + (mob ? 150 : 300) + '（' + (mob ? '手機' : '桌機') + '）');
         L.push('這面牆的項目數  : ' + (v._cardOrder ? v._cardOrder.length : '?'));
         L.push('版型            : ' + (this.state.imageCardLayout || 'overlay'));
-        L.push('長寬比索引筆數  : ' + Object.keys(this._dimIndex || {}).length);
+        const dim = this._dimIndex || {};
+        const stale = Object.keys(dim).filter((k) => k.startsWith('app://')).length;
+        L.push('長寬比索引筆數  : ' + Object.keys(dim).length + (stale ? '（其中 ' + stale + ' 筆是舊版失效 key ⚠️）' : ''));
+        /* 命中率是關鍵指標：命中＝卡片能在圖片載入前就預留高度，
+           容器高度從第一幀就正確，捲軸不會「先長後短」。 */
+        const paths = v._cardOrder || [];
+        const hit = paths.filter((p) => dim[p] || dim['og:' + p]).length;
+        L.push('本牆長寬比命中  : ' + hit + ' / ' + paths.length
+          + (paths.length ? '（' + Math.round(hit / paths.length * 100) + '%）' : ''));
         L.push('縮圖索引筆數    : ' + Object.keys((this.thumbs && this.thumbs.index) || {}).length);
         for (const vw of vws) {
           L.push('');
@@ -5774,7 +5802,19 @@ class GalleryPlugin extends Plugin {
     try {
       const a = this.app.vault.adapter;
       const p = this.dimIndexPath();
-      if (await a.exists(p)) this._dimIndex = JSON.parse(await a.read(p)) || {};
+      if (!(await a.exists(p))) return;
+      const raw = JSON.parse(await a.read(p)) || {};
+
+      /* 丟掉舊版留下的 app:// key。
+         那版拿資源網址當 key，而網址含每次啟動都會變的權杖 —— 那些 key
+         從寫下的那一刻就注定對不上，只會愈積愈多（實測 898 筆幾乎全是廢的）。
+         這裡順手清掉，不留給使用者一個永遠長大的垃圾檔。 */
+      let dropped = 0;
+      for (const k of Object.keys(raw)) {
+        if (k.startsWith('app://')) { delete raw[k]; dropped++; }
+      }
+      this._dimIndex = raw;
+      if (dropped) this.saveDimIndex();
     } catch (e) { this._dimIndex = {}; }
   }
   saveDimIndex() {
