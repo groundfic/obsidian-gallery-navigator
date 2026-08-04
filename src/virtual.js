@@ -406,6 +406,30 @@ class VirtualWall {
   // 縮放滑桿改了最小欄寬 → 欄數與欄寬都會變，等同一次完整重排
   setMinCol(w) { this.minCol = w; this._lastW = -1; this.relayout(); }
 
+  /* 外部補齊了長寬比（DimPrefetcher）→ 丟掉快取的估計基準、重算尚未量測的項目。
+     ⚠️ 一定要清 _rawEst：那是「每一項的算式基準」的快取，
+        不清的話新拿到的長寬比根本不會被用上，白補。 */
+  invalidateEstimates() {
+    this._rawEst = [];
+    this._kindCache = [];
+    let changed = false;
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.measured[i]) continue;          // 已經量到真值的不動
+      const next = this._estimateFor(i);
+      if (next !== this.h[i]) { this.h[i] = next; changed = true; }
+    }
+    if (!changed) return;
+    this._syncGridTop();
+    const anchor = Math.abs(this.scroller.scrollTop - this._lastScrollTop) > 1 ? -1 : this._pickAnchor();
+    const before = anchor >= 0 ? this.top[anchor] : 0;
+    this._pack();
+    if (anchor >= 0) {
+      const d = this.top[anchor] - before;
+      if (d) this.scroller.scrollTop += d;
+    }
+    this._update();
+  }
+
   unmountAll() {
     for (const [i, el] of this.mounted) {
       try { this.destroy(el, this.items[i], i); } catch (e) {}

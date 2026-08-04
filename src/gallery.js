@@ -10,6 +10,7 @@ const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal,
 const { t, setLang, isZh } = require('./i18n.js');
 const { LocalGraph } = require('./graph.js');
 const { ThumbCache } = require('./thumbs.js');
+const { DimPrefetcher } = require('./dims.js');
 const { VirtualWall } = require('./virtual.js');
 
 /* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
@@ -1225,6 +1226,8 @@ class GalleryView extends ItemView {
     if (this._wallIO) { this._wallIO.disconnect(); this._wallIO = null; }
     if (this._paneRO) { this._paneRO.disconnect(); this._paneRO = null; }
     if (this._syncRaf) { cancelAnimationFrame(this._syncRaf); this._syncRaf = 0; }
+    // 關閉分頁 → 停掉還在背景解圖的長寬比預取（下次 render 會自己重啟）
+    if (this.plugin.dimPrefetch) this.plugin.dimPrefetch.cancel();
     this.closeTodoPopover();   // 連同 document 上的 mousedown 監聽一起解除
     this.closeMorePopover();   // 掛在 body 上的浮動面板要一起收掉
   }
@@ -4131,6 +4134,22 @@ class GalleryView extends ItemView {
 
   /* 卡片還沒建出來時的高度估計。準不準只影響捲動時的跳動幅度，
      不影響正確性——卡片真的掛上去後 VirtualWall.measure() 會用實測值取代。 */
+  /* 啟動長寬比預取，並在每補齊一批之後讓版面用新資訊重算。
+     兩條渲染路徑（虛擬化 / 分批）都會走這裡：
+       • 虛擬化 → invalidateEstimates()，重算尚未量測項目的預測高度
+       • 分批   → relayoutWalls()，masonry 重新排一次
+     換資料夾時 start() 內部會先 cancel()，舊資料夾的回呼一律作廢。 */
+  startDimPrefetch(notes) {
+    const pf = this.plugin.dimPrefetch;
+    if (!pf) return;
+    pf.start(notes, () => {
+      if (!this.contentEl || !this.contentEl.isConnected) return;
+      const vws = this._virtuals || [];
+      if (vws.length) for (const vw of vws) vw.invalidateEstimates();
+      else this.relayoutWalls();
+    });
+  }
+
   /* 卡片分類，給 VirtualWall 分開學「該類版型的固定開銷」。
      同一類的卡片，實際高度減掉算式基準之後應該幾乎是常數；
      混在一起學的話（例如把純文字卡跟圖片卡算成同一類）平均值會被拉歪，
@@ -4312,6 +4331,14 @@ class GalleryView extends ItemView {
   // 分批把卡片畫進瀑布流：先畫第一批，捲到接近底部才補下一批
   renderInChunks(container, grid, masonry, notes, opts) {
     const isMobileUI = document.body.classList.contains('is-mobile');
+
+    /* 先在背景把整批的長寬比補齊。
+       卡片高度＝欄寬 × 長寬比（overlay 版型實測固定開銷僅 0.4px），
+       所以長寬比一旦到齊，總高度就是算得準的，捲軸不會再收斂。
+       原本只有「卡片被掛上去且圖片載完」才記錄，虛擬化一次只掛十幾張，
+       305 張的資料夾捲半天命中率也才 3% —— 總高度永遠在變。
+       這裡改成一開資料夾就整批補，補完存進 dims.json，下次直接命中。 */
+    this.startDimPrefetch(notes);
     /* 超過這個量才虛擬化。門檻不能太低：虛擬化靠估計高度排版，
        第一次瀏覽（長寬比還沒進索引）捲動會有輕微跳動，小資料夾不值得付這個代價。 */
     const VIRTUAL_MIN = isMobileUI ? 150 : 300;
@@ -5420,6 +5447,9 @@ class GalleryPlugin extends Plugin {
         const hit = paths.filter((p) => dim[p] || dim['og:' + p]).length;
         L.push('本牆長寬比命中  : ' + hit + ' / ' + paths.length
           + (paths.length ? '（' + Math.round(hit / paths.length * 100) + '%）' : ''));
+        const pf = this.dimPrefetch;
+        L.push('長寬比預取      : ' + (pf ? (pf.queue.length ? '進行中，剩 ' + pf.queue.length + ' 筆'
+          : (pf.busy ? '收尾中' : '已完成')) : '未啟用'));
         L.push('縮圖索引筆數    : ' + Object.keys((this.thumbs && this.thumbs.index) || {}).length);
         for (const vw of vws) {
           L.push('');
@@ -5491,6 +5521,9 @@ class GalleryPlugin extends Plugin {
     // 縮圖快取：卡片牆不再直接解碼原圖（見 thumbs.js 開頭的說明）
     this.thumbs = new ThumbCache(this);
     this.thumbs.load();
+
+    // 長寬比預取：開資料夾時在背景把整批的長寬比補齊，總高度才能一次算準（見 dims.js）
+    this.dimPrefetch = new DimPrefetcher(this);
 
     // 檔案增刪/改名時，若 View 開著就重畫；同時讓日曆筆記索引失效
     // 檔案結構變了 → 資料夾檔案數快取失效（只有增刪改名會影響，內容修改不會）
