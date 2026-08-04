@@ -187,7 +187,6 @@ const ZH_TW = {
   'Building index… {{done}}/{{total}}': '建立索引中… {{done}}/{{total}}',
   'Search test (full ranking in console)': '搜尋測試（完整排名見 console）',
   '(no results)': '（無結果）', 'Search': '搜尋',
-  'Open Gallery Navigator first': '請先開啟 Gallery Navigator',
   'Text Extractor plugin is required to extract PDF text': '需要啟用 text-extractor 外掛才能擷取 PDF 內文',
   'Extracting PDF text… (large files may take a while)': '擷取 PDF 內文中…（大檔可能要一陣子）',
   'Extracting PDF text… {{done}}/{{total}}': '擷取 PDF 內文中… {{done}}/{{total}}',
@@ -268,12 +267,6 @@ const ZH_TW = {
   'Image lightbox actions': '圖片放大檢視的動作膠囊',
   'Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.':
     '在 Obsidian 點圖片放大時，於畫面底部加一條浮動動作列（複製、找相似、在 Finder 顯示）。Obsidian 沒有提供 lightbox 的擴充 API，日後改版若導致這條動作列異常，把它關掉即可。',
-  'Diagnose: card wall': '診斷：卡片牆',
-  'Diagnose: record card wall (8s)': '診斷：錄製卡片牆（8 秒）',
-  'Recording 8s — please scroll now': '錄製中（8 秒）——請現在捲動',
-  'Recording done — copied to clipboard': '錄製完成——已複製到剪貼簿',
-  'Open Gallery Navigator first': '請先開啟 Gallery Navigator',
-  'Wall diagnostics copied to clipboard (also in console)': '卡片牆診斷已複製到剪貼簿（主控台也有一份）',
 
   // ── Canvas：圖片轉筆記（2026-08-05）──
   'Convert to note (embed image)': '轉成筆記（內嵌這張圖）',
