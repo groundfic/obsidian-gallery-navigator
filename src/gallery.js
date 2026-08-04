@@ -4111,6 +4111,19 @@ class GalleryView extends ItemView {
 
   /* 卡片還沒建出來時的高度估計。準不準只影響捲動時的跳動幅度，
      不影響正確性——卡片真的掛上去後 VirtualWall.measure() 會用實測值取代。 */
+  /* 卡片分類，給 VirtualWall 分開學「該類版型的固定開銷」。
+     同一類的卡片，實際高度減掉算式基準之後應該幾乎是常數；
+     混在一起學的話（例如把純文字卡跟圖片卡算成同一類）平均值會被拉歪，
+     預測就永遠命中不了、總高度也就一直在修 → 捲軸拇指一直跳。 */
+  cardKind(it) {
+    const layout = this.plugin.state.imageCardLayout || 'overlay';
+    if (!it.src) return layout + ':text';
+    // 長寬比已知與未知要分開：未知的用 4:3 猜，算式基準本身就不可靠，
+    // 不該把它的誤差混進「已知長寬比」那一類的開銷常數裡
+    const known = !!(this.plugin._dimIndex || {})[this.dimKeyOf(it.src)];
+    return layout + (known ? ':img' : ':img?');
+  }
+
   estimateCardHeight(it, colW) {
     /* ⚠️ 三種圖片卡版型的文字區定位不同，估計必須分開算，
           不然整批卡片會被系統性高估或低估，總高度一路被修正 → 捲軸一直跳：
@@ -4242,6 +4255,7 @@ class GalleryView extends ItemView {
       create: (it) => this.makeCard(grid, null, it, opts || {}),
       destroy: (el, it) => this.unregisterCard(el, it),
       estimate: (it, colW) => this.estimateCardHeight(it, colW),
+      kindOf: (it) => this.cardKind(it),
     });
     // 圖片載入完成 → 卡片高度變了 → 重新量測。
     // 捕獲階段一條就涵蓋所有後續插入的圖（load 不冒泡）。

@@ -47,6 +47,8 @@ class VirtualWall {
     this.create = o.create;
     this.destroy = o.destroy;
     this.estimate = o.estimate;
+    this.kindOf = o.kindOf || null;   // 把卡片分類，讓「版型固定開銷」分開學（見 _resetCorrection）
+    this._kindCache = [];
 
     this.items = [];
     this.h = [];          // 每項高度
@@ -76,6 +78,10 @@ class VirtualWall {
   setItems(items) {
     this.unmountAll();
     this._resetCorrection();
+    this._kindCache = [];
+    // 換一批資料 → 高度從頭算起，不能沿用上一批的已寫入值（否則第一次寫會被當成「縮小」而延後）
+    clearTimeout(this._hT);
+    this._writtenH = undefined;
     this.items = items || [];
     this.h = new Array(this.items.length).fill(0);
     this.measured = new Array(this.items.length).fill(false);
@@ -108,21 +114,64 @@ class VirtualWall {
     this._update();
   }
 
-  /* ── 估計值的自我校正 ──
-     估計高度只考慮圖片本身（欄寬 ÷ 長寬比），但實際卡片還有邊框、內距、
-     標題與日期。少算的那一截對每張卡大致相同，於是**每一張都被低估**，
-     總高度持續被往上修 → 捲軸拇指不停變大 → 看起來就是「一直跳」。
-     這裡從已量測的卡片學出「實測 ÷ 估計」的平均倍率，套回還沒量的項目，
-     讓估計一開始就接近真值，校正幅度自然變小。 */
-  _resetCorrection() { this._corrSum = 0; this._corrN = 0; this._corr = 1; this._rawEst = []; }
+  /* ── 高度預測：學一次開銷，之後用算的，不要每張都量 ──
 
-  _estimateFor(i) {
+     ⚠️ 這是「捲軸拇指一直跳」的根治點，改動前務必讀懂。
+
+     捲軸拇指的大小與位置＝視窗高 ÷ 內容總高。只要總高一直被修正，
+     拇指就一直在變 —— 即使內容本身（有捲動錨定）完全沒有位移。
+     所以光是「錨定」不夠，必須讓**總高度盡快停止變動**。
+
+     關鍵觀察：圖片卡的高度其實是可以算出來的。
+     img 是 width:100% / height:auto / display:block，
+     所以圖片高度嚴格等於「欄寬 × 長寬比」；卡片其餘部分（邊框、內距、
+     標題、日期）對同一種版型是**固定的常數**。
+     也就是說我們不需要量每一張卡，只要量幾張、把那個常數學起來，
+     其他全部用算的 —— 總高度一開始就正確，之後不再變動。
+
+     做法：
+       • kindOf(item) 把卡片分類（有長寬比的圖片卡 / 未知長寬比 / 純文字…）
+       • 每一類各自累積「實測 − 算式基準」的平均值，就是該類的開銷常數
+       • 預測與實測差在容差內 → **採信預測**，不改高度、不重排
+         （容差取 6px，小於欄距 16px，不會造成重疊或明顯縫隙）
+
+     這樣一來，走過幾張卡之後預測就幾乎都命中，重排停止，拇指也就不動了。 */
+  _resetCorrection() {
+    this._oh = new Map();   // kind → { sum, n, mean }
+    this._rawEst = [];
+  }
+
+  _kind(i) {
+    if (!this.kindOf) return '*';
+    const k = this._kindCache[i];
+    if (k !== undefined) return k;
+    return (this._kindCache[i] = this.kindOf(this.items[i]) || '*');
+  }
+
+  _baseFor(i) {
     let raw = this._rawEst[i];
     if (raw === undefined) {
       raw = Math.max(1, this.estimate(this.items[i], this.colW));
       this._rawEst[i] = raw;
     }
-    return Math.max(1, raw * (this._corr || 1));
+    return raw;
+  }
+
+  _estimateFor(i) {
+    const oh = this._oh.get(this._kind(i));
+    return Math.max(1, Math.round(this._baseFor(i) + (oh ? oh.mean : 0)));
+  }
+
+  /* 把一次實測餵給該類別的開銷常數。
+     用移動平均而非只取第一張：標題長度會讓文字卡有些微差異，平均比較穩。 */
+  _learn(i, measuredH) {
+    const k = this._kind(i);
+    let oh = this._oh.get(k);
+    if (!oh) { oh = { sum: 0, n: 0, mean: 0 }; this._oh.set(k, oh); }
+    if (oh.n >= 40) return;          // 夠穩了就不再更新，避免常數一直微幅漂移
+    oh.sum += measuredH - this._baseFor(i);
+    oh.n++;
+    oh.mean = oh.sum / oh.n;
   }
 
   /* 貪婪法：每張卡放進目前最矮的那一欄（與 MasonryLayout 相同，但純算術、不碰 DOM） */
@@ -136,7 +185,33 @@ class VirtualWall {
       colH[c] += this.h[i] + this.gap;
     }
     this.totalH = Math.max.apply(null, colH);
-    this.grid.style.height = this.totalH + 'px';
+    this._applyHeight(this.totalH);
+  }
+
+  /* ── 容器高度的寫入時機（捲軸拇指穩定的最後一哩）──
+
+     即使卡片位置完全正確、內容也有錨定不會位移，只要 grid 的高度一直被改，
+     捲軸拇指就會一直變大變小 —— 使用者看到的就是「滑桿在跳」。
+
+     高度變動有兩個方向，性質完全不同：
+       • **變高**：必須立刻寫。不寫的話捲不到最後幾張卡（捲動範圍不夠）。
+       • **變矮**：可以延後。這純粹是估計值收斂，晚幾百毫秒寫沒有任何副作用。
+
+     所以規則是「只單向即時成長，縮小等安靜下來再一次到位」。
+     捲動過程中拇指只會單調地小幅變化，不會來回抖；手一停就收斂到精確值。 */
+  _applyHeight(h) {
+    const cur = this._writtenH;
+    if (cur === undefined || h > cur) { this._writeHeight(h); return; }
+    if (cur - h < 1) return;                       // 差不到 1px，不值得動
+    clearTimeout(this._hT);
+    this._hT = setTimeout(() => this._writeHeight(this.totalH), 200);
+  }
+
+  _writeHeight(h) {
+    clearTimeout(this._hT);
+    if (this._destroyed) return;
+    this._writtenH = h;
+    this.grid.style.height = Math.round(h) + 'px';
   }
 
   _schedule() {
@@ -239,31 +314,39 @@ class VirtualWall {
     const anchor = this._pickAnchor();
     const anchorBefore = anchor >= 0 ? this.top[anchor] : 0;
 
+    const TOL = 6;   // 容差：必須小於欄距（16px），否則會出現重疊
     let changed = false;
+    let learned = false;
     for (let k = 0; k < idx.length; k++) {
       const i = idx[k], hv = hs[k];
-      if (!hv) continue;                       // 還沒有內容（圖片沒載完）→ 留著估計值
+      if (!hv) continue;                       // 還沒有內容（圖片沒載完）→ 留著預測值
       if (this.measured[i] && Math.abs(this.h[i] - hv) < 0.5) continue;
-      // 第一次量到 → 拿來校正往後的估計倍率
+
       if (!this.measured[i]) {
-        const raw = this._rawEst[i];
-        if (raw > 0) {
-          this._corrSum += hv / raw;
-          this._corrN++;
-          // 取樣夠多才啟用，且夾在合理範圍，避免少數極端卡片把估計帶歪
-          if (this._corrN >= 8) this._corr = Math.min(3, Math.max(0.4, this._corrSum / this._corrN));
-        }
+        const ohBefore = (this._oh.get(this._kind(i)) || {}).mean;
+        this._learn(i, hv);
+        if ((this._oh.get(this._kind(i)) || {}).mean !== ohBefore) learned = true;
       }
-      this.h[i] = hv;
       this.measured[i] = true;
+
+      /* 預測夠準 → **採信預測**，不動高度也不重排。
+         這是讓總高度停止變動的關鍵：只要預測命中，重排就不會發生。 */
+      if (Math.abs(this.h[i] - hv) <= TOL) continue;
+
+      this.h[i] = hv;
       changed = true;
     }
-    if (!changed) return;
 
-    // 未量測的項目沿用新的校正倍率，總高度才不會一路被往上修
-    for (let i = 0; i < this.items.length; i++) {
-      if (!this.measured[i]) this.h[i] = this._estimateFor(i);
+    /* 開銷常數有更新 → 還沒量測的項目要跟著重算。
+       只在常數真的變了才做，常數收斂後這裡就不再觸發。 */
+    if (learned) {
+      for (let i = 0; i < this.items.length; i++) {
+        if (this.measured[i]) continue;
+        const next = this._estimateFor(i);
+        if (next !== this.h[i]) { this.h[i] = next; changed = true; }
+      }
     }
+    if (!changed) return;
 
     this._pack();                              // 寫
     if (anchor >= 0) {
@@ -299,6 +382,7 @@ class VirtualWall {
     if (this._ro) this._ro.disconnect();
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this._measureRaf) cancelAnimationFrame(this._measureRaf);
+    clearTimeout(this._hT);            // 延後中的高度寫入
     this.unmountAll();
   }
 }
