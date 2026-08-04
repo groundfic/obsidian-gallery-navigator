@@ -5546,6 +5546,7 @@ class GalleryPlugin extends Plugin {
             L.push('  錨定調整        : ' + d('anchorAdjust') + ' 次 / 共 ' + Math.round(d('anchorPx')) + 'px');
             L.push('  建立 / 卸載卡片 : ' + d('creates') + ' / ' + d('destroys'));
             L.push('  量測次數        : ' + d('measures'));
+            L.push('  寬度量到 0      : ' + d('zeroWidth') + ' 次' + (d('zeroWidth') ? '（已保留高度，不再歸零）' : ''));
           }
           const txt = L.join('\n');
           console.log(txt);

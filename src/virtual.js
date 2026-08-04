@@ -69,7 +69,7 @@ class VirtualWall {
     this._resetCorrection();
     /* 診斷用計數器：捲軸會動只有兩種可能——內容總高在變，或有人在改 scrollTop。
        這幾個數字能直接分辨是哪一種，不必再靠猜。 */
-    this.stats = { packs: 0, heightWrites: 0, anchorAdjust: 0, anchorPx: 0, creates: 0, destroys: 0, measures: 0, repackedItems: 0 };
+    this.stats = { packs: 0, heightWrites: 0, anchorAdjust: 0, anchorPx: 0, creates: 0, destroys: 0, measures: 0, zeroWidth: 0 };
 
     this._onScroll = () => this._schedule();
     this.scroller.addEventListener('scroll', this._onScroll, { passive: true });
@@ -100,10 +100,25 @@ class VirtualWall {
   relayout() {
     if (this._destroyed) return;
     const W = this.grid.clientWidth;
-    if (!W || !this.items.length) {
-      this.grid.style.height = '0px';
-      return;
-    }
+
+    if (!this.items.length) { this._writeHeight(0); return; }
+
+    /* ⚠️ 寬度暫時量到 0（面板被隱藏、切分頁、版面動畫中、側欄收合…）→ **什麼都不要做**。
+
+       舊寫法在這裡直接 `grid.style.height = '0px'`，那是這整個「捲軸一直跳」
+       問題的真兇：
+         • 高度歸零後容器不再撐開，scrollHeight 改由「目前掛載的那十幾張
+           絕對定位卡片」決定（絕對定位子元素仍計入捲動溢出區）
+         • 而卡片隨捲動不斷掛載/卸載 → 最下緣一直變 → scrollHeight 一直變
+           → 捲軸拇指狂跳
+         • 實測 8 秒內 grid 高度在 50174 ↔ 0 之間翻了 4 次，
+           連帶 scrollHeight 變動 90 次
+         • 它還是直接寫 style.height、繞過 _writeHeight，
+           導致 _writtenH 失準，後續的「只單向成長」判斷全部失效
+
+       寬度為 0 只是暫時狀態，保留既有高度即可；等寬度恢復，
+       ResizeObserver 會再叫一次 relayout。 */
+    if (!W) { this.stats.zeroWidth++; return; }
     const widthChanged = W !== this._lastW;
     this._lastW = W;
     this.cols = this.fixedCols || Math.max(1, Math.floor((W + this.gap) / (this.minCol + this.gap)));
@@ -217,7 +232,7 @@ class VirtualWall {
   _writeHeight(h) {
     clearTimeout(this._hT);
     if (this._destroyed) return;
-    if (Math.round(this._writtenH) !== Math.round(h)) this.stats.heightWrites++;
+    if (this._writtenH === undefined || Math.round(this._writtenH) !== Math.round(h)) this.stats.heightWrites++;
     this._writtenH = h;
     this.grid.style.height = Math.round(h) + 'px';
   }
