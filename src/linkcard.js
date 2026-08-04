@@ -506,6 +506,46 @@ function getCachedMeta(url) {
   return null;
 }
 
+/* ============ 抓取節流：去重 + 並發上限 + 逾時 ============
+
+   ⚠️ 三個問題原本都沒處理：
+
+   1. **同一 URL 會被重複抓取**：快取是在請求**完成後**才寫入，請求進行中沒有任何
+      記錄。一份筆記貼三次同一連結 → 三個並行請求；Canvas 裡同一連結 5 個節點 → 5 個。
+
+   2. **沒有並發上限**：attachToCanvas 的 processAll() 對所有節點同步跑一輪，
+      開一張 60 個連結節點的 Canvas 就是 60 個 fetchMeta 同時發射；
+      而 fetchGenericMeta 對抓不到 og:image 的站會跑兩輪 UA
+      → 最多 120 個並行 HTTP 請求，每個回來還要在主執行緒 DOMParser 整份 HTML。
+
+   3. **沒有逾時**：requestUrl 不吃 AbortController，慢站會讓 promise 一直掛著，
+      連帶佔住並發名額。這裡用 Promise.race 讓「等待」有上限
+      （底層請求無法真的中止，但我們不再等它）。 */
+
+const inflight = new Map();      // url → 進行中的 promise
+const MAX_CONCURRENT = 4;
+const NET_TIMEOUT = 12000;
+let running = 0;
+const waiters = [];
+
+function acquireSlot() {
+  if (running < MAX_CONCURRENT) { running++; return Promise.resolve(); }
+  return new Promise((res) => waiters.push(res));
+}
+function releaseSlot() {
+  const next = waiters.shift();
+  if (next) next();   // 名額直接轉交給下一位，running 不變
+  else running--;
+}
+
+function withTimeout(p, ms) {
+  let tm;
+  const timer = new Promise((_, rej) => {
+    tm = setTimeout(() => rej(new Error('network timeout')), ms || NET_TIMEOUT);
+  });
+  return Promise.race([p, timer]).finally(() => clearTimeout(tm));
+}
+
 async function fetchMeta(url) {
   // Meta 系網址先正規化，讓「手機帶 igsh」與「電腦乾淨網址」共用同一筆快取
   url = cacheKeyOf(url);
@@ -517,12 +557,27 @@ async function fetchMeta(url) {
     }
   }
 
+  // 已經有人在抓同一個 URL → 共用那一次的結果，不重複發請求
+  const dup = inflight.get(url);
+  if (dup) return dup;
+
+  const job = fetchMetaUncached(url, entry).finally(() => inflight.delete(url));
+  inflight.set(url, job);
+  return job;
+}
+
+async function fetchMetaUncached(url, entry) {
   let meta;
+  await acquireSlot();
   try {
-    meta = isMetaUrl(url) ? await fetchMetaPlatform(url) : await fetchGenericMeta(url);
+    meta = isMetaUrl(url)
+      ? await withTimeout(fetchMetaPlatform(url))
+      : await withTimeout(fetchGenericMeta(url));
   } catch (e) {
     const hostname = hostOf(url);
     meta = { title: hostname, description: '', image: '', hostname };
+  } finally {
+    releaseSlot();
   }
 
   if (hasLocalImage(entry?.meta) && !hasLocalImage(meta)) {
@@ -1428,10 +1483,22 @@ class LinkCardModule {
 
     /* 單一 observer ＋ debounce：
        Canvas 平移縮放時會大量增刪節點內容（視野外節點虛擬化），
-       不 debounce 的話每次變動都觸發全量掃描，卡片一多就拖垮效能 */
-    let pending = null;
+       不 debounce 的話每次變動都觸發全量掃描，卡片一多就拖垮效能。
+
+       ⚠️ 這裡要的是 **trailing-only**（停下來才跑），不是 leading-block。
+          舊寫法 `if (pending) return` 的效果是「每 120ms 一定跑一次」——
+          而拖曳期間 mutation 是持續發生的，等於整個拖曳過程每秒跑 8 次全節點掃描，
+          每個節點還要做 4 次 querySelector。這正是最該避開的模式。
+          改成每次變動都把計時器往後推，手停了才掃一次。
+
+       maxWait 1 秒：萬一有東西讓 mutation 永不停歇（例如 Canvas 裡有動畫節點），
+          也不能無限延後，否則新卡片永遠不會渲染。 */
+    let pending = null, firstAt = 0;
     const scheduleProcess = () => {
-      if (pending) return;
+      const now = Date.now();
+      if (!pending) firstAt = now;
+      else if (now - firstAt > 1000) return;   // 已連續變動 1 秒 → 不再延後，讓既有計時器如期觸發
+      clearTimeout(pending);
       pending = setTimeout(() => {
         pending = null;
         processAll();

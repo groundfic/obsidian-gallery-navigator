@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, watch } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { transformSync } from 'esbuild';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -20,6 +21,10 @@ const PARTS = [
   'src/peek.css',       // 2. Image Peek  .qp-* .ip-pin-*
   'src/linkcard.css',   // 3. Link Cards  .lcp-*
 ];
+
+/* 壓縮會把所有註解拿掉，留一行說明免得有人直接改 styles.css */
+const BANNER = '/* Gallery Navigator — 自動產生，請勿直接編輯。'
+  + '改 src/*.css 後執行 npm run build:css（--raw 可輸出未壓縮版） */\n';
 
 function build({ quiet = false } = {}) {
   const chunks = PARTS.map((p) => readFileSync(join(root, p), 'utf8').replace(/\s*$/, ''));
@@ -34,10 +39,46 @@ function build({ quiet = false } = {}) {
     return false;
   }
 
-  writeFileSync(join(root, 'styles.css'), out);
+  /* 壓縮後才出貨。
+     src/*.css 有 36% 是中文註解（維護者要看的），但那些對使用者是純負擔 ——
+     以前原封不動塞進 styles.css，141KB 裡有 51KB 是註解。
+     壓縮只動輸出，src/ 一行註解都不用刪。
+     用 --raw 可以輸出未壓縮版，排查樣式問題時比較好讀。 */
+  const raw = process.argv.includes('--raw');
+  let final = out;
+  if (!raw) {
+    try {
+      const res = transformSync(out, { loader: 'css', minify: true });
+
+      /* 健檢：所有 class 名稱都必須還在。
+         ⚠️ 不要拿括號數當不變量 —— 壓縮器會把「相鄰且選擇器相同」或
+            「相鄰且宣告完全相同」的規則合併掉，括號本來就會變少
+            （本專案實測少 20 組），那是正確行為，不是資料遺失。
+            真正該保證的是「沒有任何選擇器整個消失」。 */
+      /* ⚠️ 比對前一定要先去掉註解：src/ 的中文註解裡寫了很多 `.gn-*`、`.qp-*`
+            這類說明文字，會被當成選擇器抓出來。壓縮把註解拿掉是正常的，
+            不先剝除的話每次都會誤報「少了 34 個選擇器」。 */
+      const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, ' ');
+      const classesOf = (s) => new Set(strip(s).match(/\.[A-Za-z_-][\w-]*/g) || []);
+      const before = classesOf(out);
+      const after = classesOf(res.code);
+      const lost = [...before].filter((c) => !after.has(c));
+      if (lost.length) {
+        console.error(`  ✗ 壓縮後少了 ${lost.length} 個選擇器（${lost.slice(0, 5).join(' ')}…）—— 改輸出未壓縮版`);
+      } else {
+        final = BANNER + res.code;
+      }
+    } catch (e) {
+      console.error(`  ✗ CSS 壓縮失敗（${e.message}）—— 改輸出未壓縮版`);
+    }
+  }
+
+  writeFileSync(join(root, 'styles.css'), final);
   if (!quiet) {
-    const kb = (Buffer.byteLength(out) / 1024).toFixed(1);
-    console.log(`  styles.css  ${out.split('\n').length} 行 / ${kb}kb  ←  ${PARTS.length} 個來源檔（括號 ${open} 配平）`);
+    const kb = (Buffer.byteLength(final) / 1024).toFixed(1);
+    const src = (Buffer.byteLength(out) / 1024).toFixed(1);
+    const tag = raw ? '未壓縮' : `壓縮自 ${src}kb`;
+    console.log(`  styles.css  ${kb}kb（${tag}）  ←  ${PARTS.length} 個來源檔（括號 ${open} 配平）`);
   }
   return true;
 }

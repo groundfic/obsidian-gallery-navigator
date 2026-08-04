@@ -993,16 +993,28 @@ function buildBacklinkIndex(mc) {
   return back;
 }
 
-// 只算資料夾底下的檔案總數（樹狀清單用；不排序、不讀 metadata，比 folderStats 輕很多）
+/* 只算資料夾底下的檔案總數（樹狀清單用；不排序、不讀 metadata，比 folderStats 輕很多）
+
+   ⚠️ 這個函式在 buildLevel 裡對**每個可見的兄弟資料夾**都會被呼叫一次，
+      而每次都遞迴走完整個子樹。第一層所有兄弟的子樹加起來就是整個 vault，
+      所以光是畫根層就已經 O(全 vault 檔案數)；每展開一層，該層子樹又被重走一遍。
+      而 refreshTree() 掛在展開／收合／拖曳排序／最愛開合等**所有**左樹互動上
+      —— 等於每點一次資料夾箭頭都付一次全 vault 走訪的稅。
+
+   解法：以 folder.path 為 key 快取，而且遞迴時也走快取
+   （子資料夾的數字算過就直接取用，同一批檔案不會被重複數 D 次）。
+   結構改變（create/delete/rename）時由 invalidateFolderCounts() 整個清掉。 */
+const _folderCountCache = new Map();
+function invalidateFolderCounts() { _folderCountCache.clear(); }
 function folderFileCount(folder) {
+  const hit = _folderCountCache.get(folder.path);
+  if (hit !== undefined) return hit;
   let n = 0;
-  const walk = (fo) => {
-    for (const ch of fo.children) {
-      if (ch instanceof TFolder) walk(ch);
-      else n++;
-    }
-  };
-  walk(folder);
+  for (const ch of folder.children) {
+    if (ch instanceof TFolder) n += folderFileCount(ch);   // 走快取，不重新遞迴整棵子樹
+    else n++;
+  }
+  _folderCountCache.set(folder.path, n);
   return n;
 }
 
@@ -1213,7 +1225,7 @@ class GalleryView extends ItemView {
     if (this._wallIO) { this._wallIO.disconnect(); this._wallIO = null; }
     if (this._paneRO) { this._paneRO.disconnect(); this._paneRO = null; }
     if (this._syncRaf) { cancelAnimationFrame(this._syncRaf); this._syncRaf = 0; }
-    if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; }
+    this.closeTodoPopover();   // 連同 document 上的 mousedown 監聽一起解除
     this.closeMorePopover();   // 掛在 body 上的浮動面板要一起收掉
   }
 
@@ -2096,7 +2108,18 @@ class GalleryView extends ItemView {
       canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
       await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
       const dataUrl = canvas.toDataURL('image/png');
-      cache.set(key, dataUrl);   // 快取供之後重畫直接用
+      /* 快取供之後重畫直接用。
+         ⚠️ 一定要設上限：存的是 480px 寬 PNG 的 base64 字串，每筆約 200–600 KB。
+            這個 Map 掛在 plugin 上（不是 view），onClose / onunload 都不會清 ——
+            瀏覽一個 200 個 PDF 的資料夾就是 50–120 MB 常駐字串，直到 Obsidian 重啟。
+            Map 保有插入順序，取第一個 key 就是最舊的那筆（近似 LRU 的 FIFO）。 */
+      const PDF_THUMB_MAX = 60;   // 約 12–36 MB 上限
+      while (cache.size >= PDF_THUMB_MAX) {
+        const oldest = cache.keys().next().value;
+        if (oldest === undefined) break;
+        cache.delete(oldest);
+      }
+      cache.set(key, dataUrl);
       if (card.isConnected) put(dataUrl);
     } catch (e) { /* 保留圖示 */ }
     finally { try { if (doc) doc.destroy(); } catch (e) {} }
@@ -2384,16 +2407,20 @@ class GalleryView extends ItemView {
   syncDockBounds() {
     const el = this._dockEl, main = this._main, split = this._split;
     if (!el || !el.isConnected || !main || !split) return;
+    /* ⚠️ 先把要用的幾何量一次讀完再寫。
+       原本是「讀 offsetLeft → 寫 style.right → 再讀 offsetLeft」，
+       中間那次寫會讓版面失效，第二次讀就強制重算一次。
+       這支掛在 _dockRO 上，拖分隔桿時每個 mousemove 都會觸發 → 每幀多付一次。 */
     const cs = getComputedStyle(main);
     const padR = parseFloat(cs.paddingRight) || 0;
-    const right = split.clientWidth - (main.offsetLeft + main.offsetWidth) + padR;
-    el.style.right = Math.max(0, right) + 'px';
-    if (el.hasClass('gn-dock-mini')) {
-      el.style.left = 'auto';               // 懸浮按鈕不撐寬
-    } else {
-      const padL = parseFloat(cs.paddingLeft) || 0;
-      el.style.left = (main.offsetLeft + padL) + 'px';
-    }
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const mainLeft = main.offsetLeft;
+    const mainW = main.offsetWidth;
+    const splitW = split.clientWidth;
+
+    el.style.right = Math.max(0, splitW - (mainLeft + mainW) + padR) + 'px';
+    // 懸浮按鈕不撐寬
+    el.style.left = el.hasClass('gn-dock-mini') ? 'auto' : (mainLeft + padL) + 'px';
   }
 
   // 只重畫左樹（展開/收合/最愛/資料夾配色用）；沒左樹快取就退回整頁
@@ -2436,31 +2463,46 @@ class GalleryView extends ItemView {
     return map;
   }
 
+  /* ⚠️ 這裡刻意分成「先全部讀、再全部寫」兩輪，不要合併回一個迴圈。
+     el.animate() 會在該元素掛上新的動畫效果 → 使樣式失效；
+     下一圈再讀 el.offsetTop 就必須強制重算樣式與版面。
+     一個迴圈裡 read→write→read 交錯的話，400 列就是 400 次強制版面計算，
+     展開資料夾會明顯頓一下（掉 3–7 幀）。 */
   treePlay(before) {
     if (!before || !this._treeScroll) return;
     const DUR = 170, EASE = 'cubic-bezier(.2,.7,.2,1)';
-    this._treeScroll.querySelectorAll('.gn-tnode[data-path]').forEach((el) => {
+    const rows = [...this._treeScroll.querySelectorAll('.gn-tnode[data-path]')];
+
+    // ── 第一輪：只讀，不碰任何會讓樣式失效的東西 ──
+    const plan = rows.map((el) => {
       const prev = before.get(el.dataset.path);
+      return {
+        el,
+        prev,
+        top: prev ? el.offsetTop : 0,                     // 只有需要算位移的才讀
+        nowOpen: el.classList.contains('gn-topen'),
+        caret: prev ? el.querySelector('.gn-tcaret') : null,
+      };
+    });
 
-      if (!prev) {   // 新出現：淡入
-        el.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }],
+    // ── 第二輪：只寫 ──
+    for (const p of plan) {
+      if (!p.prev) {   // 新出現：淡入
+        p.el.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }],
           { duration: DUR, easing: EASE });
-        return;
+        continue;
       }
-
-      const dy = prev.top - el.offsetTop;   // 位置有變 → 從舊位置滑過來
-      if (dy) el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+      const dy = p.prev.top - p.top;   // 位置有變 → 從舊位置滑過來
+      if (dy) p.el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
         { duration: DUR, easing: EASE });
 
       // 箭頭：展開狀態改變時轉 90°（靜態角度由 CSS 的 .gn-topen 決定）
-      const nowOpen = el.classList.contains('gn-topen');
-      const caret = el.querySelector('.gn-tcaret');
-      if (caret && prev.open !== nowOpen) {
-        caret.animate(
-          [{ transform: `rotate(${prev.open ? 90 : 0}deg)` }, { transform: `rotate(${nowOpen ? 90 : 0}deg)` }],
+      if (p.caret && p.prev.open !== p.nowOpen) {
+        p.caret.animate(
+          [{ transform: `rotate(${p.prev.open ? 90 : 0}deg)` }, { transform: `rotate(${p.nowOpen ? 90 : 0}deg)` }],
           { duration: DUR, easing: EASE });
       }
-    });
+    }
   }
 
   toggleExpand(path) {
@@ -3192,8 +3234,21 @@ class GalleryView extends ItemView {
 
   // 左樹上方的待辦區（可整區收合、任務依縮排分層級）
   // 點待辦按鈕：彈出/收起浮動面板
+  /* ⚠️ 關閉一律走這裡。
+     舊寫法是「再點一次按鈕」時直接 remove 面板，但**沒有**解除掛在 document 上的
+     mousedown 監聽 —— 只有「點面板外面」那條路會解除。於是每開關一次就永久多留
+     一個 document 級監聽器，而且那個閉包還抓著整個 view，view 也回收不掉。
+     同檔的 closeMorePopover() 本來就寫對了，這裡是漏掉。 */
+  closeTodoPopover() {
+    if (this._todoCloser) {
+      document.removeEventListener('mousedown', this._todoCloser);
+      this._todoCloser = null;
+    }
+    if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; }
+  }
+
   openTodoPopover(anchor) {
-    if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; return; }
+    if (this._todoPop) { this.closeTodoPopover(); return; }
     const pop = document.body.createDiv('gn-todo-pop');
     this._todoPop = pop;
     const rect = anchor.getBoundingClientRect();
@@ -3208,9 +3263,9 @@ class GalleryView extends ItemView {
     const closer = (e) => {
       if (!this._todoPop) return;
       if (this._todoPop.contains(e.target) || anchor.contains(e.target)) return;
-      this._todoPop.remove(); this._todoPop = null;
-      document.removeEventListener('mousedown', closer);
+      this.closeTodoPopover();
     };
+    this._todoCloser = closer;
     setTimeout(() => document.addEventListener('mousedown', closer), 0);
   }
 
@@ -4938,6 +4993,8 @@ class GnSearchIndex {
     this.avgLen = 1;
     this.ready = false;
     this._buildPromise = null;
+    this.deadLen = 0;        // 墓碑累積的 token 量（估計值，用來決定何時整理 inv）
+    this._modT = new Map();  // path → 去抖計時器（modify 事件）
   }
 
   /* ── PDF 內文：借用 text-extractor 外掛的 API（它自帶持久快取，Omnisearch 也是用這支） ── */
@@ -5008,17 +5065,50 @@ class GnSearchIndex {
     this.avgLen = this.totalLen / Math.max(1, this.live) || 1;
   }
 
-  // 把某個 path 的舊資料標成墓碑。
-  // 不去 inv 裡刪 postings（那要掃全表，很慢）——搜尋時跳過墓碑即可。
-  // 一個 session 內的編輯次數有限，殘留的 postings 量可以忽略。
+  /* 把某個 path 的舊資料標成墓碑。
+     這裡**不**立刻去 inv 刪 postings——那要掃全表，每次存檔都掃太貴。
+     改為累計死掉的 token 量（deadLen），累積到一定比例才整理一次（見 maybeCompact）。
+
+     ⚠️ 舊註解寫「一個 session 內編輯次數有限，殘留量可忽略」，這個假設不成立：
+        Obsidian 自動存檔約每 2 秒就發一次 modify，編輯一小時就是上千次重新索引，
+        每次都往 inv 各個 token 陣列 push 一份完整 postings。
+        後果有兩層：(a) 記憶體單調成長、重啟才恢復；
+        (b) IDF 用 df = arr.length / 2，墓碑也被算進 document frequency → 排名逐漸失真。 */
   _tombstone(path) {
     const old = this.byPath.get(path);
     if (old == null) return;
     const d = this.docs[old];
-    if (d) { this.totalLen -= d.len; this.live--; }
+    if (d) { this.totalLen -= d.len; this.live--; this.deadLen += d.len; }
     this.docs[old] = null;
     this.byPath.delete(path);
     this.avgLen = this.totalLen / Math.max(1, this.live) || 1;
+  }
+
+  /* 死 postings 佔比過高時整理一次 inv。
+     門檻取「死的比活的還多」且至少 5 萬 token——小 vault 不會沒事就掃全表，
+     長時間編輯的 session 則大約每累積一輪就整理一次。 */
+  maybeCompact() {
+    if (this.deadLen <= Math.max(50000, this.totalLen * 0.5)) return false;
+    this.compact();
+    return true;
+  }
+
+  /* 掃過 inv，就地擠掉指向墓碑的 postings。
+     只重寫陣列、不重新編號 docs——docs 的洞是幾個小物件，相對 postings 可忽略，
+     而重新編號要動到所有 postings 的 id，風險大很多。 */
+  compact() {
+    const docs = this.docs;
+    for (const [tok, arr] of this.inv) {
+      let w = 0;
+      for (let i = 0; i < arr.length; i += 2) {
+        if (!docs[arr[i]]) continue;          // 墓碑 → 丟掉
+        arr[w++] = arr[i]; arr[w++] = arr[i + 1];
+      }
+      if (w === arr.length) continue;         // 這個 token 沒有死 postings
+      if (w === 0) this.inv.delete(tok);      // 整個 token 都沒人用了（Map 迭代中刪除是安全的）
+      else arr.length = w;
+    }
+    this.deadLen = 0;
   }
 
   // 要進索引的檔案：全部 md + 全部 pdf
@@ -5068,8 +5158,30 @@ class GnSearchIndex {
     if (!this.ready || !this.indexable(file)) return;
     this._tombstone(file.path);
     await this._indexFile(file);
+    this.maybeCompact();
     // 新加進來的 PDF → 背景把內文抽出來（抽完會自己再索引一次）
     if (file.extension === 'pdf') this.warmPdfCache();
+  }
+
+  /* modify 專用入口：per-path 去抖。
+     ⚠️ 不能直接接 onFileChanged——自動存檔約每 2 秒一次，而 _indexFile 會
+        cachedRead 整篇再重新斷詞（含 CJK bigram）。編輯一篇長文時等於每 2 秒
+        重新 tokenize 整篇，還每次都在 inv 留下一份死 postings。
+        create / rename 不走這裡（那些是單次事件，要即時生效）。 */
+  onFileModified(file) {
+    if (!this.ready || !this.indexable(file)) return;
+    const p = file.path;
+    clearTimeout(this._modT.get(p));
+    this._modT.set(p, setTimeout(() => {
+      this._modT.delete(p);
+      this.onFileChanged(file);
+    }, 1200));
+  }
+
+  // 外掛卸載時把待觸發的去抖計時器收乾淨
+  disposeTimers() {
+    for (const tm of this._modT.values()) clearTimeout(tm);
+    this._modT.clear();
   }
   onFileDeleted(file) {
     if (!this.ready) return;
@@ -5225,7 +5337,7 @@ class GalleryPlugin extends Plugin {
     this.search = new GnSearchIndex(this.app);
 
     // 增量更新：改一篇只重索引那一篇（幾 ms），索引全程保持新鮮
-    this.registerEvent(this.app.vault.on('modify', (f) => this.search.onFileChanged(f)));
+    this.registerEvent(this.app.vault.on('modify', (f) => this.search.onFileModified(f)));
     this.registerEvent(this.app.vault.on('create', (f) => this.search.onFileChanged(f)));
     this.registerEvent(this.app.vault.on('delete', (f) => this.search.onFileDeleted(f)));
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.search.onFileRenamed(f, old)));
@@ -5273,7 +5385,8 @@ class GalleryPlugin extends Plugin {
     this.thumbs.load();
 
     // 檔案增刪/改名時，若 View 開著就重畫；同時讓日曆筆記索引失效
-    const onVaultChange = () => { this._calNoteDirty = true; this.refreshViews(); };
+    // 檔案結構變了 → 資料夾檔案數快取失效（只有增刪改名會影響，內容修改不會）
+    const onVaultChange = () => { this._calNoteDirty = true; invalidateFolderCounts(); this.refreshViews(); };
     this.registerEvent(this.app.vault.on('create', onVaultChange));
     this.registerEvent(this.app.vault.on('delete', onVaultChange));
     this.registerEvent(this.app.vault.on('rename', onVaultChange));
@@ -5621,6 +5734,7 @@ class GalleryPlugin extends Plugin {
   async onunload() {
     // 卸載前把尚未寫入的狀態刷出去
     clearTimeout(this._saveT);
+    if (this.search) this.search.disposeTimers();   // modify 去抖的待觸發計時器
     await this.saveData(this.state);
   }
 
