@@ -168,9 +168,12 @@ class MasonryLayout {
       if (this.container.clientWidth !== this._lastW) this.scheduleLayout();
     });
     this.ro.observe(container);
-    // 任何圖片（含之後才插入的縮圖/連結圖/PDF 圖）載入完成 → 重排。
-    // load 事件不會冒泡，但捕獲階段抓得到，一條就涵蓋所有後續插入的圖。
-    container.addEventListener('load', () => this.scheduleLayout(), true);
+    /* 任何圖片（含之後才插入的縮圖/連結圖/PDF 圖）載入完成 → 重排。
+       load 事件不會冒泡，但捕獲階段抓得到，一條就涵蓋所有後續插入的圖。
+       ⚠️ 這個監聽**必須**在 destroy() 裡移除，見該處說明。 */
+    this._destroyed = false;
+    this._onLoad = () => this.scheduleLayout();
+    container.addEventListener('load', this._onLoad, true);
   }
   add(el) {
     el.style.position = 'absolute';
@@ -197,10 +200,11 @@ class MasonryLayout {
   }
   setMinCol(w) { this.minCol = w; this.scheduleLayout(); }
   scheduleLayout() {
-    if (this._raf) return;
+    if (this._destroyed || this._raf) return;
     this._raf = requestAnimationFrame(() => { this._raf = 0; this.layout(); });
   }
   layout() {
+    if (this._destroyed) return;
     const W = this.container.clientWidth;
     if (!W || !this.items.length) { if (!this.items.length) this.container.style.height = '0px'; return; }
     this._lastW = W;
@@ -218,7 +222,22 @@ class MasonryLayout {
     });
     this.container.style.height = Math.max.apply(null, colH) + 'px';
   }
+  /* ⚠️ 一定要把容器上的 load 監聽也拿掉，否則會變成「殭屍 masonry」。
+
+     虛擬化模式下 makeGrid() 仍會建一個 MasonryLayout，
+     renderVirtual() 隨即把它 destroy() —— 但容器（.gn-grid）還活著，
+     而且卡片都不經過 masonry.add()，所以它的 items 永遠是空的。
+     舊版 destroy() 沒移除 load 監聽，於是每當牆上任何一張圖載入完成：
+       load（捕獲）→ scheduleLayout() → layout()
+       → items.length === 0 → container.style.height = '0px'
+     容器高度被歸零 → 不再撐開 → scrollHeight 改由「目前掛載的十幾張
+     絕對定位卡片」決定 → 卡片一直掛載/卸載 → 捲軸拇指狂跳。
+
+     實測：8 秒內 grid 高度 50173 → 0 → 50173，scrollHeight 變動 66 次，
+     而 VirtualWall 自己一次高度都沒寫（heightWrites = 0）—— 兇手就是這裡。 */
   destroy() {
+    this._destroyed = true;
+    if (this._onLoad) this.container.removeEventListener('load', this._onLoad, true);
     if (this.ro) this.ro.disconnect();
     if (this._raf) cancelAnimationFrame(this._raf);
   }
