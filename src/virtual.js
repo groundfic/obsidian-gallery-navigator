@@ -67,6 +67,9 @@ class VirtualWall {
     this._measureRaf = 0;
     this._destroyed = false;
     this._resetCorrection();
+    /* 診斷用計數器：捲軸會動只有兩種可能——內容總高在變，或有人在改 scrollTop。
+       這幾個數字能直接分辨是哪一種，不必再靠猜。 */
+    this.stats = { packs: 0, heightWrites: 0, anchorAdjust: 0, anchorPx: 0, creates: 0, destroys: 0, measures: 0, repackedItems: 0 };
 
     this._onScroll = () => this._schedule();
     this.scroller.addEventListener('scroll', this._onScroll, { passive: true });
@@ -188,6 +191,7 @@ class VirtualWall {
       colH[c] += this.h[i] + this.gap;
     }
     this.totalH = Math.max.apply(null, colH);
+    this.stats.packs++;
     this._applyHeight(this.totalH);
   }
 
@@ -213,6 +217,7 @@ class VirtualWall {
   _writeHeight(h) {
     clearTimeout(this._hT);
     if (this._destroyed) return;
+    if (Math.round(this._writtenH) !== Math.round(h)) this.stats.heightWrites++;
     this._writtenH = h;
     this.grid.style.height = Math.round(h) + 'px';
   }
@@ -256,6 +261,7 @@ class VirtualWall {
       if (want.has(i)) continue;
       try { this.destroy(el, this.items[i], i); } catch (e) {}
       el.remove();
+      this.stats.destroys++;
       this.mounted.delete(i);
     }
     /* 進入視窗 → 建立。
@@ -274,6 +280,7 @@ class VirtualWall {
         const el = this.create(this.items[i], i);
         if (!el) continue;
         this.mounted.set(i, el);
+        this.stats.creates++;
         created = true;
       }
     }
@@ -331,6 +338,7 @@ class VirtualWall {
         做法是記住錨點卡在重排前的位置，重排後把差值補進 scrollTop。 */
   measure() {
     if (this._destroyed || !this.mounted.size) return;
+    this.stats.measures++;
     const idx = [...this.mounted.keys()];
     const els = idx.map((i) => this.mounted.get(i));
     const hs = els.map((el) => el.offsetHeight);                       // 讀（一次讀完）
@@ -395,7 +403,7 @@ class VirtualWall {
     this._pack();                              // 寫
     if (anchor >= 0) {
       const delta = this.top[anchor] - anchorBefore;
-      if (delta) this.scroller.scrollTop += delta;   // 把錨點卡拉回原本的視覺位置
+      if (delta) { this.stats.anchorAdjust++; this.stats.anchorPx += Math.abs(delta); this.scroller.scrollTop += delta; }
     }
     this._update();
   }

@@ -5466,6 +5466,80 @@ class GalleryPlugin extends Plugin {
         new Notice(t('Wall diagnostics copied to clipboard (also in console)'), 6000);
       },
     });
+    /* 診斷（錄製）：捲軸拇指會動，只有兩種可能——
+         (a) 內容總高在變（scrollHeight）
+         (b) 有人在改 scrollTop
+       這支把 8 秒內的實際變化錄下來，直接分辨是哪一種、以及是誰做的。
+       加它的原因：這個問題我已經猜錯很多次，該用資料而不是推論。 */
+    this.addCommand({
+      id: 'gn-diag-record',
+      name: t('Diagnose: record card wall (8s)'),
+      callback: () => {
+        const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+        const v = leaf && leaf.view;
+        const main = v && v._main;
+        if (!main) { new Notice(t('Open Gallery Navigator first')); return; }
+        const vw = (v._virtuals || [])[0];
+        const grid = vw ? vw.grid : main.querySelector('.gn-grid');
+        const s0 = vw ? JSON.parse(JSON.stringify(vw.stats)) : null;
+
+        new Notice(t('Recording 8s — please scroll now'), 3000);
+        const t0 = Date.now();
+        let prev = null, frames = 0;
+        const shEvents = [];   // scrollHeight 變化
+        const stEvents = [];   // scrollTop 的「非使用者」跳動
+        let lastDir = 0;
+
+        const tick = () => {
+          if (Date.now() - t0 > 8000 || !main.isConnected) { report(); return; }
+          frames++;
+          const cur = {
+            t: Date.now() - t0,
+            st: Math.round(main.scrollTop),
+            sh: main.scrollHeight,
+            gh: grid ? Math.round(parseFloat(grid.style.height) || 0) : 0,
+          };
+          if (prev) {
+            if (cur.sh !== prev.sh) shEvents.push(cur.t + 'ms ' + prev.sh + '→' + cur.sh + ' (Δ' + (cur.sh - prev.sh) + ')');
+            const d = cur.st - prev.st;
+            // 方向反轉且幅度不小 → 很可能不是使用者造成的
+            if (d && lastDir && Math.sign(d) !== lastDir && Math.abs(d) > 8) {
+              stEvents.push(cur.t + 'ms ' + prev.st + '→' + cur.st + ' (Δ' + d + ' 反向)');
+            }
+            if (d) lastDir = Math.sign(d);
+          }
+          prev = cur;
+          requestAnimationFrame(tick);
+        };
+
+        const report = () => {
+          const L = ['── 卡片牆錄製（8 秒）──', '取樣幀數: ' + frames];
+          L.push('');
+          L.push('【scrollHeight 變化】共 ' + shEvents.length + ' 次' + (shEvents.length ? '' : '  ✅ 內容總高穩定'));
+          shEvents.slice(0, 12).forEach((e) => L.push('  ' + e));
+          if (shEvents.length > 12) L.push('  …還有 ' + (shEvents.length - 12) + ' 次');
+          L.push('');
+          L.push('【scrollTop 反向跳動】共 ' + stEvents.length + ' 次' + (stEvents.length ? '  ⚠️ 有人在改 scrollTop' : '  ✅ 無'));
+          stEvents.slice(0, 12).forEach((e) => L.push('  ' + e));
+          if (stEvents.length > 12) L.push('  …還有 ' + (stEvents.length - 12) + ' 次');
+          if (vw && s0) {
+            L.push('');
+            L.push('【虛擬化這 8 秒做了什麼】');
+            const d = (k) => vw.stats[k] - s0[k];
+            L.push('  重排(_pack)     : ' + d('packs'));
+            L.push('  實際寫入高度    : ' + d('heightWrites'));
+            L.push('  錨定調整        : ' + d('anchorAdjust') + ' 次 / 共 ' + Math.round(d('anchorPx')) + 'px');
+            L.push('  建立 / 卸載卡片 : ' + d('creates') + ' / ' + d('destroys'));
+            L.push('  量測次數        : ' + d('measures'));
+          }
+          const txt = L.join('\n');
+          console.log(txt);
+          try { navigator.clipboard.writeText(txt); } catch (e) {}
+          new Notice(t('Recording done — copied to clipboard'), 6000);
+        };
+        requestAnimationFrame(tick);
+      },
+    });
     this.addSettingTab(new CalendarSettingTab(this.app, this));
 
     /* ===== 搜尋索引 =====

@@ -269,6 +269,9 @@ const ZH_TW = {
   'Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.':
     '在 Obsidian 點圖片放大時，於畫面底部加一條浮動動作列（複製、找相似、在 Finder 顯示）。Obsidian 沒有提供 lightbox 的擴充 API，日後改版若導致這條動作列異常，把它關掉即可。',
   'Diagnose: card wall': '診斷：卡片牆',
+  'Diagnose: record card wall (8s)': '診斷：錄製卡片牆（8 秒）',
+  'Recording 8s — please scroll now': '錄製中（8 秒）——請現在捲動',
+  'Recording done — copied to clipboard': '錄製完成——已複製到剪貼簿',
   'Open Gallery Navigator first': '請先開啟 Gallery Navigator',
   'Wall diagnostics copied to clipboard (also in console)': '卡片牆診斷已複製到剪貼簿（主控台也有一份）',
 
