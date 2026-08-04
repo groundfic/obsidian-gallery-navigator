@@ -5487,6 +5487,7 @@ class GalleryPlugin extends Plugin {
         const t0 = Date.now();
         let prev = null, frames = 0;
         const shEvents = [];   // scrollHeight 變化
+        const ghChanges = [];  // grid 自身高度變化（分辨是不是虛擬牆造成的）
         const stEvents = [];   // scrollTop 的「非使用者」跳動
         let lastDir = 0;
 
@@ -5501,6 +5502,7 @@ class GalleryPlugin extends Plugin {
           };
           if (prev) {
             if (cur.sh !== prev.sh) shEvents.push(cur.t + 'ms ' + prev.sh + '→' + cur.sh + ' (Δ' + (cur.sh - prev.sh) + ')');
+            if (cur.gh !== prev.gh) ghChanges.push(prev.gh + '→' + cur.gh);
             const d = cur.st - prev.st;
             // 方向反轉且幅度不小 → 很可能不是使用者造成的
             if (d && lastDir && Math.sign(d) !== lastDir && Math.abs(d) > 8) {
@@ -5514,6 +5516,19 @@ class GalleryPlugin extends Plugin {
 
         const report = () => {
           const L = ['── 卡片牆錄製（8 秒）──', '取樣幀數: ' + frames];
+          /* ⚠️ 這一段是上一版漏掉的、也是最關鍵的：
+             要能分辨「在動的是虛擬牆的 grid，還是 scroller 裡的其他東西」，
+             就必須同時看 grid 高度與 scrollHeight，並確認兩者是不是同一棵樹。
+             上一版只印 scrollHeight，結果拿到「grid=50174 但 scrollHeight=3516」
+             這種不可能並存的數字，白跑一輪。 */
+          L.push('');
+          L.push('【環境】');
+          L.push('  scroller        : ' + main.className.split(' ').slice(0, 3).join('.') + '  可視高 ' + main.clientHeight);
+          L.push('  grid 在 scroller 內: ' + (grid ? (main.contains(grid) ? '是' : '否 ⚠️') : '找不到 grid ⚠️'));
+          L.push('  grid 高度        : ' + (grid ? grid.style.height || '(未設定)' : '-'));
+          L.push('  scroller 內的 .gn-grid 數量: ' + main.querySelectorAll('.gn-grid').length);
+          if (vw) L.push('  這面牆項目數     : ' + vw.items.length + '  掛載 ' + vw.mounted.size);
+          L.push('  grid 高度變化次數: ' + ghChanges.length + (ghChanges.length ? '  ' + ghChanges.slice(0, 4).join(' / ') : ''));
           L.push('');
           L.push('【scrollHeight 變化】共 ' + shEvents.length + ' 次' + (shEvents.length ? '' : '  ✅ 內容總高穩定'));
           shEvents.slice(0, 12).forEach((e) => L.push('  ' + e));
