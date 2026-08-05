@@ -369,6 +369,17 @@ class CleanLinkModule {
     const sel = editor.getSelection();
     let added = false;
 
+    /* 全文只讀一次、只掃一次。
+       以前 cleanText(editor.getValue()) 與 findShortUrls(editor.getValue()) 各跑一輪，
+       而 buildMenu 是右鍵選單的同步路徑——幾千行的筆記按右鍵會明顯卡一下。
+       兩者都用惰性求值：只有真的需要那個選單項時才算。 */
+    let _all = null;
+    const allText = () => (_all === null ? (_all = editor.getValue()) : _all);
+    let _whole = null;
+    const wholeClean = () => (_whole === null ? (_whole = cleanText(allText(), opt)) : _whole);
+    let _shorts = null;
+    const allShorts = () => (_shorts === null ? (_shorts = findShortUrls(allText())) : _shorts);
+
     if (sel) {
       const r = cleanText(sel, opt);
       if (r.count) {
@@ -393,7 +404,7 @@ class CleanLinkModule {
     }
 
     // 整篇：只在「還有別的地方可淨化」時才出現，避免跟上面那項重複
-    const whole = cleanText(editor.getValue(), opt);
+    const whole = wholeClean();
     if (whole.count && (!added || whole.count > 1)) {
       menu.addItem((i) => i.setTitle(t('Clean all links in this note ({{n}})', { n: whole.count }))
         .setIcon('eraser')
@@ -410,7 +421,7 @@ class CleanLinkModule {
         menu.addItem((i) => i.setTitle(t('Restore original URL (needs network)')).setIcon('unfold-horizontal')
           .onClick(() => this.expandInEditor(editor, here)));
       }
-      const all = findShortUrls(editor.getValue());
+      const all = allShorts();
       if (all.length > here.length) {
         menu.addItem((i) => i.setTitle(t('Restore all share links in this note ({{n}})', { n: all.length }))
           .setIcon('unfold-horizontal')

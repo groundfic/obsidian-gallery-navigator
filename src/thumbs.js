@@ -119,9 +119,21 @@ class ThumbCache {
     this.queue.length = 0;
   }
 
+  /* 單張取消：虛擬牆把卡片卸載時呼叫（使用者已經捲過去了）。
+     只丟「還沒開工」的項目；已經在解碼的無法中斷，讓它做完（結果仍會進快取，不浪費）。 */
+  cancel(path) {
+    const i = this.queue.findIndex((it) => it.file.path === path);
+    if (i < 0) return;
+    this.queue.splice(i, 1);
+    this.pending.delete(path);
+  }
+
   _pump() {
     while (this.busy < this.concurrency && this.queue.length) {
-      const item = this.queue.shift();
+      /* LIFO（pop 而非 shift）：最後排進來的＝使用者剛捲到的那一屏。
+         FIFO 會先做早就捲過去、現在根本看不到的卡片，可視區反而一直等。
+         （被壓在底下的舊項目仍會做完，只是排在後面。） */
+      const item = this.queue.pop();
       this.busy++;
       this._make(item.file)
         .then((url) => { for (const cb of item.cbs) { try { cb(url); } catch (e) {} } })
@@ -141,22 +153,53 @@ class ThumbCache {
       const buf = await this.app.vault.readBinary(file);
       const blob = new Blob([buf]);
 
-      /* 先不縮放解碼一次，才知道原圖多大。
-         不能無條件用 resizeWidth：原圖比 THUMB_MAX 小的話會被**放大**，
-         檔案變大、畫質變糊，兩頭空。 */
-      bmp = await createImageBitmap(blob);
+      /* 長寬比索引（dims.js 已經在背景補齊）先查一次：
+         知道原圖尺寸就能在**解碼時**直接指定輸出大小，
+         省掉「先解成完整點陣圖再縮」這一步——6000×4000 的原圖光那一步就要 ~96MB，
+         桌機併發 2 張＝峰值近 200MB，正是 iOS 被系統砍掉的那個峰值。
+         查不到尺寸才退回原本的「先解一次看多大」。 */
+      const known = (this.plugin._dimIndex || {})[file.path];
+      const kw = known && known[0] > 0 ? known[0] : 0;
+      const kh = known && known[1] > 0 ? known[1] : 0;
+
+      if (kw && kh && Math.max(kw, kh) <= THUMB_MAX) {
+        // 索引就知道夠小了 → 連解碼都不用做
+        this.failed.add(file.path);
+        return null;
+      }
+
+      /* ⚠️ 只在「索引說長邊 ≥ 2×THUMB_MAX」時才走 resize 解碼。
+         索引可能過期（同路徑換成另一張圖，長寬比要等下次載入才校正）；
+         若索引誤報成大圖而實際很小，resizeWidth 會把它**放大**成糊掉的縮圖，
+         而且會一直留在縮圖快取裡。留 2 倍的安全邊界：
+         真正吃記憶體的是幾千像素的原圖，640~1280 那段解碼成本本來就不高。 */
+      const trustDims = kw && kh && Math.max(kw, kh) >= THUMB_MAX * 2;
+      if (trustDims) {
+        // 只給一邊，另一邊由瀏覽器等比推算（給兩邊會在尺寸有出入時被拉變形）
+        const opts = kw >= kh
+          ? { resizeWidth: THUMB_MAX, resizeQuality: 'high' }
+          : { resizeHeight: THUMB_MAX, resizeQuality: 'high' };
+        bmp = await createImageBitmap(blob, opts);
+      } else {
+        /* 先不縮放解碼一次，才知道原圖多大。
+           不能無條件用 resizeWidth：原圖比 THUMB_MAX 小的話會被**放大**，
+           檔案變大、畫質變糊，兩頭空。 */
+        bmp = await createImageBitmap(blob);
+      }
       const iw = bmp.width, ih = bmp.height;
       if (!iw || !ih) throw new Error('bad bitmap');
 
       // 已經夠小 → 不值得存一份幾乎一樣大的副本，登記跳過即可
-      if (Math.max(iw, ih) <= THUMB_MAX) {
+      // （走 resize 解碼時 bmp 本來就是 640，不能拿來當「原圖很小」的判斷）
+      if (Math.max(iw, ih) <= THUMB_MAX && !trustDims) {
         bmp.close();
         bmp = null;
         this.failed.add(file.path);   // 「不需要縮圖」與「做不出來」對呼叫端是同一件事：用原圖
         return null;
       }
 
-      const scale = THUMB_MAX / Math.max(iw, ih);
+      // 走 resize 解碼時 bmp 已經是目標大小，scale 會是 1
+      const scale = Math.min(1, THUMB_MAX / Math.max(iw, ih));
       const tw = Math.max(1, Math.round(iw * scale));
       const th = Math.max(1, Math.round(ih * scale));
 

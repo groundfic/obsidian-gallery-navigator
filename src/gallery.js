@@ -4438,6 +4438,13 @@ class GalleryView extends ItemView {
     if (!arr) return;
     const i = arr.indexOf(el);
     if (i >= 0) arr.splice(i, 1);
+    /* 這個路徑已經沒有任何掛載中的卡片 → 取消它排隊中的縮圖工作，
+       別讓看不見的卡片排擠掉現在畫面上的（已在解碼的無法中斷，讓它做完）。
+       ⚠️ 一定要等 splice 之後再判斷：同一個檔案可能同時有多張卡（互相引用的牆），
+          還有別張卡在等的話就不能取消。 */
+    if (!arr.length && this.plugin.thumbs) {
+      try { this.plugin.thumbs.cancel(it.file.path); } catch (e) {}
+    }
   }
 
   /* 卡片還沒建出來時的高度估計。準不準只影響捲動時的跳動幅度，
