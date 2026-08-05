@@ -173,8 +173,34 @@ class MasonryLayout {
        load 事件不會冒泡，但捕獲階段抓得到，一條就涵蓋所有後續插入的圖。
        ⚠️ 這個監聽**必須**在 destroy() 裡移除，見該處說明。 */
     this._destroyed = false;
-    this._onLoad = () => this.scheduleLayout();
+    /* 只把「那一張卡」標記成要重量測（見 layout 的說明）。
+       抓不到對應的卡就退回全量重量，行為與舊版一致。 */
+    this._onLoad = (e) => this.scheduleLayout(this._itemOf(e && e.target));
     container.addEventListener('load', this._onLoad, true);
+    /* 量測與寫入的快取（2026-08-05）：
+         _hCache 卡片高度、_pos 上次寫入的 left/top、_elW 上次寫入的 width。
+       非虛擬化路徑下，每張晚到的預覽圖以前都會讓「整面牆」重量測 + 整批重寫定位。 */
+    this._hCache = new WeakMap();
+    this._pos = new WeakMap();
+    this._elW = new WeakMap();
+    this._dirty = new Set();     // 這一輪要重量測的卡
+    this._fullDirty = true;      // true = 這一輪全部重量測
+    this._lastH = -1;
+  }
+  /* 外部通知「某個節點底下的內容變了」（內文預覽載入、og 圖插入、PDF 縮圖…）。
+       • 節點不在這面牆裡 → 這面牆什麼都沒變，不用動
+       • 在這面牆裡 → 只標記那張卡
+       • 不知道是哪個節點（node 為 null）→ 保守起見全量重量 */
+  noteChanged(node) {
+    if (!node) { this.scheduleLayout(); return; }
+    if (!this.container.contains(node)) return;
+    this.scheduleLayout(this._itemOf(node));
+  }
+  // 從事件目標往上找到「container 的直接子元素」＝那張卡
+  _itemOf(node) {
+    let n = node;
+    while (n && n.parentElement && n.parentElement !== this.container) n = n.parentElement;
+    return n && n.parentElement === this.container ? n : null;
   }
   add(el) {
     el.style.position = 'absolute';
@@ -184,13 +210,16 @@ class MasonryLayout {
     // ⚠️ 這裡**不要**再逐張 img 掛 load：建構式已在 container 用捕獲階段接了所有
     //    後代的 load（見上方註解），逐張再掛一次等於同一張圖觸發兩次 scheduleLayout。
     //    rAF 會合併所以不致命，但 layout() 是 O(全部卡片)，白跑一次代價不小。
-    this.scheduleLayout();
+    this.scheduleLayout(el);   // 新卡：只有它需要量測
   }
   clear() {
     this.items = [];
     this.container.empty();
     this.container.style.height = '0px';
     this._lastW = 0;
+    this._lastH = 0;
+    this._dirty.clear();
+    this._fullDirty = true;
   }
   // 事後才發現不該顯示的項目（例如拿不到 gif 的動態 pin）→ 移除並重排
   remove(el) {
@@ -200,7 +229,10 @@ class MasonryLayout {
     this.scheduleLayout();
   }
   setMinCol(w) { this.minCol = w; this.scheduleLayout(); }
-  scheduleLayout() {
+  /* el 有給 → 只有那張卡需要重量測；沒給 → 全量重量（不知道誰變了時的安全預設）。
+     同一幀內只要有任何一次沒給 el，這一輪就是全量。 */
+  scheduleLayout(el) {
+    if (el) this._dirty.add(el); else this._fullDirty = true;
     if (this._destroyed || this._raf) return;
     this._raf = requestAnimationFrame(() => { this._raf = 0; this.layout(); });
   }
@@ -211,17 +243,49 @@ class MasonryLayout {
     this._lastW = W;
     const cols = this.fixedCols || Math.max(1, Math.floor((W + this.gap) / (this.minCol + this.gap)));
     const colW = (W - this.gap * (cols - 1)) / cols;
-    for (const el of this.items) el.style.width = colW + 'px';          // 先統一設寬（一次 reflow）
-    const heights = this.items.map((el) => el.offsetHeight);            // 再一次量測
+    // 只有真的變了才寫 width（同值也寫會讓整牆樣式失效 → 白白多一次 reflow）
+    let wChanged = false;
+    for (const el of this.items) {
+      if (this._elW.get(el) === colW) continue;
+      el.style.width = colW + 'px';
+      this._elW.set(el, colW);
+      wChanged = true;
+    }
+    if (wChanged && colW !== this._lastColW) this._fullDirty = true;   // 欄寬變 → 所有高度都不能用了
+    this._lastColW = colW;
+
+    /* 高度只重量 dirty 的卡。以前是 items.map(offsetHeight)：
+       任何一張晚到的圖載入完成，整面牆（可能數百張）就重量一次，
+       跨幀連續載入＝連續滿版 reflow。 */
+    const full = this._fullDirty;
+    const dirty = this._dirty;
+    const heights = this.items.map((el) => {
+      if (!full && !dirty.has(el)) {
+        const c = this._hCache.get(el);
+        if (c !== undefined) return c;
+      }
+      const h = el.offsetHeight;
+      this._hCache.set(el, h);
+      return h;
+    });
+    dirty.clear();
+    this._fullDirty = false;
+
     const colH = new Array(cols).fill(0);
     this.items.forEach((el, i) => {
       let c = 0;
       for (let k = 1; k < cols; k++) if (colH[k] < colH[c]) c = k;      // 找最矮的欄
-      el.style.left = (c * (colW + this.gap)) + 'px';
-      el.style.top = colH[c] + 'px';
+      const L = c * (colW + this.gap), T = colH[c];
+      const p = this._pos.get(el);
+      if (!p || p.l !== L || p.t !== T) {                               // 位置沒變就不寫
+        el.style.left = L + 'px';
+        el.style.top = T + 'px';
+        this._pos.set(el, { l: L, t: T });
+      }
       colH[c] += heights[i] + this.gap;
     });
-    this.container.style.height = Math.max.apply(null, colH) + 'px';
+    const H = Math.max.apply(null, colH);
+    if (H !== this._lastH) { this.container.style.height = H + 'px'; this._lastH = H; }
   }
   /* ⚠️ 一定要把容器上的 load 監聽也拿掉，否則會變成「殭屍 masonry」。
 
@@ -790,18 +854,57 @@ function coverSrc(app, cache, path) {
   return f ? app.vault.getResourcePath(f) : null;
 }
 
+/* ===== 封面解析快取（2026-08-05）=====
+   md 的封面要跑 getFileCache + 3 條 regex + getFirstLinkpathDest + getResourcePath。
+   4000 檔的資料夾每次 render / 每次標籤篩選 / 搜尋牆每 150ms 重繪都全量重算一遍，
+   是「點資料夾第一下卡頓」的主因。這裡以 path 為 key、mtime 當版本快取結果。
+
+   失效（invalidateCoverCache）：
+     • metadataCache 'changed' → 只清那一筆（mtime 可能已更新但 cache 還是舊的，
+       光靠 mtime 比對會把過期結果永久黏住）
+     • vault create / delete / rename → 整份清掉（封面可能指向別的檔案，
+       那個檔案被改名/刪除時 md 自己的 mtime 不會變） */
+const _coverCache = new Map();   // path → { mtime, src }
+function invalidateCoverCache(path) {
+  if (path) _coverCache.delete(path); else _coverCache.clear();
+}
+function coverFor(app, f, isImg) {
+  const hit = _coverCache.get(f.path);
+  if (hit && hit.mtime === f.stat.mtime) return hit.src;
+  const src = isImg
+    ? app.vault.getResourcePath(f)
+    : coverSrc(app, app.metadataCache.getFileCache(f), f.path);
+  if (_coverCache.size > 20000) _coverCache.clear();   // 上限防呆，成本只是重算一次
+  _coverCache.set(f.path, { mtime: f.stat.mtime, src });
+  return src;
+}
+
 function itemFromFile(app, f) {
   const isImg = IMG_EXT.test(f.path);
-  return {
+  const it = {
     file: f,
     name: f.basename,
     ext: (f.extension || '').toLowerCase(),
     isImg,
     ctime: f.stat.ctime,
     mtime: f.stat.mtime,
-    // 圖片檔本身即封面（免讀 cache）；md 才讀 frontmatter/內文封面；其他檔型無封面
-    src: isImg ? app.vault.getResourcePath(f) : coverSrc(app, app.metadataCache.getFileCache(f), f.path),
   };
+  /* src（封面）惰性求值：被標籤篩選掉、或根本沒進到可視範圍的項目完全不用算。
+     圖片檔本身即封面（免讀 cache）；md 才讀 frontmatter/內文封面；其他檔型無封面。 */
+  Object.defineProperty(it, 'src', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      const v = coverFor(app, f, isImg);
+      // 求過一次就把 getter 換成一般欄位，之後連 Map 查詢都省
+      Object.defineProperty(it, 'src', { value: v, writable: true, enumerable: true, configurable: true });
+      return v;
+    },
+    set(v) {
+      Object.defineProperty(it, 'src', { value: v, writable: true, enumerable: true, configurable: true });
+    },
+  });
+  return it;
 }
 
 // 非圖片、無封面的檔型 → 對應的 lucide 圖示
@@ -1270,8 +1373,10 @@ class GalleryView extends ItemView {
   // 重排目前這面牆的所有分區。延遲載入（內文預覽 / og:image / PDF 縮圖）會改變卡片高度，
   // 連結牆有兩個 grid，只重排其中一個會漏掉另一區 → 破版。
   // 重排所有瀑布流。（手機兩欄改用 transform 平移後，重排不會影響「顯示哪一欄」，這裡不必再顧捲動）
-  relayoutWalls() {
-    for (const m of (this._masonries || [])) m.scheduleLayout();
+  /* node（可省略）＝內容真正變動的那個節點。給了就只重量那一張卡，
+     沒給就全量重量（舊行為）。見 MasonryLayout.noteChanged。 */
+  relayoutWalls(node) {
+    for (const m of (this._masonries || [])) m.noteChanged(node || null);
     for (const v of (this._virtuals || [])) v.notifyContentChanged();
   }
 
@@ -1407,7 +1512,8 @@ class GalleryView extends ItemView {
     while (this.app.vault.getAbstractFileByPath(path)) { path = dir + t('Untitled') + ' ' + n + '.' + ext; n++; }
     try {
       const file = await this.app.vault.create(path, content || '');
-      this.render();
+      /* 這裡不自己 render()：vault 'create' 事件 → refreshViews() 的 150ms 去抖
+         本來就會重畫這個 View，多打一次只是把整頁重建成本翻倍。 */
       this.openNote(file, false);
     } catch (e) {
       new Notice(t('Failed to create: {{msg}}', { msg: e && e.message ? e.message : e }));
@@ -1510,7 +1616,7 @@ class GalleryView extends ItemView {
         state.sort = key;
         this.plugin.saveState();
         this.closeMorePopover();
-        this.render();
+        this.rerenderMainKeepScroll();   // sort 只被 renderNoteWall 讀到
       };
     });
 
@@ -1609,8 +1715,8 @@ class GalleryView extends ItemView {
       state.syncActive = !state.syncActive;
       this.plugin.saveState();
       this.closeMorePopover();
+      // 關閉時不用重畫：syncActive 只被 file-open 監聽器與本面板讀到，畫面上沒有任何依賴
       if (state.syncActive) this.syncToFile(this.app.workspace.getActiveFile());
-      else this.render();
     };
 
     /* ── 待辦筆記（2026-07-20）：工具列待辦鈕改成「有指定才顯示」，
@@ -1950,11 +2056,17 @@ class GalleryView extends ItemView {
   }
 
   setFolderHidden(path, hide) {
+    const before = (this.plugin.state.hiddenFolders || []).length;
     const set = new Set(this.plugin.state.hiddenFolders || []);
     if (hide) set.add(path); else set.delete(path);
     this.plugin.state.hiddenFolders = [...set];
     this.plugin.saveState();
-    this.render();
+    /* hiddenFolders 影響：左樹（隱藏列）＋卡片牆（攤平時排除）＋工具列眼睛鈕的「有無」。
+       眼睛鈕只在 0 ↔ 非 0 的交界才出現/消失 → 只有那時才需要整頁重畫。 */
+    const emptyChanged = (before === 0) !== (set.size === 0);
+    if (emptyChanged) { this.render(); return; }
+    this.refreshTree();
+    this.rerenderMainKeepScroll();
   }
 
   setFolderColor(path, key) {
@@ -1991,7 +2103,8 @@ class GalleryView extends ItemView {
     if (set.has(path)) set.delete(path); else set.add(path);
     this.plugin.state.noPreviewFolders = [...set];
     this.plugin.saveState();
-    this.render();
+    // noPreviewFolders 只被 renderNoteWall 與右鍵選單（現場建）讀到
+    this.rerenderMainKeepScroll();
   }
 
   // 最愛捷徑（feature 3）
@@ -2117,10 +2230,12 @@ class GalleryView extends ItemView {
     if (set.has(path)) set.delete(path); else set.add(path);
     this.plugin.state.pinnedCards = [...set];
     this.plugin.saveState();
-    this.render();
+    // pinnedCards 只被 renderNoteWall（排序）與 makeCard（角標）讀到 → 右欄就夠
+    this.rerenderMainKeepScroll();
   }
 
   async loadPreview(file, el) {
+    const card = el.parentElement;   // el 可能被 remove()，先留著卡片本體給重排用
     try {
       const raw = await this.app.vault.cachedRead(file);
       // 搜尋模式：顯示「命中處的上下文片段」並高亮，而不是筆記開頭前 5 行
@@ -2137,7 +2252,7 @@ class GalleryView extends ItemView {
     } catch (e) {
       el.remove();
     }
-    this.relayoutWalls();   // 預覽文字載入後高度變 → 重排
+    this.relayoutWalls(card);   // 預覽文字載入後高度變 → 只重排這張卡
   }
 
   // Canvas 縮圖：解析 .canvas JSON，取第一個圖片節點當封面
@@ -2155,7 +2270,7 @@ class GalleryView extends ItemView {
       card.addClass('gn-has-img');
       card.removeClass('gn-icon-cover');   // 換成真圖 → 文字改回疊圖模式
       if (placeholder) placeholder.remove();
-      this.relayoutWalls();
+      this.relayoutWalls(card);
     };
     // 已渲染過（同檔同 mtime）→ 直接用快取，不重新解析
     if (cache.has(key)) { const d = cache.get(key); if (d) put(d); return; }
@@ -2283,10 +2398,12 @@ class GalleryView extends ItemView {
       img.onload = () => {
         card.addClass('gn-has-img');
         this.autoTintCard(card, img, 'og:' + file.path);   // 連結預覽圖也套自動底色
-        this.relayoutWalls();
+        /* 這裡不用再叫 relayoutWalls()：圖片 load 會被 masonry 容器的捕獲監聽、
+           以及虛擬牆 grid 上的捕獲監聽各接一次，重排本來就會發生。
+           以前這支在 put / onload / onerror 連叫三次，等於同一張圖排三輪。 */
       };
-      img.onerror = () => { img.remove(); this.relayoutWalls(); };
-      this.relayoutWalls();
+      img.onerror = () => { img.remove(); this.relayoutWalls(card); };
+      this.relayoutWalls(card);
     };
     try {
       const c = this.app.metadataCache.getFileCache(file);
@@ -2647,7 +2764,8 @@ class GalleryView extends ItemView {
     orders[parentKey] = order;
     this.plugin.state.folderOrder = orders;
     this.plugin.saveState();
-    this.render();
+    // folderOrder 只被 buildLevel 讀到 → 重畫左樹就好（順帶保有 FLIP 滑動動畫）
+    this.refreshTree();
   }
 
   // render 的保護殼：內部拋例外時（手機沒 console、以前是無聲失敗），
@@ -3248,6 +3366,18 @@ class GalleryView extends ItemView {
     if (!this._main) return;
     this._main.empty();
     this.renderMainContent(this._main, this._zoom);
+  }
+
+  /* 只重繪右欄並保住捲動位置（釘選、排序、切換內文預覽等「只影響卡片牆」的小操作）。
+     ⚠️ 這些操作以前一律走 render()：工具列＋左樹（每列 10+ 監聽器、DOMParser 解 SVG）
+     ＋dock 全部重建，4000 檔下每次數百 ms，而且左樹捲動位置會跳。
+     判準：改動的 state 只被 renderNoteWall / makeCard 讀到 → 用這支；
+           會影響工具列或左樹 → 才需要 render() 或另外補 refreshTree()。 */
+  rerenderMainKeepScroll() {
+    if (!this._main) { this.render(); return; }
+    this._mainScrollSaved = { key: this.mainScrollKey(), top: this._main.scrollTop };
+    this.rerenderMain();
+    this.restoreMainScroll();
   }
 
   // 搜尋結果 → 卡牆。keepOrder=true 保住 BM25 相關性排名（不套日期排序）
@@ -5076,12 +5206,19 @@ class GnSearchModal extends SuggestModal {
     this.scope.register(['Shift'], 'Enter', () => { this.toGallery(); return false; });
   }
 
+  /* 去抖 150ms：SuggestModal 每個 keystroke 都會叫這支，而 search() 要跑 BM25
+     掃過所有命中文件。打字中途的每一個中間字串都算一次純屬浪費（畫廊內的搜尋列
+     早就有去抖，這裡比照）。做法：等 150ms，期間又有新輸入就直接放棄這一輪。 */
   async getSuggestions(q) {
     q = (q || '').trim();
     this._q = q;
     if (!q) return [];
+    const seq = (this._seq = (this._seq || 0) + 1);
+    await new Promise((r) => setTimeout(r, 150));
+    if (seq !== this._seq) return [];           // 已經有更新的輸入 → 這輪作廢
     const idx = this.plugin.search;
     if (!idx.ready) await idx.ensureReady();   // 惰性建索引（首次 ~1 秒，之後增量）
+    if (seq !== this._seq) return [];
     // 多撈一些再過濾隱藏資料夾，湊滿 30 筆
     return idx.search(q, 90).filter((h) => !this.plugin.isHiddenPath(h.path)).slice(0, 30);
   }
@@ -5148,6 +5285,55 @@ class GnSearchIndex {
     this._buildPromise = null;
     this.deadLen = 0;        // 墓碑累積的 token 量（估計值，用來決定何時整理 inv）
     this._modT = new Map();  // path → 去抖計時器（modify 事件）
+    /* 前綴查詢用的排序 token 表（見 _tokenKeys）。
+       inv 有約 29 萬個 key，前綴展開原本每次查詢都對整份做 startsWith，
+       是搜尋 modal 打字卡頓的主因。 */
+    this._keys = null;       // 排序後的 token 陣列
+    this._keysNew = [];      // 新增但尚未併入的 token（線性合併，不重排）
+    this._keysDirty = true;  // true = 下次查詢整份重建
+  }
+
+  /* 排序 token 表：
+       • 整份重建只發生在 build() / compact() 之後（罕見）
+       • 平時新增的 token 累積在 _keysNew，查詢時做一次 O(n+k) 線性合併
+       • 累積太多（>2000）就乾脆整份重排，避免合併成本超過重排 */
+  _tokenKeys() {
+    if (this._keysDirty || !this._keys) {
+      this._keys = [...this.inv.keys()].sort();
+      this._keysNew = [];
+      this._keysDirty = false;
+      return this._keys;
+    }
+    if (this._keysNew.length) {
+      if (this._keysNew.length > 2000) { this._keysDirty = true; return this._tokenKeys(); }
+      const add = [...new Set(this._keysNew)].sort();
+      this._keysNew = [];
+      const a = this._keys, out = new Array(a.length + add.length);
+      let i = 0, j = 0, k = 0;
+      while (i < a.length && j < add.length) out[k++] = a[i] <= add[j] ? a[i++] : add[j++];
+      while (i < a.length) out[k++] = a[i++];
+      while (j < add.length) out[k++] = add[j++];
+      out.length = k;
+      this._keys = out;
+    }
+    return this._keys;
+  }
+
+  /* 前綴查詢：二分找下界，再往後掃到不符為止 → O(log n + k)。
+     ⚠️ sort() 的 UTF-16 碼位順序與 startsWith 一致，同前綴的 key 必為連續區段。 */
+  prefixTokens(prefix, max) {
+    const keys = this._tokenKeys();
+    let lo = 0, hi = keys.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (keys[mid] < prefix) lo = mid + 1; else hi = mid;
+    }
+    const out = [];
+    for (let i = lo; i < keys.length && out.length < max; i++) {
+      if (!keys[i].startsWith(prefix)) break;
+      out.push(keys[i]);
+    }
+    return out;
   }
 
   /* ── PDF 內文：借用 text-extractor 外掛的 API（它自帶持久快取，Omnisearch 也是用這支） ── */
@@ -5208,7 +5394,10 @@ class GnSearchIndex {
     const id = this.docs.length;
     for (const [tok, n] of tf) {
       let arr = this.inv.get(tok);
-      if (!arr) { arr = []; this.inv.set(tok, arr); }
+      if (!arr) {
+        arr = []; this.inv.set(tok, arr);
+        if (this._keys) this._keysNew.push(tok);   // 併入排序表（_keys 還沒建就不用記）
+      }
       arr.push(id, n);
     }
     this.docs.push({ path: f.path, title: f.basename, len: len || 1, mtime: f.stat.mtime });
@@ -5258,7 +5447,7 @@ class GnSearchIndex {
         arr[w++] = arr[i]; arr[w++] = arr[i + 1];
       }
       if (w === arr.length) continue;         // 這個 token 沒有死 postings
-      if (w === 0) this.inv.delete(tok);      // 整個 token 都沒人用了（Map 迭代中刪除是安全的）
+      if (w === 0) { this.inv.delete(tok); this._keysDirty = true; }   // 整個 token 都沒人用了（Map 迭代中刪除是安全的）
       else arr.length = w;
     }
     this.deadLen = 0;
@@ -5277,6 +5466,7 @@ class GnSearchIndex {
     const files = this.indexTargets();
     this.docs = []; this.byPath = new Map(); this.inv = new Map();
     this.totalLen = 0; this.live = 0;
+    this._keys = null; this._keysNew = []; this._keysDirty = true;   // 排序 token 表跟著重來
 
     for (let i = 0; i < files.length; i++) {
       await this._indexFile(files[i]);
@@ -5411,10 +5601,13 @@ class GnSearchIndex {
     for (const tk of qCount.keys()) qWeight.set(tk, 1);
     for (const tk of [...qCount.keys()]) {
       if (!/^[a-z0-9_]{2,}$/.test(tk)) continue;
+      /* 以前這裡對整份 inv（約 29 萬 key）跑 startsWith，每次查詢一輪。
+         改走排序表的二分下界 → O(log n + k)。多抓幾個是因為要扣掉
+         「長度相同」與「查詢已含」的 key，扣完再取前 24 個。 */
       let added = 0;
-      for (const key of this.inv.keys()) {
+      for (const key of this.prefixTokens(tk, 48)) {
         if (added >= 24) break;
-        if (key.length > tk.length && key.startsWith(tk) && !qCount.has(key)) {
+        if (key.length > tk.length && !qCount.has(key)) {
           qCount.set(key, 1);
           qWeight.set(key, 0.7);
           added++;
@@ -5545,7 +5738,14 @@ class GalleryPlugin extends Plugin {
 
     // 檔案增刪/改名時，若 View 開著就重畫；同時讓日曆筆記索引失效
     // 檔案結構變了 → 資料夾檔案數快取失效（只有增刪改名會影響，內容修改不會）
-    const onVaultChange = () => { this._calNoteDirty = true; invalidateFolderCounts(); this.refreshViews(); };
+    // 筆記內容變動 → 只清那一筆封面快取（見 itemFromFile 上方說明）
+    this.registerEvent(this.app.metadataCache.on('changed', (f) => invalidateCoverCache(f && f.path)));
+    const onVaultChange = () => {
+      this._calNoteDirty = true;
+      invalidateFolderCounts();
+      invalidateCoverCache();      // 結構變動：封面可能指向被改名/刪除的檔案 → 整份清掉
+      this.refreshViews();
+    };
     // 'create' 延到 layout ready 後註冊：啟動期數千次回呼會反覆清快取、順延 debounce
     this.app.workspace.onLayoutReady(() => {
       this.registerEvent(this.app.vault.on('create', onVaultChange));

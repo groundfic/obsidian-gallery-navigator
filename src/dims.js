@@ -43,9 +43,13 @@ class DimPrefetcher {
     const idx = this.plugin._dimIndex || (this.plugin._dimIndex = {});
     const want = [];
     for (const it of items || []) {
-      if (!it || !it.src || !it.file) continue;
+      if (!it || !it.file) continue;
       const key = it.file.path;
-      if (idx[key]) continue;                 // 已經知道了
+      /* ⚠️ 順序有意義：先擋掉「已經知道長寬比」的，再讀 it.src。
+         it.src 是惰性 getter（md 封面要解 frontmatter/內文），
+         先讀的話等於把整個資料夾的封面全部強制求值一次。 */
+      if (idx[key]) continue;
+      if (!it.src) continue;
       want.push({ key, src: it.src });
     }
     if (!want.length) return 0;
