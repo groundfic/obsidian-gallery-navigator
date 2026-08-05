@@ -21,7 +21,21 @@ try {
 const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const BOT_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 const META_TTL = 7 * 24 * 60 * 60 * 1000;
-const FAIL_TTL = 15 * 60 * 1000; // 抓取失敗的結果只快取 15 分鐘，換裝置開啟時可自動重試
+/* 抓取失敗的指數退避（2026-08-05）。
+   原本一律 15 分鐘：含死連結的筆記/Canvas 每次開啟都會重打網路（每個死連結最多兩輪
+   UA 請求、最長 12 秒，還佔著並發名額），順帶把 390KB 的快取整檔重寫一次。
+   改成連續失敗越多次、下次重試隔越久；一旦成功就歸零。 */
+const FAIL_TTL = 15 * 60 * 1000;
+function failTtl(n) {
+  if (!n || n <= 1) return FAIL_TTL;            // 第 1 次失敗 → 15 分鐘
+  if (n === 2) return 60 * 60 * 1000;           // 第 2 次 → 1 小時
+  return 24 * 60 * 60 * 1000;                   // 第 3 次以後 → 1 天
+}
+// 這筆快取還能用多久（poor = 抓取失敗，走退避；正常結果走 META_TTL）
+function entryTtl(entry) {
+  if (!entry || !entry.meta) return 0;
+  return entry.meta.poor ? failTtl(entry.fail) : META_TTL;
+}
 const MAX_CACHE_ENTRIES = 500; // 快取項目上限，超過時淘汰最舊的
 const MAX_IMAGE_BYTES = 300 * 1024;
 const DOWNSCALE_WIDTH = 640;
@@ -55,18 +69,28 @@ function urlHash(url) {
   return (h >>> 0).toString(36) + '_' + s.length.toString(36);
 }
 
-/** 把 data URI 寫成檔案，回傳檔名（失敗回空字串） */
-async function writeImageFile(pageUrl, dataUri) {
+/** mime → 副檔名（沿用舊的正規化規則，檔名才不會因為版本而變） */
+function extOfMime(mime) {
+  return ((mime || 'image/jpeg').split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+}
+
+/** 把位元組寫成檔案，回傳檔名（失敗回空字串） */
+async function writeImageBytes(pageUrl, bytes, ext) {
   const a = state.adapter;
-  if (!a || !state.imgDir) return '';
-  const parsed = dataUriToBytes(dataUri);
-  if (!parsed) return '';
-  const fname = urlHash(pageUrl) + '.' + parsed.ext;
+  if (!a || !state.imgDir || !bytes) return '';
+  const fname = urlHash(pageUrl) + '.' + (ext || 'jpg');
   try {
     if (!(await a.exists(state.imgDir))) await a.mkdir(state.imgDir);
-    await a.writeBinary(state.imgDir + '/' + fname, parsed.bytes);
+    await a.writeBinary(state.imgDir + '/' + fname, bytes);
     return fname;
   } catch (e) { return ''; }
+}
+
+/** 把 data URI 寫成檔案（只剩「舊版 base64 快取遷移」在用） */
+async function writeImageFile(pageUrl, dataUri) {
+  const parsed = dataUriToBytes(dataUri);
+  if (!parsed) return '';
+  return writeImageBytes(pageUrl, parsed.bytes, parsed.ext);
 }
 
 /** 檔名 → 可直接餵給 <img>/CSS 的 app:// 網址 */
@@ -269,15 +293,40 @@ function decodeHtml(res) {
   }
 }
 
-function parseMetadata(html, url) {
-  const hostname = hostOf(url);
+/* 只取到 </head> 為止（找不到就退回前 256KB）。
+   og/twitter/description 這些 meta 幾乎都在 <head>，但整份 HTML 動輒好幾 MB，
+   在主執行緒 DOMParser 全文解析是貼上大頁面時 UI 卡住的主因。 */
+const HTML_HEAD_CAP = 256 * 1024;
+function headSlice(html) {
+  const i = html.search(/<\/head>/i);
+  if (i > 0) return html.slice(0, i + 7);
+  return html.length > HTML_HEAD_CAP ? html.slice(0, HTML_HEAD_CAP) : html;
+}
 
+/* 先只解析 <head>；head 就湊齊標題與圖片時直接收工（絕大多數站台屬於此類）。
+   缺東西才退回整份——「掃內容 <img>」那條退路本來就需要 body。 */
+function parseMetadata(html, url) {
   /* 這頁已經抓回來了，順手把 canonical 記給「淨化連結」用：
      之後在卡片上右鍵展開短連結就是零額外網路請求。 */
   if (isMetaShortUrl(url)) {
     try { primeShortUrl(url, canonicalFromHtml(html)); } catch (e) {}
   }
 
+  const head = headSlice(html);
+  const meta = parseMetadataFrom(head, url);
+  if (meta.title !== meta.hostname && meta.image) return meta;   // head 就夠了
+  if (head.length === html.length) return meta;                  // 本來就是整份，沒有退路可走
+  const full = parseMetadataFrom(html, url);
+  return {
+    title: meta.title !== meta.hostname ? meta.title : full.title,
+    description: meta.description || full.description,
+    image: meta.image || full.image,
+    hostname: meta.hostname,
+  };
+}
+
+function parseMetadataFrom(html, url) {
+  const hostname = hostOf(url);
   let doc = null;
   try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch {}
 
@@ -378,7 +427,10 @@ async function fetchGenericMeta(url) {
           hostname,
         };
       }
-      if (best.title !== hostname && best.image) break;
+      /* 只有「第一輪連標題都抓不到」才發第二輪 UA。
+         以前是「標題和圖片都要有」才收工 → 大量只有標題沒有 og:image 的站
+         每次都被打兩輪請求（各自最長 12 秒，還各佔一個並發名額）。 */
+      if (best.title !== hostname) break;
     } catch (e) {
       console.warn('[LCP] fetch failed:', e.message);
     }
@@ -499,7 +551,7 @@ function getCachedMeta(url) {
   const key = cacheKeyOf(url);
   const entry = state.cache[key];
   if (!entry || !entry.meta) return null;
-  const ttl = entry.meta.poor ? FAIL_TTL : META_TTL;
+  const ttl = entryTtl(entry);
   if (Date.now() - (entry.ts || 0) < ttl || hasLocalImage(entry.meta)) {
     return entry.meta;
   }
@@ -551,8 +603,7 @@ async function fetchMeta(url) {
   url = cacheKeyOf(url);
   const entry = state.cache[url];
   if (entry && entry.meta) {
-    const ttl = entry.meta.poor ? FAIL_TTL : META_TTL;
-    if (Date.now() - (entry.ts || 0) < ttl || hasLocalImage(entry.meta)) {
+    if (Date.now() - (entry.ts || 0) < entryTtl(entry) || hasLocalImage(entry.meta)) {
       return entry.meta;
     }
   }
@@ -591,34 +642,47 @@ async function fetchMetaUncached(url, entry) {
   meta.poor = !meta.image && !hasLocalImage(meta) && !meta.description &&
     (meta.title === hostname || meta.title === 'Threads' || meta.title === 'Instagram');
 
-  state.cache[url] = { meta, ts: Date.now() };
+  /* 失敗次數：連續失敗才累加，成功一次就歸零（退避見 failTtl）。 */
+  const prevFail = (entry && entry.fail) || 0;
+  const fail = meta.poor ? prevFail + 1 : 0;
+  const wasPoor = !!(entry && entry.meta && entry.meta.poor);
+  state.cache[url] = { meta, ts: Date.now(), fail };
   pruneCache();
-  state.save();
+  /* 「本來就失敗、這次還是失敗」→ 內容沒有實質變化，不值得為了更新一個 ts
+     就把 390KB 的快取整檔重寫。但退避級距往上跳的那一次要寫，
+     否則重開 Obsidian 後退避會退回 15 分鐘。 */
+  const tierChanged = failTtl(fail) !== failTtl(prevFail);
+  if (!(meta.poor && wasPoor) || tierChanged) state.save();
   return meta;
 }
 
 /* ============ 圖片處理 ============ */
 
-async function downscaleDataUri(dataUri, maxWidth, quality) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const scale = Math.min(1, maxWidth / img.naturalWidth);
-        if (scale >= 1) { resolve(dataUri); return; }
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.naturalWidth * scale);
-        canvas.height = Math.round(img.naturalHeight * scale);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', quality));
-      } catch (e) { resolve(dataUri); }
-    };
-    img.onerror = () => resolve(dataUri);
-    img.src = dataUri;
-  });
+/* 縮圖：位元組進、位元組出，全程不經 base64。
+   舊版是 bytes → base64 → dataURL → <img> → canvas → toDataURL → atob → bytes 四段轉換，
+   每一段都在主執行緒配置一份完整副本（base64 還會膨脹 33%），手機開一堆連結卡就爆記憶體。
+   不需要縮（本來就夠小）時回傳 null，呼叫端直接用原始位元組。 */
+async function downscaleBytes(bytes, mime, maxWidth, quality) {
+  try {
+    const bmp = await createImageBitmap(new Blob([bytes], { type: mime }));
+    try {
+      const scale = Math.min(1, maxWidth / bmp.width);
+      if (scale >= 1) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bmp.width * scale);
+      canvas.height = Math.round(bmp.height * scale);
+      canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      const out = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+      if (!out) return null;
+      return { bytes: await out.arrayBuffer(), mime: 'image/jpeg', ext: 'jpg' };
+    } finally {
+      bmp.close();   // ⚠️ 一定要 close，不然解出來的點陣圖會留在記憶體等 GC
+    }
+  } catch (e) { return null; }
 }
 
-async function fetchImageAsDataUri(imageUrl, pageUrl) {
+/** 下載圖片 → { bytes, mime, ext }；失敗回 null */
+async function fetchImageBytes(imageUrl, pageUrl) {
   try {
     let referer = '';
     try { referer = new URL(pageUrl).origin + '/'; } catch {}
@@ -632,31 +696,31 @@ async function fetchImageAsDataUri(imageUrl, pageUrl) {
       },
       throw: false,
     });
-    if (!res || res.status !== 200 || !res.arrayBuffer) return '';
+    if (!res || res.status !== 200 || !res.arrayBuffer) return null;
 
-    const ct = (res.headers?.['content-type'] || res.headers?.['Content-Type'] || 'image/jpeg').split(';')[0];
-    if (!ct.startsWith('image/')) return '';
+    const mime = (res.headers?.['content-type'] || res.headers?.['Content-Type'] || 'image/jpeg').split(';')[0];
+    if (!mime.startsWith('image/')) return null;
 
-    let dataUri = 'data:' + ct + ';base64,' + arrayBufferToBase64(res.arrayBuffer);
     if (res.arrayBuffer.byteLength > MAX_IMAGE_BYTES) {
-      dataUri = await downscaleDataUri(dataUri, DOWNSCALE_WIDTH, 0.8);
+      const small = await downscaleBytes(res.arrayBuffer, mime, DOWNSCALE_WIDTH, 0.8);
+      if (small) return small;
     }
-    return dataUri;
+    return { bytes: res.arrayBuffer, mime, ext: extOfMime(mime) };
   } catch (e) {
     console.warn('[LCP] image fetch failed:', e.message);
-    return '';
+    return null;
   }
 }
 
 /** 把下載到的圖存成檔案，並把檔名寫進快取（不再把 base64 塞進 data.json）
  *  注意：key 要用「正規化後的網址」——fetchMeta 是用 canonicalMetaUrl 當 key 的，
  *  傳原始網址進來會查不到 entry（舊版就有這個潛在 bug）。 */
-async function persistImage(pageUrl, dataUri) {
+async function persistImageBytes(pageUrl, bytes, ext) {
   // 快取 key 的規則必須跟 fetchMeta 完全一致：只有 Meta 系網址才正規化。
   // （對一般網址亂套 canonicalMetaUrl 會砍掉 ?v= 之類的 query → 查不到 entry）
   const key = cacheKeyOf(pageUrl);
   const entry = state.cache[key] || state.cache[pageUrl];
-  const fname = await writeImageFile(key, dataUri);
+  const fname = await writeImageBytes(key, bytes, ext);
   if (!fname) return '';
   if (entry?.meta) {
     entry.meta.img = fname;
@@ -664,6 +728,13 @@ async function persistImage(pageUrl, dataUri) {
     state.save();
   }
   return fname;
+}
+
+/** data URI 版（只剩舊版 base64 快取遷移在用） */
+async function persistImage(pageUrl, dataUri) {
+  const parsed = dataUriToBytes(dataUri);
+  if (!parsed) return '';
+  return persistImageBytes(pageUrl, parsed.bytes, parsed.ext);
 }
 
 /** 載入圖片並回傳實際尺寸；失敗回 null（兼作直連可用性探測） */
@@ -753,11 +824,15 @@ async function resolveImage(pageUrl, meta) {
 
   // 下載回來 → 存成檔案 → 用檔案的 app:// 網址顯示
   const download = async () => {
-    const d = await fetchImageAsDataUri(meta.image, pageUrl);
-    if (!d) return null;
-    const fname = await persistImage(pageUrl, d);
+    const got = await fetchImageBytes(meta.image, pageUrl);
+    if (!got) return null;
+    const fname = await persistImageBytes(pageUrl, got.bytes, got.ext);
     if (fname) meta.img = fname;
-    const src = fname ? imgResource(fname) : d;   // 寫檔失敗 → 這次仍用 data URI 顯示（不寫進快取）
+    /* 寫檔失敗（罕見）→ 這一次仍用 data URI 顯示，不寫進快取。
+       只有這條退路才會走到 base64，正常路徑全程都是位元組。 */
+    const src = fname
+      ? imgResource(fname)
+      : 'data:' + got.mime + ';base64,' + arrayBufferToBase64(got.bytes);
     meta.dims = await loadImageDims(src);
     state.save();
     return { src, dims: meta.dims };
@@ -1234,35 +1309,52 @@ function buildLivePreviewExtension() {
     }
   }
 
-  function buildDecos(state) {
+  /* ⚠️ 效能關鍵（2026-08-05）：以前 docChanged **和** 選取變動都會整份重算，
+     3000 行的筆記按住方向鍵移動游標＝每次按鍵都對整份文件逐行跑一次 regex。
+
+     拆成兩層：
+       • scanLines()：逐行找出「整行就是一個網址」的候選行 —— 只有文件真的變動才跑
+       • decosFrom()：從候選行算出這一刻要顯示哪些卡片 —— 只跟游標/選取有關，
+                      成本是 O(候選行數)（通常個位數），與文件長度無關 */
+  function scanLines(state) {
     // 純 Source Mode 不渲染，維持原始文字
     if (editorLivePreviewField) {
       const lp = state.field(editorLivePreviewField, false);
-      if (lp === false) return Decoration.none;
+      if (lp === false) return [];
     }
-
-    const widgets = [];
+    const out = [];
     const doc = state.doc;
     for (let i = 1; i <= doc.lines; i++) {
       const line = doc.line(i);
       const m = line.text.trim().match(URL_LINE);
-      if (!m) continue;
+      if (m) out.push({ from: line.from, to: line.to, url: m[1] });
+    }
+    return out;
+  }
 
+  function decosFrom(lines, state) {
+    const widgets = [];
+    for (const ln of lines) {
       // 游標或選取範圍碰到這一行 → 還原裸網址供編輯
       let onLine = false;
       for (const r of state.selection.ranges) {
-        if (r.from <= line.to && r.to >= line.from) { onLine = true; break; }
+        if (r.from <= ln.to && r.to >= ln.from) { onLine = true; break; }
       }
       if (onLine) continue;
-
       widgets.push(
         Decoration.replace({
-          widget: new CardWidget(m[1]),
+          widget: new CardWidget(ln.url),
           block: true,
-        }).range(line.from, line.to)
+        }).range(ln.from, ln.to)
       );
     }
     return Decoration.set(widgets);
+  }
+
+  // 欄位值 = { lines: 候選行（文件變動才重掃）, decos: 目前要顯示的卡片 }
+  function buildValue(state) {
+    const lines = scanLines(state);
+    return { lines, decos: decosFrom(lines, state) };
   }
 
   /* 移除與目前選取重疊的卡片（不新增任何卡片） */
@@ -1281,19 +1373,21 @@ function buildLivePreviewExtension() {
 
   // 區塊型 widget 必須由 StateField 提供（CM6 限制，ViewPlugin 不行）
   const field = StateField.define({
-    create: buildDecos,
+    create: buildValue,
     update(value, tr) {
+      // 文件真的變了（或外部要求刷新）→ 才重掃候選行
       if (tr.annotation(RefreshAnno) || tr.docChanged) {
-        return buildDecos(tr.state);
+        return buildValue(tr.state);
       }
       if (tr.selection) {
         // 拖曳中：只還原被選到的，不變回卡片 → 版面穩定
-        if (lcpDragging) return stripSelected(value.map(tr.changes), tr.state);
-        return buildDecos(tr.state);
+        if (lcpDragging) return { lines: value.lines, decos: stripSelected(value.decos, tr.state) };
+        // 一般游標移動：候選行沒變，只重算「這一刻哪些行要讓位給游標」
+        return { lines: value.lines, decos: decosFrom(value.lines, tr.state) };
       }
-      return value.map(tr.changes);
+      return value;   // 文件與選取都沒動 → 原封不動（tr.changes 必為空）
     },
-    provide: (f) => EditorView.decorations.from(f),
+    provide: (f) => EditorView.decorations.from(f, (v) => v.decos),
   });
 
   // 在編輯器內按下滑鼠／觸控即進入「拖曳中」狀態（放開由 plugin 的全域監聽處理）
@@ -1329,8 +1423,15 @@ class LinkCardModule {
 
   async saveCache() {
     try {
+      this._dirty = false;
       await this.app.vault.adapter.write(this.cachePath(), JSON.stringify({ cache: state.cache }));
     } catch (e) {}
+  }
+
+  // 還有沒寫出去的變更就立刻寫一次（卸載時用，避免掉資料）
+  async flushCache() {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    if (this._dirty) await this.saveCache();
   }
 
   async start() {
@@ -1347,13 +1448,30 @@ class LinkCardModule {
     state.adapter = this.app.vault.adapter;
     state.imgDir = this.manifest.dir + '/' + IMG_SUBDIR;
 
-    let saveTimer = null;
+    /* 快取檔約 390KB，而且**整檔重寫**。單張卡片的完整生命週期（抓 meta → 圖片尺寸
+       → 下載圖 → 取主色）就會排 3~4 次寫入，開一則多連結的筆記等於連續重寫幾百 KB
+       ——在 iCloud 同步範圍內這個代價會被放大。
+       → dirty flag + 間隔拉長到 10 秒；真正沒寫完的部分由 onunload 的 flushCache() 補上。 */
+    this._dirty = false;
+    this._saveTimer = null;
     state.save = () => {
-      if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => {
-        this.saveCache().catch(() => {});
-      }, 1500);
+      this._dirty = true;
+      if (this._saveTimer) return;          // 已經排程了就不重排（不是「順延」，避免一直被推遲）
+      this._saveTimer = setTimeout(() => {
+        this._saveTimer = null;
+        if (this._dirty) this.saveCache().catch(() => {});
+      }, 10000);
     };
+    // 卸載時把還沒寫出去的變更補寫（外掛重載/關閉 Obsidian 都會走到）
+    this.plugin.register(() => { this.flushCache().catch(() => {}); });
+    /* 關閉 Obsidian 走 'quit'：這裡可以把非同步工作加進 tasks，Obsidian 會等它完成，
+       比只靠 unregister 的 fire-and-forget 可靠。API 不存在時安靜略過。 */
+    try {
+      this.plugin.registerEvent(this.app.workspace.on('quit', (tasks) => {
+        if (tasks && typeof tasks.add === 'function') tasks.add(() => this.flushCache());
+        else this.flushCache().catch(() => {});
+      }));
+    } catch (e) {}
 
     // 一次性遷移：舊版 data.json 裡的 base64 圖 → 獨立檔案（背景跑，不擋啟動）
     setTimeout(async () => {
@@ -1447,6 +1565,12 @@ class LinkCardModule {
   setupCanvasPatch() {
     // view → cleanup 函式，用來回收已關閉 Canvas 的 observer
     this._canvasObservers = new Map();
+    /* 已處理過的節點：contentEl → 我們掛上去的那張卡片。
+       Canvas 平移縮放會持續觸發 mutation，每次全量掃描時，已經有卡片的節點
+       以前仍要跑 querySelectorAll('iframe, webview')（掃整棵子樹）＋ querySelector('.lcp-card')。
+       改成只比對一個元素參照，完全不碰 DOM 查詢。
+       節點內容被 Obsidian 回收重建時，這張卡就不再是 contentEl 的子節點 → 自動走回完整路徑。 */
+    this._canvasCards = new WeakMap();
 
     const syncCanvasObservers = () => {
       // 1. 對目前開著的 Canvas 掛上 observer（已掛的會被 __lcpAttached 擋掉）
@@ -1554,6 +1678,10 @@ class LinkCardModule {
         || node.nodeEl?.querySelector('.canvas-node-content');
       if (!contentEl) return;
 
+      // 快速路徑：這個節點的卡片還在原位 → 什麼都不用做（見 _canvasCards 說明）
+      const done = this._canvasCards.get(contentEl);
+      if (done && done.parentElement === contentEl) return;
+
       // YouTube 且使用者選擇保留嵌入：不卡片化，維持原生 iframe 播放器
       if (isYouTubeUrl(data.url) && this.settings.youtubeCanvasEmbed) {
         const nodeEl = node.nodeEl || contentEl.closest('.canvas-node');
@@ -1578,6 +1706,8 @@ class LinkCardModule {
         const sk = createSkeleton(url);
         sk.classList.add('lcp-card--canvas');
         contentEl.appendChild(sk);
+        // renderCard 是就地改寫 sk（骨架直接變成卡片）→ 記這個參照就能認出「已處理」
+        this._canvasCards.set(contentEl, sk);
 
         const cached = getCachedMeta(url);
         const metaPromise = cached ? Promise.resolve(cached) : fetchMeta(url);
