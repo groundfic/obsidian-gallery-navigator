@@ -1647,6 +1647,33 @@ class GalleryView extends ItemView {
     if (this._morePop) { this._morePop.remove(); this._morePop = null; }
   }
 
+  /* 卡片區空白處右鍵 →「在此新建」（與工具列那顆＋同一個選單）。
+
+     ⚠️ 一定要自己判斷「右鍵點到的是不是卡片」。
+        卡片有自己的右鍵選單（wireContextMenu），而那裡只有 preventDefault、
+        **沒有 stopPropagation** —— 不擋的話右鍵一張卡會同時跳出兩個選單。
+        工具列與多選動作列同理，它們自己就有操作。
+
+     ⚠️ 手機刻意不掛長按。長按已經被卡片的選單佔用，在容器上再掛一層就會
+        變成兩個選單疊加（2026-07-31 踩過同型的坑）。
+        手機請用工具列那顆＋，它本來就在。
+
+     只在「資料夾檢視」啟用：搜尋結果與標籤檢視都沒有明確的「這裡」——
+     folderAt() 在那兩種情況會回退到上次的資料夾或根目錄，
+     建出來的檔案會跑到使用者沒預期的地方。 */
+  wireMainCreateMenu(main) {
+    main.addEventListener('contextmenu', (e) => {
+      if (this._searchOn) return;
+      if (this.plugin.state.leftMode === 'tag') return;
+      const el = e.target;
+      if (el && el.closest && el.closest('.gn-card, .gn-main-head, .gn-bar, .gn-selbar, .gn-dock, .gn-empty-actions')) return;
+      const folder = this.folderAt(this.path);
+      if (!folder) return;
+      e.preventDefault();
+      this.newFileMenu(folder, e);
+    });
+  }
+
   newFileMenu(folder, evt) {
     const menu = new Menu();
     menu.addItem((i) => i.setTitle(t('Folder')).setIcon('folder-plus').onClick(() => this.newFolder(folder)));
@@ -2852,6 +2879,7 @@ class GalleryView extends ItemView {
     this.mountDock(split);                    // 右欄底部的浮動面板（桌機）
     this.wireOverlayScrollbar(treeScroll);    // overlay 捲軸：捲動才浮現
     this.wireOverlayScrollbar(main);
+    this.wireMainCreateMenu(main);            // 卡片區空白處右鍵 →「在此新建」
     if (treeHidden) { tree.style.display = 'none'; splitter.style.display = 'none'; }
 
     // 手機：方案⑤ 並排雙欄一起平移（左欄 86% + 右欄 100%，兩欄同步 translateX）
