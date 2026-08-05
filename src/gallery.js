@@ -1217,7 +1217,14 @@ class GalleryView extends ItemView {
     // 標籤索引快取失效：metadata 變動或檔案增刪改名時標記，下次用到才重建
     const markTagDirty = () => { this._tagDirty = true; };
     this.registerEvent(this.app.metadataCache.on('changed', markTagDirty));
-    this.registerEvent(this.app.vault.on('create', markTagDirty));
+    /* 'create' 在 Obsidian 啟動時會對「每個既有檔案」各發一次（數千次），
+       延到 layout ready 後才註冊，避開啟動期洪水。 */
+    let createAlive = true;
+    this.register(() => { createAlive = false; });
+    this.app.workspace.onLayoutReady(() => {
+      if (!createAlive) return;
+      this.registerEvent(this.app.vault.on('create', markTagDirty));
+    });
     this.registerEvent(this.app.vault.on('delete', markTagDirty));
     this.registerEvent(this.app.vault.on('rename', markTagDirty));
     // 滑鼠在本視圖上時追蹤（給 Cmd+A 全選判斷用）
@@ -5484,7 +5491,10 @@ class GalleryPlugin extends Plugin {
 
     // 增量更新：改一篇只重索引那一篇（幾 ms），索引全程保持新鮮
     this.registerEvent(this.app.vault.on('modify', (f) => this.search.onFileModified(f)));
-    this.registerEvent(this.app.vault.on('create', (f) => this.search.onFileChanged(f)));
+    // 'create' 延到 layout ready 後註冊：啟動期每個既有檔案都會發一次
+    this.app.workspace.onLayoutReady(() => {
+      this.registerEvent(this.app.vault.on('create', (f) => this.search.onFileChanged(f)));
+    });
     this.registerEvent(this.app.vault.on('delete', (f) => this.search.onFileDeleted(f)));
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.search.onFileRenamed(f, old)));
 
@@ -5536,7 +5546,10 @@ class GalleryPlugin extends Plugin {
     // 檔案增刪/改名時，若 View 開著就重畫；同時讓日曆筆記索引失效
     // 檔案結構變了 → 資料夾檔案數快取失效（只有增刪改名會影響，內容修改不會）
     const onVaultChange = () => { this._calNoteDirty = true; invalidateFolderCounts(); this.refreshViews(); };
-    this.registerEvent(this.app.vault.on('create', onVaultChange));
+    // 'create' 延到 layout ready 後註冊：啟動期數千次回呼會反覆清快取、順延 debounce
+    this.app.workspace.onLayoutReady(() => {
+      this.registerEvent(this.app.vault.on('create', onVaultChange));
+    });
     this.registerEvent(this.app.vault.on('delete', onVaultChange));
     this.registerEvent(this.app.vault.on('rename', onVaultChange));
 

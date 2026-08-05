@@ -65,6 +65,9 @@ class DimPrefetcher {
     this.token++;
     this.queue = [];
     this.onBatch = null;
+    /* busy 歸零＝「舊的 in-flight 不再計入併發」。
+       配合 finish() 裡「token 不符就不動 busy」，才不會等舊工作回來把 busy 減成負數
+       （負數會讓實際併發變成 CONCURRENCY + |負值|，破壞壓記憶體的前提）。 */
     this.busy = 0;
   }
 
@@ -85,8 +88,9 @@ class DimPrefetcher {
       settled = true;
       img.onload = img.onerror = null;
       img.src = '';                            // 立刻放掉，不等 GC
+      // 已經換資料夾了：這筆結果作廢，且 busy 已被 cancel() 歸零 → 不能再減（會變負數）
+      if (my !== this.token) return;
       this.busy--;
-      if (my !== this.token) return;           // 已經換資料夾了，這筆結果作廢
       if (w > 0 && h > 0) {
         (this.plugin._dimIndex || (this.plugin._dimIndex = {}))[job.key] = [w, h];
         this.plugin.saveDimIndex();

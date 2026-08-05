@@ -1516,8 +1516,8 @@ class LinkCardModule {
     };
     // 集中追蹤所有作用中的 Canvas observer，供 layout-change 時回收殭屍項
     this._canvasObservers.set(view, cleanup);
-    // 插件卸載時一併清理
-    this.register(cleanup);
+    // 插件卸載時一併清理（LinkCardModule 非 Component，要用 plugin.register）
+    this.plugin.register(cleanup);
     processAll();
   }
 

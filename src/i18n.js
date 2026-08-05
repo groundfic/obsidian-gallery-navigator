@@ -7,14 +7,25 @@
    - 設定頁可手動覆寫（''=自動 / 'en' / 'zh-TW'），由 setLang() 注入。
    - 目前只維護 zh-TW 字典；要加語言＝加一個字典 + LANGS 一個 entry。 */
 
-function obsidianLang() {
+/* localStorage 只在模組載入時讀一次：t() 在卡片/選單建構路徑被大量呼叫，
+   每次都同步讀 localStorage 太貴；改語言本來就需要重載外掛（或走 setLang）。 */
+const OBSIDIAN_LANG = (() => {
   try { return window.localStorage.getItem('language') || 'en'; } catch (e) { return 'en'; }
-}
+})();
 
 let forced = '';
-function setLang(l) { forced = l || ''; }
-function currentLang() { return forced || obsidianLang(); }
-function isZh() { return /^zh/i.test(currentLang()); }
+let _lang = OBSIDIAN_LANG;   // 解析後的目前語言
+let _dict = null;            // 解析後的字典（null = 用英文原文）
+let _isZh = false;
+// 只有 setLang()（載入時、設定頁切換時）會重算，t() 全程只讀快取
+function resolveLang() {
+  _lang = forced || OBSIDIAN_LANG;
+  _isZh = /^zh/i.test(_lang);
+  _dict = LANGS[_lang] || (_isZh ? ZH_TW : null);
+}
+function setLang(l) { forced = l || ''; resolveLang(); }
+function currentLang() { return _lang; }
+function isZh() { return _isZh; }
 
 const ZH_TW = {
   // ── 指令 ──
@@ -338,9 +349,11 @@ const ZH_TW = {
 
 const LANGS = { 'zh-TW': ZH_TW, zh: ZH_TW, 'zh-cn': ZH_TW };
 
+resolveLang();   // 字典就緒後先解析一次（setLang() 之前也能正確翻譯）
+
 // t('key') / t('Calendar {{n}}', {n: 2}) → 目前語言字串；查無翻譯回傳英文原文
 function t(key, vars) {
-  const dict = LANGS[currentLang()] || (/^zh/i.test(currentLang()) ? ZH_TW : null);
+  const dict = _dict;
   let s = (dict && dict[key]) || key;
   if (vars) for (const k of Object.keys(vars)) s = s.split('{{' + k + '}}').join(String(vars[k]));
   return s;
