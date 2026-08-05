@@ -28,6 +28,13 @@
  *    這件事透過 destroy callback 交給呼叫端做。
  */
 
+/* 定位是否可以用獨立的 translate 屬性（見 _update 的說明）。
+   偵測一次就好，不必每次寫入都問。 */
+const VW_HAS_TRANSLATE = (() => {
+  try { return !!(window.CSS && CSS.supports && CSS.supports('translate', '1px 1px')); }
+  catch (e) { return false; }
+})();
+
 class VirtualWall {
   /**
    * @param {object} o
@@ -58,6 +65,7 @@ class VirtualWall {
     this.measured = [];   // 是否已量測過真值
     this.top = [];
     this.left = [];
+    this.maxBot = null;   // _pack() 建；長度對不上時 _update 會退回全掃描
     this.mounted = new Map();   // index → el
 
     this.colW = 0;
@@ -195,13 +203,20 @@ class VirtualWall {
   /* 貪婪法：每張卡放進目前最矮的那一欄（與 MasonryLayout 相同，但純算術、不碰 DOM） */
   _pack() {
     const colH = new Array(this.cols).fill(0);
-    for (let i = 0; i < this.items.length; i++) {
+    const n = this.items.length;
+    // maxBot[i] = 前 i 張裡最深的底部。單調遞增 → _update 可以二分找視窗起點。
+    const maxBot = new Array(n);
+    let mb = -Infinity;
+    for (let i = 0; i < n; i++) {
       let c = 0;
       for (let k = 1; k < this.cols; k++) if (colH[k] < colH[c]) c = k;
       this.left[i] = c * (this.colW + this.gap);
       this.top[i] = colH[c];
       colH[c] += this.h[i] + this.gap;
+      if (this.top[i] + this.h[i] > mb) mb = this.top[i] + this.h[i];
+      maxBot[i] = mb;
     }
+    this.maxBot = maxBot;
     this.totalH = Math.max.apply(null, colH);
     this._applyHeight(this.totalH);
   }
@@ -259,9 +274,30 @@ class VirtualWall {
     const from = st - this.gridTop - viewH;
     const to = st - this.gridTop + viewH * 2;
 
+    /* 視窗範圍：以前每一幀都掃過全部項目（4000 檔＝每幀 4000 次比較）。
+       改成二分找起點、掃到超出視窗就停 —— 實測掃描量 4000 → 約 22 張。
+
+       兩個成立條件（_pack 保證，已用亂數對照測試驗證 1/2/3/5/8 欄 × 2000 組視窗）：
+         ① top[] 單調遞增：貪婪法每張都放進「目前最矮的欄」，
+            所以 min(colH) 只會變大，不會變小。→ 可以「看到 top > to 就 break」。
+         ② maxBot[i] = max(top[k]+h[k], k ≤ i)，本身也是單調遞增。
+            對它二分找「第一個 maxBot >= from」＝ 第一個可能與視窗相交的項目。
+       ⚠️ 起點**不能**用 top 二分後往回走幾格：一張很高的卡可能落在很前面、
+          底部卻延伸進視窗，中間隔著一堆矮卡 —— 往回走會提早停下而漏掉它。
+          （這個 bug 就是被上面那組對照測試抓出來的。） */
+    const n = this.items.length;
+    const mb = this.maxBot;
+    let lo = 0;
+    if (mb && mb.length === n) {
+      let hi = n;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (mb[mid] < from) lo = mid + 1; else hi = mid;
+      }
+    }
     const want = new Set();
-    for (let i = 0; i < this.items.length; i++) {
-      if (this.top[i] > to) continue;
+    for (let i = lo; i < n; i++) {
+      if (this.top[i] > to) break;
       if (this.top[i] + this.h[i] < from) continue;
       want.add(i);
     }
@@ -298,11 +334,24 @@ class VirtualWall {
     for (const [i, el] of this.mounted) {
       const l = this.left[i], t = this.top[i], w = this.colW;
       if (el._vwL === l && el._vwT === t && el._vwW === w) continue;
-      el._vwL = l; el._vwT = t; el._vwW = w;
       el.style.position = 'absolute';
-      el.style.width = w + 'px';
-      el.style.left = l + 'px';
-      el.style.top = t + 'px';
+      // 寬度只有真的變了才寫（換欄數時才會變）
+      if (el._vwW !== w) el.style.width = w + 'px';
+      /* 定位用 translate 而不是 left/top：
+           • left/top 是版面屬性 → 每次重排都讓整個 grid 重新排版
+           • translate 只影響合成階段
+         ⚠️ 用「translate 這個獨立屬性」而不是 transform：
+            .gn-card:hover 有 transform: scale()，若定位也寫在 transform 上，
+            hover 那一刻會整個蓋掉位移 → 卡片瞬間跳回 grid 原點。
+            translate 與 transform 是兩個屬性，可以同時存在、互相疊加。
+         舊瀏覽器沒有 translate 屬性時退回 left/top（行為與改版前相同）。 */
+      if (VW_HAS_TRANSLATE) {
+        el.style.translate = l + 'px ' + t + 'px';
+      } else {
+        el.style.left = l + 'px';
+        el.style.top = t + 'px';
+      }
+      el._vwL = l; el._vwT = t; el._vwW = w;
     }
     if (created) this._scheduleMeasure();
   }
@@ -314,9 +363,17 @@ class VirtualWall {
     this._settleT = setTimeout(() => { this._settleT = 0; this._update(); }, 60);
   }
 
+  /* 量測去抖：每張圖 onload 都會叫一次，而 measure() 是掃過所有掛載中的卡片。
+     一屏四五十張圖陸續回來 ＝ 連續幾十次全量量測。改成 50ms 的 trailing 去抖，
+     一批圖載入完只量一次。
+     ⚠️ 是 trailing（每次呼叫都往後推），不是 leading —— 要的是「安靜下來才量」。 */
   _scheduleMeasure() {
-    if (this._measureRaf) return;
-    this._measureRaf = requestAnimationFrame(() => { this._measureRaf = 0; this.measure(); });
+    clearTimeout(this._measureT);
+    this._measureT = setTimeout(() => {
+      this._measureT = 0;
+      if (this._measureRaf) return;
+      this._measureRaf = requestAnimationFrame(() => { this._measureRaf = 0; this.measure(); });
+    }, 50);
   }
 
   /* 找捲動錨點：目前視窗頂端**之上或之內**、位置最靠下的那一張已掛載卡片。
@@ -465,6 +522,7 @@ class VirtualWall {
     if (this._ro) this._ro.disconnect();
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this._measureRaf) cancelAnimationFrame(this._measureRaf);
+    clearTimeout(this._measureT);      // 去抖中的量測
     clearTimeout(this._hT);            // 延後中的高度寫入
     clearTimeout(this._settleT);       // 快速拖曳後的補畫
     this.unmountAll();

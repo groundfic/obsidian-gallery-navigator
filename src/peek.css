@@ -153,8 +153,10 @@
 	padding: 0 10px;
 	flex-shrink: 0;
 	background: color-mix(in srgb, var(--background-primary) 88%, transparent);
-	backdrop-filter: blur(12px);
-	-webkit-backdrop-filter: blur(12px);
+	/* ⚠️ 這裡原本有 backdrop-filter: blur(12px)，但兩個平台都會覆寫掉：
+	     桌機 body:not(.is-mobile) .image-peek-overlay .qp-header (0,3,1)
+	     手機 .is-mobile .image-peek-overlay .qp-header (0,3,0)
+	   都贏過本規則 (0,2,0) 且都設成 none —— 是永遠不會生效的合成層，已移除。 */
 	border-bottom: 1px solid var(--background-modifier-border);
 }
 
@@ -401,9 +403,9 @@
 	gap: 2px;
 	padding: 5px;
 	border-radius: 999px;
-	background: rgba(40, 40, 40, 0.72);
-	backdrop-filter: blur(20px) saturate(1.4);
-	-webkit-backdrop-filter: blur(20px) saturate(1.4);
+	/* 手機不用 backdrop-filter：底下本來就是黑底，模糊看不出差別，
+	   但每一層都是獨立合成層，縮放拖曳時 iOS 會整層重繪。改用接近實色的深灰。 */
+	background: rgba(48, 48, 48, 0.94);
 	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
 }
 .is-mobile .image-peek-overlay .qp-actions:empty {
@@ -1123,4 +1125,34 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .image-peek-overlay.lightbox .qp-resize,
 .image-peek-overlay.lightbox .qp-sidebar {
   display: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   手機：不用 backdrop-filter（2026-08-05 效能）
+   iOS 上每一層 backdrop-filter 都是獨立合成層，底下內容一動就整層重繪；
+   Peek 的縮放拖曳是逐幀變動，疊兩層（背幕 + 膠囊）就明顯掉幀。
+   手機底下本來就是黑的，模糊與深色實底在視覺上幾乎沒有差別。
+   ⚠️ 背景色只改「視窗式」那一套；.lightbox（對齊原生 lightbox 的讓位規則，
+      2026-08-01）維持它自己的 --lightbox-background + opacity .9，不要動。
+   ═══════════════════════════════════════════════════════════════════ */
+.is-mobile .image-peek-overlay.qp-blur .qp-backdrop {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.is-mobile .image-peek-overlay.qp-blur:not(.lightbox) .qp-backdrop {
+  background: rgba(0, 0, 0, .72);
+}
+/* Pinterest 面板：手機幾乎全螢幕，背幕只露出邊緣一圈，
+   卻仍要維護一整層全螢幕模糊 → 改深色實底。 */
+.is-mobile .ip-pin-layer .ip-pin-backdrop {
+  background: rgba(0, 0, 0, .72);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 拖曳／縮放進行中 → 暫停背幕模糊（放開就恢復）。
+   qp-grabbing 由 peek.ts 同時掛在 <img> 與覆層根節點上。 */
+.image-peek-overlay.qp-grabbing .qp-backdrop {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }

@@ -1267,6 +1267,9 @@ class PeekOverlay {
 				};
 				this.tapMoved = false;
 				this.imgEl.addClass("qp-grabbing");
+				/* 覆層根節點也掛一份：CSS 用它在拖曳期間停掉背幕的 backdrop-filter
+				   （每一幀都要重繪整層模糊，是 iOS 拖曳掉幀的主因）。 */
+				this.rootEl.addClass("qp-grabbing");
 			} else if (this.pointers.size === 2) {
 				// 進入雙指捏合，停止單指平移
 				this.panStart = null;
@@ -1338,6 +1341,7 @@ class PeekOverlay {
 			} else if (this.pointers.size === 0) {
 				this.panStart = null;
 				this.imgEl.removeClass("qp-grabbing");
+				this.rootEl.removeClass("qp-grabbing");
 
 				// 下滑關閉：拖夠遠就關，不夠就彈回。
 				// 要求 tapMoved，否則手指的細微抖動會被當成手勢，吃掉雙點放大。

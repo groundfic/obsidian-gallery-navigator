@@ -296,28 +296,32 @@
   background-color: rgba(var(--lcp-tint), 0.85);
 }
 
-/* ============ 骨架 ============ */
-.lcp-skeleton-line {
-  border-radius: 4px;
-  background: linear-gradient(90deg,
-    var(--background-modifier-hover) 25%,
-    var(--background-modifier-border) 50%,
-    var(--background-modifier-hover) 75%
-  );
-  background-size: 200% 100%;
-  animation: lcp-shimmer 1.4s infinite;
-}
-.lcp-skeleton-line--title { height: 12px; width: 70%; }
+/* ============ 骨架 ============
+   ⚠️ shimmer 不要用 background-position 動畫：那是繪製屬性，每一幀都要重繪整塊漸層，
+      而且骨架是「無限動畫」——只要有卡片還在載入就一直燒。
+      改成：本體是純色底，亮帶畫在 ::after 上用 transform 平移（只走合成階段）。 */
+.lcp-skeleton-line,
 .lcp-thumb--skeleton {
-  background: linear-gradient(90deg,
-    var(--background-modifier-hover) 25%,
-    var(--background-modifier-border) 50%,
-    var(--background-modifier-hover) 75%
-  );
-  background-size: 200% 100%;
-  animation: lcp-shimmer 1.4s infinite;
-  border-left: none;
+  position: relative;
+  overflow: hidden;
+  background: var(--background-modifier-hover);
 }
+.lcp-skeleton-line::after,
+.lcp-thumb--skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    var(--background-modifier-border) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: lcp-shimmer 1.4s linear infinite;
+}
+.lcp-skeleton-line { border-radius: 4px; }
+.lcp-skeleton-line--title { height: 12px; width: 70%; }
+.lcp-thumb--skeleton { border-left: none; }
 .lcp-card--canvas.lcp-skeleton {
   flex-direction: column-reverse;
 }
@@ -331,8 +335,13 @@
   padding: 11px 14px 12px;
 }
 @keyframes lcp-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+/* 減少動態偏好：骨架改成靜態灰塊（無限動畫對前庭敏感的使用者最不友善） */
+@media (prefers-reduced-motion: reduce) {
+  .lcp-skeleton-line::after,
+  .lcp-thumb--skeleton::after { animation: none; display: none; }
 }
 
 @media (max-width: 480px) {
@@ -432,8 +441,11 @@
 .lcp-card--tinted .lcp-thumb {
   background-color: rgba(var(--lcp-tint), 0.18);
 }
-/* 圖片以淡入呈現，消除「灰→圖」的突兀感 */
+/* 圖片以淡入呈現，消除「灰→圖」的突兀感。
+   ⚠️ 不要過渡 background-image：那是不可內插的屬性，瀏覽器只能在兩張點陣圖之間
+      做交叉淡入（每一幀都要重繪整塊背景），而且各家行為不一致。
+      只過渡 background-color 就好，圖片本身換上去是瞬間的，視覺差異幾乎看不出來。 */
 .lcp-hero,
 .lcp-thumb {
-  transition: background-image 0.2s ease-in;
+  transition: background-color 0.2s ease-in;
 }

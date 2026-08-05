@@ -485,18 +485,35 @@ body:not(.is-mobile) .gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb 
      亮色主題＝白卡浮在 ribbon 灰底上（elevated）；深色主題＝比底亮一階的深灰卡 */
   background: color-mix(in srgb, #fff 4%, var(--background-primary));
   box-shadow: 0 1px 3px rgba(0,0,0,.06);
-  transition: transform .2s cubic-bezier(.2,.7,.2,1), box-shadow .2s;
+  /* ⚠️ 只過渡 transform（compositor-only）。
+     以前連 box-shadow 一起過渡：18px 模糊的陰影每一幀都要重新光柵化，
+     滑鼠掃過卡片牆時同時有一整排在做這件事 → 掉幀。
+     陰影改成「直接換值」，肉眼幾乎看不出差別，成本卻差一個量級。
+     （本來想把陰影預繪在 ::after 只過渡 opacity，但 .gn-card 有 overflow:hidden，
+       子元素畫的外擴陰影會被裁掉 → 這條路走不通。） */
+  transition: transform .2s cubic-bezier(.2,.7,.2,1);
 }
-.gn-card:hover {
+/* hover 一律加 body:not(.is-mobile)：觸控裝置點過的 :hover 會黏住不放 */
+body:not(.is-mobile) .gn-card:hover {
   transform: scale(1.02) translateY(-2px);
   box-shadow: 0 6px 18px rgba(0,0,0,.12);
   z-index: 2;
 }
 .gn-card.gn-card-dragging { opacity: .4; }
-/* 目前開啟的筆記卡：主題色外框 */
-.gn-card-active { box-shadow: 0 0 0 2px var(--interactive-accent), 0 4px 12px rgba(0,0,0,.1); }
-/* 多選中的卡片：粗框 + 微暗 */
-.gn-card-selected { box-shadow: 0 0 0 3px var(--interactive-accent), 0 6px 16px rgba(0,0,0,.18); }
+/* 目前開啟的筆記卡 / 多選中的卡片：外框改用 outline。
+   ① outline 不吃 box-shadow 那條規則的排他性 → hover 時外框不會被陰影蓋掉
+   ② 不參與版面、不需要為了畫框而重新光柵化陰影
+   outline 會沿著 border-radius 走，視覺與原本的 0 0 0 Npx 陰影框一致。 */
+.gn-card-active {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.1);
+}
+.gn-card-selected {
+  outline: 3px solid var(--interactive-accent);
+  outline-offset: -3px;
+  box-shadow: 0 6px 16px rgba(0,0,0,.18);
+}
 .gn-card-selected::after {
   content: ''; position: absolute; inset: 0; border-radius: inherit;
   background: color-mix(in srgb, var(--interactive-accent) 14%, transparent); pointer-events: none;
@@ -1088,9 +1105,9 @@ body.is-mobile {
 .gn-swap-cell {
   border-radius: 8px; overflow: hidden; cursor: pointer;
   background: var(--background-secondary);
-  transition: transform .12s, box-shadow .12s;
+  transition: transform .12s;   /* 同 .gn-card：陰影不過渡，只過渡 transform */
 }
-.gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0 4px 14px rgba(0, 0, 0, .16); }
+body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0 4px 14px rgba(0, 0, 0, .16); }
 /* 固定成正方縮圖：高解析原圖不會把版面（與記憶體）撐爆，也讓瀑布流高度可預測 */
 .gn-swap-cell img {
   width: 100%; aspect-ratio: 1 / 1; height: auto;
@@ -1673,9 +1690,9 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
   gap: 2px;
   padding: 5px;
   border-radius: 999px;
-  background: rgba(40, 40, 40, .72);
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  /* 手機膠囊不用 backdrop-filter（同 peek.css 的 .qp-actions）：
+     底下是黑底，模糊看不出來，卻要多維護一層合成層。 */
+  background: rgba(48, 48, 48, .94);
   box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
   opacity: 1;
   transition: opacity var(--anim-duration-fast, 140ms) ease;
