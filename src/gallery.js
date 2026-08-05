@@ -335,9 +335,13 @@ class SwapImageModal extends Modal {
     // 搜尋列：即時篩檔名/路徑
     const search = contentEl.createEl('input', { type: 'search', cls: 'gn-swap-search' });
     search.placeholder = t('Filter by file name…');
+    /* 去抖 150ms：每個 keystroke 重畫整面牆（含建 MasonryLayout、掛卡片）太貴。
+       畫廊內的搜尋列本來就有去抖，這裡比照。 */
     search.addEventListener('input', () => {
-      this.q = search.value.trim().toLowerCase();
-      this.renderWall();
+      const v = search.value.trim().toLowerCase();
+      if (v === this.q) return;
+      clearTimeout(this._qT);
+      this._qT = setTimeout(() => { this.q = v; this.renderWall(); }, 150);
     });
     setTimeout(() => search.focus(), 0);
 
@@ -350,13 +354,24 @@ class SwapImageModal extends Modal {
     }, { passive: true });
   }
 
-  // 全 vault 圖片，依「最近修改」排序；排除目前這張
-  candidates() {
+  /* 基底清單（全 vault 圖片、依最近修改排序、排除目前這張）只算一次。
+     以前每個 keystroke 都重跑 getFiles() + 副檔名 filter + 全量 sort——
+     vault 有 4000+ 張圖，打一個字就是一次全表掃描加排序。
+     視窗開著的期間清單不會變，篩選只是在這份基底上做 includes。 */
+  baseList() {
+    if (this._base) return this._base;
     const cur = this.oldFile ? this.oldFile.path : '';
-    let list = this.app.vault.getFiles()
+    const list = this.app.vault.getFiles()
       .filter((f) => IMG_EXT.test(f.path) && f.path !== cur);
-    if (this.q) list = list.filter((f) => f.path.toLowerCase().includes(this.q));
     list.sort((a, b) => b.stat.mtime - a.stat.mtime);
+    // 先存「已排序的全部」：篩選後還是要能從全體挑出最近的 MAX 張
+    this._base = list;
+    return list;
+  }
+
+  candidates() {
+    const base = this.baseList();
+    const list = this.q ? base.filter((f) => f.path.toLowerCase().includes(this.q)) : base;
     return list.slice(0, this.MAX);   // 只留最近的 N 張：沒人會捲到第 300 張，也避免記憶體壓力
   }
 
@@ -395,6 +410,8 @@ class SwapImageModal extends Modal {
   }
 
   onClose() {
+    clearTimeout(this._qT);          // 關閉後別再觸發一次重畫
+    this._base = null;               // 放掉基底清單（數千個 TFile 參照）
     if (this.masonry) { try { this.masonry.destroy(); } catch (e) {} }
     this.contentEl.empty();
   }
@@ -448,20 +465,32 @@ class PinterestModal extends Modal {
     // 手機：把原始查詢圖併進結果捲動區最上方 → 往下捲時會跟著捲走，不再卡在畫面上方
     if (this.isMobile) right.insertBefore(left, right.firstChild);
 
-    // 拖曳分隔桿調整左欄寬度
-    const onMove = (e) => {
-      const rect = bodyEl.getBoundingClientRect();
-      let w = e.clientX - rect.left;
-      w = Math.max(140, Math.min(rect.width - 220, w));
+    /* 拖曳分隔桿調整左欄寬度。
+       同畫廊分隔桿：rect 在 mousedown 讀一次，mousemove 只記座標、rAF 內才寫，
+       避免每次移動都「讀 rect → 寫樣式」交錯造成強制版面重算。 */
+    let dragRect = null, dragX = 0, moveRaf = 0;
+    const applyW = () => {
+      moveRaf = 0;
+      if (!dragRect) return;
+      let w = dragX - dragRect.left;
+      w = Math.max(140, Math.min(dragRect.width - 220, w));
       left.style.flex = '0 0 ' + w + 'px';
+    };
+    const onMove = (e) => {
+      dragX = e.clientX;
+      if (!moveRaf) moveRaf = requestAnimationFrame(applyW);
     };
     const onUp = () => {
       document.body.style.cursor = '';
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; applyW(); }
+      dragRect = null;
     };
     splitter.addEventListener('mousedown', (e) => {
       e.preventDefault();
+      dragRect = bodyEl.getBoundingClientRect();
+      dragX = e.clientX;
       document.body.style.cursor = 'col-resize';
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -912,18 +941,46 @@ function itemFromFile(app, f) {
 const FOLDER_CLOSED_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>';
 const FOLDER_OPEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>';
 
+/* SVG 樣板快取（2026-08-05）：同一個圖示在樹上每一列都要一份，
+   以前每列都 new DOMParser() 重解一次（>100 列的子樹就是 100 次解析）。
+   改成每種圖示只解析一次存成樣板，之後一律 cloneNode(true)。
+   ⚠️ 樣板本身永遠不掛到畫面上，只當複製來源。 */
+const _svgTpl = new Map();
+function svgClone(key, make) {
+  let tpl = _svgTpl.get(key);
+  if (tpl === undefined) { tpl = make() || null; _svgTpl.set(key, tpl); }
+  return tpl ? tpl.cloneNode(true) : null;
+}
+
 // SVG 常數 → DOM（不用 innerHTML：上架審查會標記，且 DOMParser 同樣快）
 function setSvg(el, svg) {
   el.textContent = '';
   try {
-    // ⚠️ 一定要用 text/html 模式：SVG 常數沒寫 xmlns，XML 模式解析出來的 <svg>
-    //   是「無命名空間元素」，掛上去不會渲染（2026-07-18 圖示消失事故）。
-    //   HTML 解析器會把 <svg> 當外來內容、自動給正確命名空間——跟 innerHTML 行為一致。
-    const node = new DOMParser().parseFromString(svg, 'text/html').body.firstElementChild;
-    if (node && node.tagName && node.tagName.toLowerCase() === 'svg') {
-      el.appendChild(document.importNode(node, true));
-    }
+    const node = svgClone(svg, () => {
+      // ⚠️ 一定要用 text/html 模式：SVG 常數沒寫 xmlns，XML 模式解析出來的 <svg>
+      //   是「無命名空間元素」，掛上去不會渲染（2026-07-18 圖示消失事故）。
+      //   HTML 解析器會把 <svg> 當外來內容、自動給正確命名空間——跟 innerHTML 行為一致。
+      const parsed = new DOMParser().parseFromString(svg, 'text/html').body.firstElementChild;
+      if (!parsed || !parsed.tagName || parsed.tagName.toLowerCase() !== 'svg') return null;
+      return document.importNode(parsed, true);
+    });
+    if (node) el.appendChild(node);
   } catch (e) {}
+}
+
+/* lucide 圖示的樣板版：setIcon() 每次呼叫都要重建一次 SVG，
+   樹列的箭頭、卡片的檔型圖示都是「同一個圖示畫幾百次」。
+   取不到樣板（API 行為改變）時自動退回原生 setIcon。 */
+function setIconCached(el, name) {
+  try {
+    const node = svgClone('lucide:' + name, () => {
+      const tmp = document.createElement('span');
+      setIcon(tmp, name);
+      return tmp.firstElementChild || null;
+    });
+    if (node) { el.textContent = ''; el.appendChild(node); return; }
+  } catch (e) {}
+  setIcon(el, name);
 }
 
 function setFolderIcon(el, open) {
@@ -1298,7 +1355,12 @@ class GalleryView extends ItemView {
     this.drag = null;         // { kind: 'note'|'folder', path }
     this.selected = new Set();   // 多選：檔案路徑
     this.selAnchor = null;       // 範圍選的錨點
-    this._tagDirty = true;       // 標籤索引快取失效旗標
+    this._tagDirty = true;       // 標籤索引快取失效旗標（buildTagIndex 專用，用完會清掉）
+    /* 世代編號：標籤相關資料每變動一次就 +1。
+       ⚠️ 不能讓多個快取共用 _tagDirty 這個布林——先跑的那個會把旗標清掉，
+          後跑的就永遠看不到「該失效」。每個快取記下自己算的時候是第幾代即可。 */
+    this._tagGen = 0;
+    this._folderTagsCache = null;
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -1318,7 +1380,7 @@ class GalleryView extends ItemView {
       this.syncToFile(file);
     }));
     // 標籤索引快取失效：metadata 變動或檔案增刪改名時標記，下次用到才重建
-    const markTagDirty = () => { this._tagDirty = true; };
+    const markTagDirty = () => { this._tagDirty = true; this._tagGen++; };
     this.registerEvent(this.app.metadataCache.on('changed', markTagDirty));
     /* 'create' 在 Obsidian 啟動時會對「每個既有檔案」各發一次（數千次），
        延到 layout ready 後才註冊，避開啟動期洪水。 */
@@ -1433,11 +1495,15 @@ class GalleryView extends ItemView {
         sel.scrollIntoView({ block: 'nearest' });
         this.saveTreeScroll();   // 同步定位造成的捲動也要記下來
       });
-      // 跨資料夾定位 bug 修正（2026-07-20）：原本只捲了左欄樹到資料夾，右欄卡片牆沒捲到 active 卡片。
-      // render 後補捲一次（立即＋400ms），等分批渲染/縮圖延遲載入造成的高度變化穩定再定位一次。
-      // 若 active 筆記在分批渲染的第一批之外，卡片尚未建立 → setActiveCard 找不到就先略過（同最愛定位的既有限制）。
+      /* 跨資料夾定位（2026-07-20）：右欄卡片牆也要捲到 active 卡片。
+         若該筆記在分批渲染的第一批之外，卡片還沒建出來 → 以前用固定 400ms 再試一次猜，
+         現在改成「卡片出現了就定位」（內容長高才會再試，見 settleScroll）。 */
       this.setActiveCard(file.path);
-      window.setTimeout(() => this.setActiveCard(file.path), 400);
+      this.settleScroll(() => {
+        if (!this.cardElsFor(file.path).length) return false;
+        this.setActiveCard(file.path);
+        return true;
+      });
     });
   }
 
@@ -1555,11 +1621,19 @@ class GalleryView extends ItemView {
   // 新建檔案選單（資料夾 / md / Canvas / Base）
   // 目前資料夾（含攤平時的子孫）裡出現過的標籤 → [{ tag, n }]，依筆數多到少排序
   // 只取「筆記自己寫的標籤」（不展開祖先層級），膠囊才不會爆量
+  /* 本夾標籤統計。一次 render 至少被叫兩次（標籤 dock、「更多」面板），
+     攤平模式下每次都要遞迴整棵子樹 + 對每則 md 讀 metadata cache。
+     → 以「資料夾 + 攤平 + 隱藏清單 + 標籤世代」為 key 快取。 */
   folderTags() {
     if (this.plugin.state.leftMode === 'tag') return [];   // 標籤模式本身就在看標籤，不重複
     const folder = this.folderAt(this.path);
     if (!folder) return [];
     const flatten = !!this.plugin.state.flattenFolders;
+    const hidden = this.plugin.state.hiddenFolders || [];
+    const key = (folder.path || '/') + '|' + (flatten ? 1 : 0) + '|' + (this.showHidden ? 1 : 0) + '|' + hidden.join(',');
+    const gen = this._tagGen || 0;
+    const c = this._folderTagsCache;
+    if (c && c.key === key && c.gen === gen) return c.value;
     const items = flatten
       ? notesInDeep(this.app, folder, new Set(this.plugin.state.hiddenFolders || []))
       : notesIn(this.app, folder);
@@ -1571,9 +1645,11 @@ class GalleryView extends ItemView {
         count.set(clean, (count.get(clean) || 0) + 1);
       }
     }
-    return [...count.entries()]
+    const value = [...count.entries()]
       .map(([tag, n]) => ({ tag, n }))
       .sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag));
+    this._folderTagsCache = { key, gen, value };
+    return value;
   }
 
   // 這則筆記有沒有命中目前的標籤篩選（多選＝OR：任一個中就算）
@@ -2154,7 +2230,7 @@ class GalleryView extends ItemView {
       const { thumb } = makeIconSlot(row);
       // 資料夾用和樹狀圖同一個自訂資料夾圖示（並加 folder class 一起藏）；筆記用 lucide file-text（保留）
       if (f.type === 'folder') { thumb.addClass('gn-tthumb-folder'); setFolderIcon(thumb, false); }
-      else setIcon(thumb, 'file-text');
+      else setIconCached(thumb, 'file-text');
       row.createSpan('gn-tname').setText(af.basename || af.name);
       row.onclick = () => {
         if (f.type === 'folder') {
@@ -2168,8 +2244,9 @@ class GalleryView extends ItemView {
           // 不受「同步定位」開關影響——點最愛＝明確的定位意圖。
           this.plugin.state.leftMode = 'folder';
           this.syncToFile(af);
-          this.setActiveCard(af.path);                                  // 同牆已 active → 立刻捲到卡片
-          window.setTimeout(() => this.setActiveCard(af.path), 400);   // 跨資料夾重畫後再定位一次
+          this.setActiveCard(af.path);   // 同牆已 active → 立刻捲到卡片
+          /* 跨資料夾的情況不用在這裡補 400ms：syncToFile 內部重畫後自己會走
+             settleScroll（卡片一出現就定位），不必再猜一個時間。 */
           this.gotoCardsMobile();
         }
       };
@@ -3077,24 +3154,36 @@ class GalleryView extends ItemView {
       }, { capture: true });
     }
 
-    // 拖曳分隔桿調整左樹寬度（拖完存進 data.json）
-    let pendingW = null;
-    const onMove = (e) => {
-      const rect = split.getBoundingClientRect();
-      let w = e.clientX - rect.left;
-      w = Math.max(150, Math.min(rect.width - 200, w));
+    /* 拖曳分隔桿調整左樹寬度（拖完存進 data.json）。
+       ⚠️ 讀寫要分離：以前每個 mousemove 都 getBoundingClientRect()（讀）再寫 flex／CSS 變數，
+          讀-寫-讀-寫交錯 → 每次移動都強制同步版面重算。
+          改成 rect 在 mousedown 讀一次快取，mousemove 只記座標、rAF 內才寫。 */
+    let pendingW = null, dragRect = null, dragX = 0, moveRaf = 0;
+    const applyW = () => {
+      moveRaf = 0;
+      if (!dragRect) return;
+      let w = dragX - dragRect.left;
+      w = Math.max(150, Math.min(dragRect.width - 200, w));
       tree.style.flex = '0 0 ' + w + 'px';
       syncBarL(w);   // 工具列左段跟著左欄寬度
       pendingW = w;
+    };
+    const onMove = (e) => {
+      dragX = e.clientX;
+      if (!moveRaf) moveRaf = requestAnimationFrame(applyW);
     };
     const onUp = () => {
       document.body.style.cursor = '';
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; applyW(); }   // 補上最後一次位置
+      dragRect = null;
       if (pendingW != null) { state.treeWidth = Math.round(pendingW); this.plugin.saveState(); }
     };
     splitter.addEventListener('mousedown', (e) => {
       e.preventDefault();
+      dragRect = split.getBoundingClientRect();   // 拖曳期間容器不會變 → 讀一次就夠
+      dragX = e.clientX;
       document.body.style.cursor = 'col-resize';
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -3176,7 +3265,7 @@ class GalleryView extends ItemView {
         if (hasKids) {
           row.addClass('gn-thaskids');   // CSS 靠它決定 hover 要不要換成箭頭
           // 固定用 chevron-right，展開狀態靠 CSS 轉 90°（換圖示無法做旋轉動畫）
-          setIcon(caret, 'chevron-right');
+          setIconCached(caret, 'chevron-right');
           // 綁在箭頭上：桌機的 caret 是 inset:0 撐滿整格 → 點整格都能展開；
           // 手機的 caret 只佔箭頭那一格 → 點資料夾圖示是「選取」，點箭頭才展開。
           caret.onclick = (e) => { e.stopPropagation(); this.toggleExpand(it.folder.path); };
@@ -3327,28 +3416,54 @@ class GalleryView extends ItemView {
     return 'folder:' + (this.path || '');
   }
 
-  // 還原右欄卡片牆的捲動位置。
-  // 難點：分批渲染 + 圖片/內文延遲載入 → 內容高度是「慢慢長出來」的，一次設 scrollTop 到不了深處。
-  // 做法：分次嘗試——每次把 scrollTop 推到目標（會被當下 scrollHeight 夾住，順勢讓哨兵進視野、
-  // 觸發補下一批卡片），直到到位、內容不再長高、或使用者自己動手捲動為止。
+  /* 「內容穩定後才定位」的共用機制（2026-08-05）。
+     背景：分批渲染 + 圖片/內文延遲載入 → 內容高度是慢慢長出來的，
+     一次設 scrollTop 到不了深處，卡片也可能還沒建出來。
+     以前用兩套猜時間的做法：每 50ms 輪詢最多 2 秒（每次都寫 scrollTop 再讀 scrollHeight，
+     一次強制版面重算）＋固定 400ms 再定位一次。
+
+     改成事件驅動：在卡片牆上掛 ResizeObserver，只有「內容真的長高」時才再試一次。
+     apply() 回傳 true = 已到位（解除監聽）。使用者自己動手捲、或逾時，也一律解除。 */
+  settleScroll(apply, opts) {
+    opts = opts || {};
+    const main = this._main;
+    if (!main || !main.isConnected) return;
+    const target = main.querySelector('.gn-grid') || main;
+    let done = false, ro = null, timer = 0;
+    const stop = () => {
+      if (done) return;
+      done = true;
+      if (ro) { try { ro.disconnect(); } catch (e) {} ro = null; }
+      if (timer) { clearTimeout(timer); timer = 0; }
+      main.removeEventListener('wheel', stop);
+      main.removeEventListener('touchstart', stop);
+    };
+    const tick = () => {
+      if (done) return;
+      if (this._main !== main || !main.isConnected) { stop(); return; }
+      let ok = false;
+      try { ok = !!apply(); } catch (e) { ok = true; }
+      if (ok) stop();
+    };
+    main.addEventListener('wheel', stop, { once: true, passive: true });
+    main.addEventListener('touchstart', stop, { once: true, passive: true });
+    try {
+      ro = new ResizeObserver(tick);   // observe 當下會先觸發一次，等於第一次嘗試
+      ro.observe(target);
+    } catch (e) {}
+    timer = window.setTimeout(stop, opts.timeout || 3000);
+    requestAnimationFrame(tick);
+  }
+
+  // 還原右欄卡片牆的捲動位置（同一面牆重畫時；換牆就不還原，自然從頂部開始）
   restoreMainScroll() {
     const saved = this._mainScrollSaved;
     const main = this._main;
     if (!saved || !main || !saved.top || saved.key !== this.mainScrollKey()) return;
-    let cancelled = false;
-    const cancel = () => { cancelled = true; };
-    main.addEventListener('wheel', cancel, { once: true, passive: true });
-    main.addEventListener('touchstart', cancel, { once: true, passive: true });
-    let lastH = -1, stale = 0, tries = 0;
-    const attempt = () => {
-      if (cancelled || this._main !== main || !main.isConnected) return;
-      main.scrollTop = saved.top;
-      if (Math.abs(main.scrollTop - saved.top) <= 4) return;          // 到位
-      stale = main.scrollHeight === lastH ? stale + 1 : 0;            // 高度沒再長，累計就放棄
-      lastH = main.scrollHeight;
-      if (++tries < 40 && stale < 6) setTimeout(attempt, 50);         // 最多 ~2 秒
-    };
-    requestAnimationFrame(attempt);
+    this.settleScroll(() => {
+      main.scrollTop = saved.top;                       // 會被當下 scrollHeight 夾住，
+      return Math.abs(main.scrollTop - saved.top) <= 4; // 順勢讓哨兵進視野、觸發補下一批
+    });
   }
 
   // 右欄內容的分派。抽出來是為了讓搜尋打字時能「只重繪右欄」——
@@ -3792,10 +3907,10 @@ class GalleryView extends ItemView {
       if (hasKids && isOpen) row.addClass('gn-topen');
       // 圖示欄：平常是 #，hover 時換成箭頭（與資料夾樹同一套行為）
       const { thumb, caret } = makeIconSlot(row);
-      setIcon(thumb, 'hash');
+      setIconCached(thumb, 'hash');
       if (hasKids) {
         row.addClass('gn-thaskids');
-        setIcon(caret, 'chevron-right');   // 展開狀態靠 CSS 轉 90°
+        setIconCached(caret, 'chevron-right');   // 展開狀態靠 CSS 轉 90°
         caret.onclick = (e) => { e.stopPropagation(); this.toggleTag(node.path); };
       }
       row.createSpan('gn-tname').setText(node.name);
@@ -4178,7 +4293,7 @@ class GalleryView extends ItemView {
       // PDF 之後渲染出封面時會在 loadPdfThumb 移除這個 class。
       card.addClass('gn-icon-cover');
       const ph = card.createDiv('gn-fileicon');
-      setIcon(ph.createDiv('gn-fileicon-ic'), iconForExt(it.ext));       // icon 在上
+      setIconCached(ph.createDiv('gn-fileicon-ic'), iconForExt(it.ext));       // icon 在上
       ph.createSpan('gn-fileicon-label').setText(it.ext.toUpperCase());  // 文字（BASE / CANVAS…）在下，一起置中
       /* Canvas 不抓縮圖（2026-08-01 使用者要求）：以前會把 canvas 裡第一張嵌入圖當封面，
          但那張圖是隨機的、跟 canvas 的內容無關，同一面牆上每張 canvas 卡長得都不一樣。
