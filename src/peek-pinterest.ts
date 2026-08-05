@@ -61,8 +61,17 @@ function pinGifGuess(url: string | undefined): string | null {
 	return /\/originals\/.+\.gif$/i.test(g) ? g : null;
 }
 
-/** HEAD 探測（結果快取；併發上限 5，免一頁 80 張同時打爆） */
+/** HEAD 探測（結果快取；併發上限 5，免一頁同時打爆） */
+// 上限 500 筆的 FIFO：多輪搜尋累積下來不會無限成長（close() 時也會整個清掉）
+const GIF_CACHE_MAX = 500;
 const gifCache = new Map<string, Promise<string | null>>();
+function gifCacheSet(key: string, value: Promise<string | null>) {
+	if (gifCache.size >= GIF_CACHE_MAX) {
+		const oldest = gifCache.keys().next().value as string | undefined;
+		if (oldest !== undefined) gifCache.delete(oldest);
+	}
+	gifCache.set(key, value);
+}
 let gifRunning = 0;
 const gifQueue: Array<() => Promise<void>> = [];
 function gifPump() {
@@ -94,7 +103,7 @@ function probePinGif(thumbUrl: string | undefined): Promise<string | null> {
 		});
 		gifPump();
 	});
-	gifCache.set(guess, p);
+	gifCacheSet(guess, p);
 	return p;
 }
 
@@ -312,6 +321,11 @@ export class PinterestPanel {
 	private masonry: MasonryLayout;
 	private keyScope: Scope;
 	private io: IntersectionObserver | null = null;
+	/* gif 探測改成「進到視野才做」（2026-08-05）。
+	   以前 renderPins 對每一個 pin 立刻 HEAD 探測，一頁 80 張就是 80 個請求，
+	   而且命中就馬上把 im.src 換成原檔 gif —— 離螢幕的 pin 也照樣下載並播放。 */
+	private gifIo: IntersectionObserver | null = null;
+	private gifProbes = new WeakMap<Element, () => void>();
 
 	private bookmark = "";
 	private loading = false;
@@ -469,7 +483,7 @@ export class PinterestPanel {
 		const buf = (raw ? this.rawBuf : this.srcBuf) as ArrayBuffer;
 		const mime = raw ? this.rawMime : this.srcMime;
 		const { boundary, body } = buildMultipart(
-			{ x: "0", y: "0", w: "1", h: "1", page_size: "80" },
+			{ x: "0", y: "0", w: "1", h: "1", page_size: "30" },
 			"image",
 			"image.jpg",
 			buf,
@@ -633,6 +647,31 @@ export class PinterestPanel {
 		}
 	}
 
+	/* 元素進入視野（含 300px 提前量）時跑一次 fn，之後就不再觀察。
+	   IntersectionObserver 不可用時（極舊環境）退回「立刻執行」，行為與改版前相同。 */
+	private whenVisible(el: HTMLElement, fn: () => void) {
+		try {
+			if (!this.gifIo) {
+				this.gifIo = new IntersectionObserver(
+					(entries) => {
+						for (const e of entries) {
+							if (!e.isIntersecting) continue;
+							const job = this.gifProbes.get(e.target);
+							this.gifIo?.unobserve(e.target);
+							this.gifProbes.delete(e.target);
+							if (job) job();
+						}
+					},
+					{ root: this.scrollEl, rootMargin: "300px 0px" }
+				);
+			}
+			this.gifProbes.set(el, fn);
+			this.gifIo.observe(el);
+		} catch (e) {
+			fn();
+		}
+	}
+
 	private renderPins(pins: PinItem[], append: boolean) {
 		if (!append) {
 			this.masonry.clear();
@@ -659,24 +698,27 @@ export class PinterestPanel {
 
 			// 背景探測原檔 gif：是動圖 → 換成會動的原檔 + GIF 角標；
 			// 是動態 pin 卻拿不到 gif（只有影片）→ 不顯示，直接把格子移除。
-			void probePinGif(big).then((gif) => {
-				if (!cell.isConnected) return;
-				if (gif) {
-					p._gifUrl = gif; // 下載時抓原始 gif
-					im.removeAttribute("loading");
-					im.src = gif;
-					cell.createDiv({ cls: "ip-pin-gif-badge", text: "GIF" });
-					return;
-				}
-				if (pinIsAnimated(p)) {
-					this.skipped++;
-					this.masonry.remove(cell);
-					if (this.statusBase) {
-						this.statusEl.setText(
-							`${this.statusBase} · ${t("skipped {{n}} animated pins without a gif", { n: this.skipped })}`
-						);
+			// ⚠️ 只有捲到看得見時才探測、才換 gif（見 gifIo）。
+			this.whenVisible(cell, () => {
+				void probePinGif(big).then((gif) => {
+					if (!cell.isConnected) return;
+					if (gif) {
+						p._gifUrl = gif; // 下載時抓原始 gif
+						im.removeAttribute("loading");
+						im.src = gif;
+						cell.createDiv({ cls: "ip-pin-gif-badge", text: "GIF" });
+						return;
 					}
-				}
+					if (pinIsAnimated(p)) {
+						this.skipped++;
+						this.masonry.remove(cell);
+						if (this.statusBase) {
+							this.statusEl.setText(
+								`${this.statusBase} · ${t("skipped {{n}} animated pins without a gif", { n: this.skipped })}`
+							);
+						}
+					}
+				});
 			});
 
 			// 桌機：點格子 = 直接到 Pinterest 原網址
@@ -787,6 +829,9 @@ export class PinterestPanel {
 	close() {
 		this.app.keymap.popScope(this.keyScope);
 		this.io?.disconnect();
+		this.gifIo?.disconnect();
+		this.gifIo = null;
+		gifCache.clear();   // 探測結果只在這次視窗有意義，關掉就放掉（見 gifCache 上限說明）
 		this.masonry.destroy();
 		this.rootEl.remove();
 		this.onClosed?.();
