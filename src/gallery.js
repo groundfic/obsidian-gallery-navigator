@@ -70,7 +70,17 @@ function pinGifGuess(url) {
 }
 
 // HEAD 探測（結果快取；同時併發上限 5，免一頁 80 張同時打爆）
+// 上限 500 筆的 FIFO：多輪以圖搜圖會一直往裡加，沒有上限就是單調成長到重載為止
+const PIN_GIF_CACHE_MAX = 500;
+const TINT_CACHE_MAX = 2000;   // 卡片主色快取上限（key = path:mtime，逛過的每張圖都會留一筆）
 const _pinGifCache = new Map();
+function _pinGifCacheSet(key, value) {
+  if (_pinGifCache.size >= PIN_GIF_CACHE_MAX) {
+    const oldest = _pinGifCache.keys().next().value;
+    if (oldest !== undefined) _pinGifCache.delete(oldest);
+  }
+  _pinGifCache.set(key, value);
+}
 let _pinGifRunning = 0;
 const _pinGifQueue = [];
 function _pinGifPump() {
@@ -95,7 +105,7 @@ function probePinGif(thumbUrl) {
     });
     _pinGifPump();
   });
-  _pinGifCache.set(guess, p);
+  _pinGifCacheSet(guess, p);
   return p;
 }
 
@@ -4196,6 +4206,7 @@ class GalleryView extends ItemView {
   // 建一張卡片（原 renderNoteWall 內的邏輯，抽出來讓各區共用）
   // opts: { skipPreview }
   /* 自動卡片底色（2026-07-20，設定 → 卡片牆可開關）：從封面圖抽主色，混入主題底色當卡片背景。
+     （主色快取上限見 TINT_CACHE_MAX）
      ⚠️ 手動右鍵上色（gn-card-colored）永遠優先，不會被自動色蓋掉。
      快取 key＝path:mtime（同一張圖只算一次；只存記憶體，重載後重算，成本極低）。 */
   autoTintCard(card, img, key) {
@@ -4210,7 +4221,13 @@ class GalleryView extends ItemView {
     if (cache.has(key)) { apply(cache.get(key)); return; }
     const run = () => {
       const rgb = gnDominantColor(img);
-      cache.set(key, rgb);   // 連 null 也記，避免反覆重算失敗的圖
+      // 連 null 也記，避免反覆重算失敗的圖。加 FIFO 上限：
+      // key 是 path:mtime，逛過的每一張圖都會留一筆，沒有上限就是單調成長。
+      if (cache.size >= TINT_CACHE_MAX) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) cache.delete(oldest);
+      }
+      cache.set(key, rgb);
       apply(rgb);
     };
     if (img.complete && img.naturalWidth) run();
@@ -6196,17 +6213,46 @@ class GalleryPlugin extends Plugin {
       if (dropped) this.saveDimIndex();
     } catch (e) { this._dimIndex = {}; }
   }
+  /* 長寬比索引落地。
+     ⚠️ 這是「整份 stringify + 整檔重寫」，而呼叫端是 dims.js 的預取器：
+        開一個 4000 張的資料夾，每解析出一張就叫一次。舊寫法用 trailing debounce
+        （每次都把計時器往後推），預取期間變動是連續的 → 反而一路被順延到最後，
+        中途當掉就整批白做；而每次真的寫出去又是整份幾百 KB。
+
+     改成「累積門檻 + 固定窗 + 閒置時才寫」：
+       • 每次呼叫只累加待寫筆數，不重排計時器（固定窗，不會被一直順延）
+       • 到期時若瀏覽器有 requestIdleCallback，就等主執行緒閒下來才 stringify
+       • onunload 由 flushDimIndex() 補寫，不會掉資料 */
   saveDimIndex() {
-    clearTimeout(this._dimSaveT);
-    // 1500ms：比 og 索引更鬆，因為捲一面牆會連續記錄上百筆，沒必要頻繁落地
-    this._dimSaveT = setTimeout(async () => {
-      try {
-        const a = this.app.vault.adapter;
-        const dir = this.ogCacheDir();
-        if (!(await a.exists(dir))) await a.mkdir(dir);
-        await a.write(this.dimIndexPath(), JSON.stringify(this._dimIndex));
-      } catch (e) {}
-    }, 1500);
+    this._dimDirty = (this._dimDirty || 0) + 1;
+    if (this._dimSaveT) return;
+    // 累積夠多筆就縮短等待（大批預取時每 ~1.5 秒落地一次），零星變動則等久一點
+    const wait = this._dimDirty >= 50 ? 1500 : 4000;
+    this._dimSaveT = setTimeout(() => {
+      this._dimSaveT = 0;
+      const run = () => { this._writeDimIndex().catch(() => {}); };
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(run, { timeout: 2000 });
+      } else {
+        run();
+      }
+    }, wait);
+  }
+
+  // 還有沒寫出去的變更就立刻寫（onunload 用）
+  async flushDimIndex() {
+    if (this._dimSaveT) { clearTimeout(this._dimSaveT); this._dimSaveT = 0; }
+    if (this._dimDirty) await this._writeDimIndex();
+  }
+
+  async _writeDimIndex() {
+    this._dimDirty = 0;
+    try {
+      const a = this.app.vault.adapter;
+      const dir = this.ogCacheDir();
+      if (!(await a.exists(dir))) await a.mkdir(dir);
+      await a.write(this.dimIndexPath(), JSON.stringify(this._dimIndex));
+    } catch (e) {}
   }
 
   // 連結預覽快取：資料夾與索引檔（放外掛資料夾，不污染 vault 筆記）
@@ -6234,6 +6280,7 @@ class GalleryPlugin extends Plugin {
     // 卸載前把尚未寫入的狀態刷出去
     clearTimeout(this._saveT);
     if (this.search) this.search.disposeTimers();   // modify 去抖的待觸發計時器
+    await this.flushDimIndex();                     // 長寬比索引改成閒置才寫 → 這裡要補刷
     await this.saveData(this.state);
   }
 
