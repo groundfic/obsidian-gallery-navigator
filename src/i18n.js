@@ -30,6 +30,7 @@ function isZh() { return _isZh; }
 const ZH_TW = {
   // ── 指令 ──
   'Open Gallery Navigator': '開啟 Gallery Navigator',
+  'Open in Gallery': '在畫廊開啟',
   'Open Mini Calendar': '開啟 Mini Calendar',
   'Search (popup)': '懸浮搜尋',
   'Search: extract all PDF text (Text Extractor)': '搜尋：擷取全部 PDF 內文（text-extractor）',

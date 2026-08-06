@@ -5945,6 +5945,7 @@ class GalleryPlugin extends Plugin {
     // 處理器掛在更內層、先跑完就把原生選單顯示出來了，這段等於從來沒生效過。
     // 而且劫持原生選單是上架審查的減分項，所以直接拿掉，改成把項目「加進」原生選單。
     this.setupImageFileMenu();
+    this.setupFolderFileMenu();
 
     // 原生 lightbox（Obsidian 1.13+）補上動作膠囊
     this.setupLightboxActions();
@@ -6031,6 +6032,44 @@ class GalleryPlugin extends Plugin {
             new SwapImageModal(this.app, file, (picked) => this.swapImage(note, file, picked, nth)).open();
           }));
       }
+    }));
+  }
+
+  /* 資料夾右鍵 →「在畫廊開啟」。
+     為什麼走 file-menu 而不是自己攔點擊（2026-08-06）：
+       分頁標題列那排原生路徑麵包屑（.view-header-breadcrumb），左鍵是寫死的
+       「在核心檔案總管裡展開該資料夾」，那個 listener 拿不到參照、無法移除，
+       要擋只能在捕獲階段 stopPropagation —— 等於默默拿掉使用者本來就有的核心功能，
+       而且會波及同一個元素上的原生右鍵與拖曳。
+       但原生麵包屑的**右鍵**最後會呼叫
+         workspace.trigger('file-menu', menu, folder, 'file-explorer-context-menu')
+       （已從 obsidian-1.13.4.asar 確認），所以掛這個公開事件就能接到那個 TFolder：
+       零 DOM 依賴、不攔截任何原生行為、registerEvent 會自動清理。
+       同一項也會出現在檔案總管的資料夾右鍵，順便涵蓋。 */
+  setupFolderFileMenu() {
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (!(file instanceof TFolder)) return;
+      menu.addItem((i) => i.setTitle(t('Open in Gallery')).setIcon(GN_ICON_ID)
+        .onClick(async () => {
+          await this.activateView();
+          const path = file.path && file.path !== '/' ? file.path : '';
+          // 展開祖先，選到的資料夾在左樹才看得到（同 syncToFile 的做法）
+          const expanded = new Set(this.state.expandedFolders || []);
+          let acc = '';
+          for (const seg of (path ? path.split('/') : [])) {
+            acc = acc ? acc + '/' + seg : seg;
+            expanded.add(acc);
+          }
+          this.state.expandedFolders = [...expanded];
+          this.state.leftMode = 'folder';   // 標籤模式下也要切回資料夾模式，否則導覽沒有意義
+          for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+            const v = leaf.view;
+            if (v instanceof GalleryView) {
+              v._searchOn = false; v._searchQ = '';   // 搜尋牆顯示中的話先收掉，不然看不到資料夾
+              v.navigate(path);
+            }
+          }
+        }));
     }));
   }
 
