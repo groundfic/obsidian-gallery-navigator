@@ -6049,7 +6049,7 @@ class GalleryPlugin extends Plugin {
   setupFolderFileMenu() {
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
       if (!(file instanceof TFolder)) return;
-      menu.addItem((i) => i.setTitle(t('Open in Gallery')).setIcon(GN_ICON_ID)
+      menu.addItem((i) => i.setTitle(t('Open in Gallery Navigator')).setIcon(GN_ICON_ID)
         .onClick(async () => {
           await this.activateView();
           const path = file.path && file.path !== '/' ? file.path : '';
