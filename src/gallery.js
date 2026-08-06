@@ -1473,14 +1473,31 @@ class GalleryView extends ItemView {
     return false;
   }
 
+  /* 這個檔案是不是「目前這面牆上本來就有」的項目。
+     攤平模式下右欄是整棵子樹的檔案，子資料夾的檔案也在牆上 —— 這種情況
+     **不該**跳去它所在的子資料夾，否則使用者在攤平的大牆上捲很久之後點一張卡，
+     畫面會立刻換成那個子資料夾的牆、捲動位置全丟（2026-08-06 使用者回報）。 */
+  isInCurrentWall(file) {
+    if (!this.plugin.state.flattenFolders) return false;
+    if (this._searchQ) return false;                       // 搜尋牆有自己的來源清單
+    const base = this.path || '';
+    // 根目錄（base 為空）攤平＝整個 vault 都在牆上
+    if (base && !file.path.startsWith(base + '/')) return false;
+    // 攤平時 notesInDeep 會跳過隱藏子資料夾 → 那些檔案並不在牆上
+    if (this.plugin.isHiddenPath(file.path)) return false;
+    return true;
+  }
+
   syncToFile(file) {
     if (this.drag) return;                        // 拖曳進行中 → 不重繪，避免中斷拖曳
     if (this.plugin.state.leftMode === 'tag') return;   // 標籤模式不做資料夾定位
     if (!(file instanceof TFile)) return;
     const curFolder = file.parent && file.parent.path !== '/' ? file.parent.path : '';
-    if (curFolder === this.path && this.activePath === file.path) return;  // 無變化不重繪
-    // 同資料夾內換檔 → 只更新 active 卡片，不整頁重畫（避免 PDF 縮圖等重載）
-    if (curFolder === this.path) { this.setActiveCard(file.path); return; }
+    // 同一面牆＝同資料夾，或攤平模式下這個檔案本來就在牆上
+    const sameWall = curFolder === this.path || this.isInCurrentWall(file);
+    if (sameWall && this.activePath === file.path) return;  // 無變化不重繪
+    // 同一面牆內換檔 → 只更新 active 卡片，不整頁重畫（避免 PDF 縮圖等重載）
+    if (sameWall) { this.setActiveCard(file.path); return; }
     const parent = file.parent;
     const folderPath = parent && parent.path !== '/' ? parent.path : '';
     const expanded = new Set(this.plugin.state.expandedFolders || []);
