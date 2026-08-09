@@ -35,8 +35,6 @@ const ZH_TW = {
   'Search (popup)': '懸浮搜尋',
   'Search: extract all PDF text (Text Extractor)': '搜尋：擷取全部 PDF 內文（text-extractor）',
   'Search: rebuild index': '搜尋：強制重建索引',
-  'Search: test query': '搜尋：測試查詢',
-  'Diagnose: mobile pane switching': '診斷：手機欄位跳轉',
 
   // ── 懸浮搜尋 ──
   'Search notes and PDFs (full-text)…': '搜尋筆記與 PDF（全文搜尋）…',
@@ -47,14 +45,11 @@ const ZH_TW = {
   'show all results in gallery': '在畫廊顯示全部結果',
 
   // ── 工具列 ──
-  'To-dos': '待辦',
   'Close search': '關閉搜尋',
   'Search notes (full-text popup)': '搜尋筆記（懸浮全文搜尋）',
   'Current: tags (click to switch to folders)': '目前：標籤（點擊切回資料夾）',
   'Current: folders (click to switch to tags)': '目前：資料夾（點擊切到標籤）',
-  'Follow active note': '同步定位（開啟筆記時跳到其資料夾）',
-  'Follow active note: on (click to turn off)': '同步定位：開啟筆記時跳到其資料夾（點擊關閉）',
-  'Follow active note: off (click to turn on)': '同步定位：關閉（點擊開啟）',
+  'Follow active note': '定位目前筆記',
   'Hide hidden folders': '收起被隱藏的資料夾',
   'Show hidden folders': '顯示被隱藏的資料夾',
   'Create here (folder / note / canvas / base)': '在此新建（資料夾 / 筆記 / Canvas / Base）',
@@ -89,11 +84,6 @@ const ZH_TW = {
   'Paste the secret iCal URL of your Google Calendar (Calendar settings → Integrate calendar → URL ending in .ics). Multiple calendars supported, one color each.':
     '貼上 Google 行事曆的「iCal 格式密件網址」（行事曆設定 → 整合日曆 → 以 .ics 結尾的私人網址）。可加多個，每個給一個顏色。',
   'Mobile columns': '手機的卡片欄數',
-  'Mobile uses a fixed column count. On desktop, use the card size slider in the toolbar more panel.':
-    '手機螢幕窄，改用固定欄數。桌機請用工具列「⋯ 更多」裡的卡片大小滑桿',
-  '1 column': '1 欄',
-  '2 columns': '2 欄',
-  '3 columns': '3 欄',
   'Takes effect after reloading the plugin (or restarting Obsidian)': '重新載入外掛（或重啟 Obsidian）後生效',
   'Canvas has no built-in image viewer, so this fills that gap: double-click an image or press Space. Matches the look of the lightbox Obsidian shows in notes. Notes themselves are left to Obsidian.':
     'Canvas 沒有內建的圖片檢視，這裡補上：雙擊圖片或按 Space。外觀與 Obsidian 在筆記中的 lightbox 一致。筆記本身交給 Obsidian 原生處理。',
@@ -149,13 +139,10 @@ const ZH_TW = {
   'Similar results · broader as you scroll · hover to preview/download': '相似結果 · 越往下越發散 · hover 可預覽/下載',
   '— no more results —': '— 沒有更多了 —',
   'Search failed: {{msg}}': '搜尋失敗：{{msg}}',
-  'Search "{{term}}" on Pinterest (broader)': '在 Pinterest 搜「{{term}}」（更廣）',
   'skipped {{n}} animated pins without a gif': '已略過 {{n}} 則無法取得 gif 的動態 pin',
   'Open on Pinterest': '在 Pinterest 開啟',
-  'Download and create note': '下載並建立筆記',
   'No downloadable image URL': '沒有可下載的圖片網址',
   'Downloading…': '下載中…',
-  'Created note: {{path}}': '已建立筆記：{{path}}',
   'Download failed: {{msg}}': '下載失敗：{{msg}}',
   // ── 對話框 / 新建 ──
   'Move to which folder…': '移動到哪個資料夾…', 'vault root': '根目錄',
@@ -165,6 +152,7 @@ const ZH_TW = {
   'Moved to trash: {{name}} (+{{n}} attachments)': '已移到垃圾桶：{{name}}（＋{{n}} 個附件）',
   // ── 更多面板 ──
   'Sort': '排序', 'Tags in this folder': '本資料夾的標籤', 'Clear': '清除', 'Card size': '卡片大小',
+  '{{n}} columns': '{{n}} 欄',
   'Flatten: include all subfolders': '攤平：含所有子資料夾',
   // ── 資料夾操作 ──
   'New folder': '新增資料夾',
@@ -195,10 +183,6 @@ const ZH_TW = {
   'Building index…': '建立索引中…',
   'Search \"{{q}}\" · {{n}} results': '搜尋「{{q}}」· {{n}} 筆',
   'Text Extractor plugin is not enabled': '沒有啟用 text-extractor 外掛',
-  'First search — building index…': '首次搜尋，建立索引中…',
-  'Building index… {{done}}/{{total}}': '建立索引中… {{done}}/{{total}}',
-  'Search test (full ranking in console)': '搜尋測試（完整排名見 console）',
-  '(no results)': '（無結果）', 'Search': '搜尋',
   'Text Extractor plugin is required to extract PDF text': '需要啟用 text-extractor 外掛才能擷取 PDF 內文',
   'Extracting PDF text… (large files may take a while)': '擷取 PDF 內文中…（大檔可能要一陣子）',
   'Extracting PDF text… {{done}}/{{total}}': '擷取 PDF 內文中… {{done}}/{{total}}',
@@ -207,10 +191,7 @@ const ZH_TW = {
   'Rebuilding index… {{done}}/{{total}}': '重建索引中… {{done}}/{{total}}',
   '{{files}} files · {{tokens}} tokens · {{ms}}ms': '✅ {{files}} 篇 · {{tokens}} token · {{ms}}ms',
   // ── 待辦 ──
-  'Failed to update task: {{msg}}': '更新任務失敗：{{msg}}',
   'Pick a to-do note': '選擇待辦筆記', 'No to-dos': '沒有待辦事項',
-  'Mark as not done': '取消完成', 'Mark as done': '標記完成',
-  'Cannot read the to-do note': '讀不到待辦筆記',
   // ── 標籤 / 多選 ──
   'Untagged': '未標籤',
   'Added #{{tag}} to "{{name}}"': '已為「{{name}}」加上 #{{tag}}',
@@ -241,29 +222,13 @@ const ZH_TW = {
   'Card color': '卡片顏色', 'Copy wiki link': '複製 Wiki 連結',
   'Including subfolders': '含子資料夾', 'Clear tag filter': '清除標籤篩選', 'No notes': '沒有筆記',
   'Remove this filter': '移除此篩選',
-  'Back to card wall': '返回卡片牆', 'Open this note': '開啟此筆記',
   'Links': '連結', 'Backlinks': '反向連結',
   // ── 筆記內圖片選單 ──
   'Copy image': '複製圖片', 'Copy image URL': '複製圖片網址',
   'Reveal in system explorer': '在系統中顯示', 'Delete image': '刪除圖片',
-  'Delete image \"{{name}}\"? (moves to trash)': '確定刪除圖片「{{name}}」？（移到垃圾桶）',
-  'Deleted {{name}}': '已刪除 {{name}}',
   'Failed to load image': '圖片載入失敗', 'Image copied': '已複製圖片',
   'Failed to copy image: {{msg}}': '複製圖片失敗：{{msg}}',
   // ── Pinterest 開關 ──
-  'Card style': '卡片樣式',
-  'Auto (default)': '自動（預設）',
-  'Plain card': '純卡片',
-  'To-do list card': '待辦清單卡',
-  'Video card': '影片卡',
-  'Book card': '書籍卡',
-  'Play video': '播放影片',
-  'No to-dos in this note': '這則筆記沒有待辦',
-  'Show completed': '顯示已完成',
-  'Hide completed': '隱藏已完成',
-  'All done 🎉': '全部完成 🎉',
-  'Open the to-do note': '開啟待辦筆記',
-  'To-do note: {{name}}': '待辦筆記：{{name}}',
   'Image card layout': '圖片卡版面',
   'How cards with a cover image show their title and date.': '有封面圖的卡片如何呈現標題與日期。',
   'Overlay text on image (current)': '文字疊在圖片上（現行）',
@@ -272,9 +237,7 @@ const ZH_TW = {
   'Auto card color from cover image': '依封面圖自動決定卡片底色',
   'Tints each card with the dominant color of its cover image. Cards you colored manually are left alone.': '用封面圖的主色染卡片底色。手動上色過的卡片不受影響。',
   'Peek image': '預覽圖片',
-  'Local graph': '關聯圖',
   'Skipped {{n}} note(s) — reopen them and try again': '有 {{n}} 則筆記因為索引不同步被跳過，重新開啟後再試一次',
-  'Open a note to see its connections': '開啟一則筆記以顯示它的關聯',
   'Action failed: {{msg}}': '操作失敗：{{msg}}',
   'Image lightbox actions': '圖片放大檢視的動作膠囊',
   'Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.':
@@ -305,13 +268,9 @@ const ZH_TW = {
   'Swapped to {{name}}': '已換成 {{name}}',
   'Swap failed: {{msg}}': '交換失敗：{{msg}}',
   'Could not locate this image in the note': '在筆記中找不到這張圖的嵌入位置',
-  'No video link found in this note': '這則筆記裡找不到影片連結',
   'Open notes without focusing the editor': '開啟筆記時不聚焦編輯器',
   'Notes opened from the gallery start unfocused, so a first-line image embed stays rendered instead of expanding to markdown. Click into the note to edit as usual.':
     '從畫廊開啟的筆記先不聚焦——首行的嵌入圖片會維持顯示、不展開成 markdown 原始碼。點進內文即可照常編輯。',
-  'Pinterest visual search (experimental)': 'Pinterest 找相似（實驗性）',
-  'Adds a reverse-image search entry to image menus. Uses an unofficial Pinterest endpoint that may stop working at any time; the image you search with is uploaded to Pinterest.':
-    '在圖片選單加入「找相似」（以圖搜圖）。使用 Pinterest 非官方端點，可能隨時失效；搜尋時該張圖片會上傳到 Pinterest。',
 
   // ── 淨化連結 ──
   'Clean links': '淨化連結',

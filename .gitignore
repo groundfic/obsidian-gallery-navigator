@@ -3,6 +3,7 @@ data.json
 og-cache/
 linkcard-cache.json
 linkcard-images/
+thumb-cache/
 
 # 備份與暫存
 *.bak*

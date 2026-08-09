@@ -510,12 +510,6 @@ class VirtualWall {
     this.mounted.clear();
   }
 
-  /* 讓某一項進入視窗（例如「定位到目前開啟的筆記」）。回傳該項的 top，找不到回 -1。 */
-  topOf(index) {
-    if (index < 0 || index >= this.items.length) return -1;
-    return this.gridTop + this.top[index];
-  }
-
   destroyAll() {
     this._destroyed = true;
     this.scroller.removeEventListener('scroll', this._onScroll);

@@ -8,7 +8,6 @@
 
 const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
-const { LocalGraph } = require('./graph.js');
 const { ThumbCache } = require('./thumbs.js');
 const { DimPrefetcher } = require('./dims.js');
 const { setupCanvasImageToNote } = require('./canvasnote.js');
@@ -44,79 +43,6 @@ const GN_ICON_SVG =
   '</g>';
 
 
-const PIN_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
-const PIN_ENDPOINT = 'https://api.pinterest.com/v3/visual_search/extension/image/';
-
-// 容錯 JSON 解析：Pinterest 回應的字串欄位偶爾含原始控制字元，嚴格 JSON.parse 會炸
-function parseJsonLoose(text) {
-  try { return JSON.parse(text); } catch (e) {}
-  try { return JSON.parse(String(text).replace(/[\u0000-\u001F]/g, ' ')); } catch (e) {}
-  return null;
-}
-
-/* ===== Pinterest 動圖（gif）處理 =====
-   實測（2026-07）：visual_search 的回應「只有靜態 jpg」，整包裡沒有任何 .gif / .mp4 網址，
-   連 is_video 旗標都不可靠（真的是 gif 的 pin，is_video 竟是 false）。
-   但 Pinterest 的原檔就放在 i.pinimg.com/originals/<a>/<b>/<c>/<hash>.gif —— 用縮圖 hash 推得出來。
-   → 縮圖網址換算成 originals 的 .gif，HEAD 一下：200 + image/gif ＝ 這個 pin 真的是動圖，直接播原檔。 */
-
-// 由縮圖網址推原檔 gif 網址：.../474x/11/50/80/<hash>.jpg → .../originals/11/50/80/<hash>.gif
-function pinGifGuess(url) {
-  if (!url || !/i\.pinimg\.com/i.test(url)) return null;
-  const g = String(url).split('?')[0]
-    .replace(/\/(originals|\d+x)\//, '/originals/')
-    .replace(/\.(jpe?g|png|webp)$/i, '.gif');
-  return /\/originals\/.+\.gif$/i.test(g) ? g : null;
-}
-
-// HEAD 探測（結果快取；同時併發上限 5，免一頁 80 張同時打爆）
-// 上限 500 筆的 FIFO：多輪以圖搜圖會一直往裡加，沒有上限就是單調成長到重載為止
-const PIN_GIF_CACHE_MAX = 500;
-const TINT_CACHE_MAX = 2000;   // 卡片主色快取上限（key = path:mtime，逛過的每張圖都會留一筆）
-const _pinGifCache = new Map();
-function _pinGifCacheSet(key, value) {
-  if (_pinGifCache.size >= PIN_GIF_CACHE_MAX) {
-    const oldest = _pinGifCache.keys().next().value;
-    if (oldest !== undefined) _pinGifCache.delete(oldest);
-  }
-  _pinGifCache.set(key, value);
-}
-let _pinGifRunning = 0;
-const _pinGifQueue = [];
-function _pinGifPump() {
-  while (_pinGifRunning < 5 && _pinGifQueue.length) {
-    const job = _pinGifQueue.shift();
-    _pinGifRunning++;
-    job().finally(() => { _pinGifRunning--; _pinGifPump(); });
-  }
-}
-function probePinGif(thumbUrl) {
-  const guess = pinGifGuess(thumbUrl);
-  if (!guess) return Promise.resolve(null);
-  if (_pinGifCache.has(guess)) return _pinGifCache.get(guess);
-  const p = new Promise((resolve) => {
-    _pinGifQueue.push(async () => {
-      try {
-        const r = await requestUrl({ url: guess, method: 'HEAD', throw: false });
-        const h = (r && r.headers) || {};
-        const ct = h['content-type'] || h['Content-Type'] || '';
-        resolve(r && r.status === 200 && /image\/gif/i.test(String(ct)) ? guess : null);
-      } catch (e) { resolve(null); }
-    });
-    _pinGifPump();
-  });
-  _pinGifCacheSet(guess, p);
-  return p;
-}
-
-// 這個 pin 是不是動態內容（旗標不可靠，只當「拿不到 gif 就別顯示」的判斷依據）
-function pinIsAnimated(p) {
-  if (!p) return false;
-  if (p.is_video || p.videos || p.video_status || p.story_pin_data) return true;
-  if (p.embed && /video|gif/i.test(String(p.embed.type || ''))) return true;
-  return /video|story/i.test(String(p.type || ''));
-}
-
 // 穩健複製：優先 clipboard API，失敗退回 textarea+execCommand（手機 webview 常需要），並給提示
 // okMsg：自訂成功提示（例如批次複製時顯示筆數，避免把整串多行內容塞進 Notice）
 async function copyToClipboard(text, okMsg) {
@@ -144,23 +70,6 @@ async function copyToClipboard(text, okMsg) {
   }
 }
 
-// 手動組 multipart/form-data（requestUrl 不支援 FormData，得自己拼 bytes）
-function buildMultipart(fields, fileField, fileName, fileBytes, mime) {
-  const boundary = '----GNBoundary' + Math.random().toString(16).slice(2) + Date.now().toString(16);
-  const enc = new TextEncoder();
-  const chunks = [];
-  for (const k of Object.keys(fields)) {
-    chunks.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${fields[k]}\r\n`));
-  }
-  chunks.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${fileName}"\r\nContent-Type: ${mime}\r\n\r\n`));
-  chunks.push(new Uint8Array(fileBytes));
-  chunks.push(enc.encode(`\r\n--${boundary}--\r\n`));
-  const total = chunks.reduce((s, c) => s + c.byteLength, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) { out.set(c instanceof Uint8Array ? c : new Uint8Array(c), off); off += c.byteLength; }
-  return { boundary, body: out.buffer };
-}
 
 /* ===== 瀑布流版面引擎（shortest-column，同 Pinterest） ===== */
 
@@ -427,359 +336,16 @@ class SwapImageModal extends Modal {
   }
 }
 
-/* ===== Pinterest 以圖搜圖：結果視窗 ===== */
-
-class PinterestModal extends Modal {
-  constructor(app, srcUrl, title, srcFolder) {
-    super(app);
-    this.srcUrl = srcUrl;      // 圖片 resource path（app://…）
-    this.title = title || '';
-    this.srcFolder = srcFolder || '';   // 下載時在此資料夾建立 md
-    this.isMobile = document.body.classList.contains('is-mobile');
-  }
-
-  // 開外部連結：桌機走 electron，手機退回 window.open
-  openExternal(url) {
-    if (!url) return;
-    window.open(url, '_blank');   // Obsidian 攔截外部網址 → 系統瀏覽器（桌機手機皆可，免 electron）
-  }
-  pinUrl(p) {
-    return p.id ? 'https://www.pinterest.com/pin/' + p.id + '/' : (p.link || p.tracked_link || '');
-  }
-  onOpen() {
-    this.modalEl.addClass('gn-pin-modal');
-    const { contentEl } = this;
-    contentEl.createEl('h3', { cls: 'gn-pin-title', text: t('Pinterest visual search') });
-
-    const bodyEl = contentEl.createDiv('gn-pin-body');
-
-    // 左：原始查詢圖
-    const left = bodyEl.createDiv('gn-pin-orig');
-    const oimg = left.createEl('img', { cls: 'gn-pin-orig-img' });
-    oimg.src = this.srcUrl;
-    if (this.title) left.createDiv('gn-pin-orig-name').setText(this.title);
-
-    // 中：可拖曳分隔桿
-    const splitter = bodyEl.createDiv('gn-pin-splitter');
-
-    // 右：搜尋結果（本身是捲動容器）
-    const right = bodyEl.createDiv('gn-pin-right');
-    this.rightEl = right;
-    this.status = right.createDiv('gn-pin-status');
-    this.chips = right.createDiv('gn-pin-chips');
-    this.grid = right.createDiv('gn-pin-grid');
-    this.moreWrap = right.createDiv('gn-pin-more');
-    // 手機：強制 2 欄；桌機：依寬度自動
-    this.masonry = new MasonryLayout(this.grid, { gap: 10, minCol: 150, fixedCols: this.isMobile ? 2 : 0 });
-
-    // 手機：把原始查詢圖併進結果捲動區最上方 → 往下捲時會跟著捲走，不再卡在畫面上方
-    if (this.isMobile) right.insertBefore(left, right.firstChild);
-
-    /* 拖曳分隔桿調整左欄寬度。
-       同畫廊分隔桿：rect 在 mousedown 讀一次，mousemove 只記座標、rAF 內才寫，
-       避免每次移動都「讀 rect → 寫樣式」交錯造成強制版面重算。 */
-    let dragRect = null, dragX = 0, moveRaf = 0;
-    const applyW = () => {
-      moveRaf = 0;
-      if (!dragRect) return;
-      let w = dragX - dragRect.left;
-      w = Math.max(140, Math.min(dragRect.width - 220, w));
-      left.style.flex = '0 0 ' + w + 'px';
-    };
-    const onMove = (e) => {
-      dragX = e.clientX;
-      if (!moveRaf) moveRaf = requestAnimationFrame(applyW);
-    };
-    const onUp = () => {
-      document.body.style.cursor = '';
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; applyW(); }
-      dragRect = null;
-    };
-    splitter.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      dragRect = bodyEl.getBoundingClientRect();
-      dragX = e.clientX;
-      document.body.style.cursor = 'col-resize';
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-
-    this.bookmark = '';
-    this.pinBuf = null;
-    this.search();
-  }
-
-  // 讀一次圖 bytes 並快取（分頁時重複用）
-  // Pinterest 這支端點對上傳的圖很挑：檔案太大、或 gif/webp/avif/heic 等格式常直接回 400。
-  // → 先用 canvas 重新編碼成「長邊 ≤ 1600 的標準 JPEG」再上傳；轉檔失敗才退回原始位元組。
-  async ensureBuf() {
-    if (this.pinBuf) return;
-    const blob = await fetch(this.srcUrl).then((r) => r.blob());
-    if (!blob || !blob.size) throw new Error(t('Could not read this image'));
-    this.rawBuf = await blob.arrayBuffer();
-    this.rawMime = blob.type || 'image/png';
-    const jpeg = await this.toJpeg(blob);
-    if (jpeg) { this.pinBuf = jpeg; this.pinMime = 'image/jpeg'; }
-    else { this.pinBuf = this.rawBuf; this.pinMime = this.rawMime; }
-  }
-
-  // blob → 長邊 ≤ 1600 的 JPEG ArrayBuffer（失敗回 null）
-  toJpeg(blob) {
-    return new Promise((resolve) => {
-      const url = URL.createObjectURL(blob);
-      const im = new Image();
-      im.onload = () => {
-        try {
-          const MAX = 1600;
-          const w0 = im.naturalWidth, h0 = im.naturalHeight;
-          if (!w0 || !h0) { URL.revokeObjectURL(url); return resolve(null); }
-          const s = Math.min(1, MAX / Math.max(w0, h0));
-          const cv = document.createElement('canvas');
-          cv.width = Math.max(1, Math.round(w0 * s));
-          cv.height = Math.max(1, Math.round(h0 * s));
-          const ctx = cv.getContext('2d');
-          ctx.fillStyle = '#fff';                       // gif/png 透明底 → 白底（JPEG 無透明）
-          ctx.fillRect(0, 0, cv.width, cv.height);
-          ctx.drawImage(im, 0, 0, cv.width, cv.height);   // gif 只會畫第一幀，正是我們要的
-          cv.toBlob((b) => {
-            URL.revokeObjectURL(url);
-            if (!b) return resolve(null);
-            b.arrayBuffer().then(resolve).catch(() => resolve(null));
-          }, 'image/jpeg', 0.92);
-        } catch (e) { URL.revokeObjectURL(url); resolve(null); }
-      };
-      im.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-      im.src = url;
-    });
-  }
-
-  // 打一頁（bookmark 空＝第一頁）；raw=true 時改用原始位元組（JPEG 版被退件時的退路）
-  async fetchPage(bookmark, raw) {
-    await this.ensureBuf();
-    const buf = raw ? this.rawBuf : this.pinBuf;
-    const mime = raw ? this.rawMime : this.pinMime;
-    const { boundary, body } = buildMultipart(
-      { x: '0', y: '0', w: '1', h: '1', page_size: '80' },
-      'image', 'image.jpg', buf, mime);
-    const url = PIN_ENDPOINT + (bookmark ? '?bookmark=' + encodeURIComponent(bookmark) : '');
-    return requestUrl({
-      url,
-      method: 'PUT',
-      headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'User-Agent': PIN_UA },
-      body,
-      throw: false,
-    });
-  }
-
-  // 把 Pinterest 的錯誤訊息挖出來（400 通常會附原因）
-  errMsg(res) {
-    const j = parseJsonLoose(res && res.text) || {};
-    const m = j.message || j.error_message || (j.error && (j.error.message || j.error));
-    if (m) return String(m).slice(0, 120);
-    const t = (res && res.text ? String(res.text) : '').replace(/\s+/g, ' ').trim();
-    return t ? t.slice(0, 120) : '';
-  }
-
-  async search() {
-    this.status.setText(t('Searching…'));
-    this.chips.empty();
-    this.masonry.clear();
-    this.moreWrap.empty();
-    this.bookmark = '';
-    this.useRaw = false;
-    try {
-      let res = await this.fetchPage('');
-      // JPEG 版被退件（多半是 400）→ 用原始位元組再試一次
-      if (res.status !== 200 && this.rawBuf && this.pinMime !== this.rawMime) {
-        const res2 = await this.fetchPage('', true);
-        if (res2.status === 200) { res = res2; this.useRaw = true; }
-      }
-      if (res.status !== 200) {
-        const why = this.errMsg(res);
-        this.status.setText(t('Pinterest responded with status {{status}} (private API — image too large / unsupported format / rate limited)', { status: res.status }) + (why ? ' · ' + why : ''));
-        return;
-      }
-      const j = parseJsonLoose(res.text) || {};
-      const pins = j.data || [];
-      if (!pins.length) { this.status.setText(t('No similar images found')); return; }
-      this.bookmark = j.bookmark || '';
-      this.renderChips(j.annotations || []);
-      this.statusBase = t('Similar results · broader as you scroll · hover to preview/download');
-      this.status.setText(this.statusBase);
-      this.renderPins(pins, false);
-      this.setupInfiniteScroll();
-    } catch (e) {
-      this.status.setText(t('Search failed: {{msg}}', { msg: e && e.message ? e.message : e }));
-    }
-  }
-
-  // 無限捲動：底部放一個哨兵，快進視野就自動抓下一頁
-  setupInfiniteScroll() {
-    this.moreWrap.empty();
-    this.loadingEl = this.moreWrap.createDiv('gn-pin-loading');
-    this.sentinel = this.moreWrap.createDiv('gn-pin-sentinel');
-    if (this.io) this.io.disconnect();
-    this.io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) this.autoLoad();
-    }, { root: this.rightEl, rootMargin: '400px 0px' });
-    this.io.observe(this.sentinel);
-  }
-
-  async autoLoad() {
-    if (this.loading || !this.bookmark) return;
-    this.loading = true;
-    this.loadingEl.setText(t('Loading…'));
-    try {
-      const res = await this.fetchPage(this.bookmark, this.useRaw);   // 沿用第一頁成功的那種上傳格式
-      const j = parseJsonLoose(res.text) || {};
-      this.bookmark = j.bookmark || '';
-      this.renderPins(j.data || [], true);
-    } catch (e) {
-      // 失敗就下次捲動再試
-    }
-    this.loading = false;
-    if (!this.bookmark) {
-      this.loadingEl.setText(t('— no more results —'));
-      if (this.io) this.io.disconnect();
-      return;
-    }
-    this.loadingEl.setText('');
-    // 若哨兵仍在可視範圍（結果還沒填滿），繼續補
-    requestAnimationFrame(() => {
-      if (!this.bookmark || this.loading || !this.sentinel || !this.rightEl) return;
-      const r = this.sentinel.getBoundingClientRect();
-      const cr = this.rightEl.getBoundingClientRect();
-      if (r.top < cr.bottom + 400) this.autoLoad();
-    });
-  }
-
-  // 主題關鍵字 chip → 開 Pinterest 關鍵字搜尋（比視覺相似更廣）
-  renderChips(annotations) {
-    this.chips.empty();
-    for (const a of annotations || []) {
-      const term = typeof a === 'string' ? a : (a && (a.name || a.term || a.query));
-      if (!term) continue;
-      const chip = this.chips.createEl('button', { cls: 'gn-pin-chip', text: '# ' + term });
-      chip.setAttr('title', t('Search "{{term}}" on Pinterest (broader)', { term }));
-      chip.onclick = () => this.openExternal(
-        'https://www.pinterest.com/search/pins/?q=' + encodeURIComponent(term));
-    }
-  }
-
-  renderPins(pins, append) {
-    if (!append) { this.masonry.clear(); this.skipped = 0; }
-    for (const p of pins || []) {
-      const thumb = p.image_medium_url || p.image_large_url || p.image_square_url;
-      if (!thumb) continue;
-      const big = p.image_large_url || thumb;
-      const cell = this.grid.createDiv('gn-pin-cell');
-      const im = cell.createEl('img');
-      // 用已知尺寸先占好高度（免等圖載入就能正確排版）
-      const dim = p.image_medium_size_pixels || p.image_large_size_pixels;
-      if (dim && dim.width && dim.height) im.style.aspectRatio = dim.width + ' / ' + dim.height;
-      im.src = thumb;
-      im.loading = 'lazy';
-      if (p.title) im.setAttr('title', p.title);
-
-      // 背景探測原檔 gif：是動圖 → 換成會動的原檔 + GIF 角標；
-      // 是動態 pin 卻拿不到 gif（只有影片）→ 依設定不顯示，直接把格子移除。
-      probePinGif(big).then((gif) => {
-        if (!cell.isConnected) return;
-        if (gif) {
-          p._gifUrl = gif;                       // 下載時抓原始 gif
-          im.removeAttribute('loading');
-          im.src = gif;
-          cell.createDiv('gn-pin-gif-badge').setText('GIF');
-          return;
-        }
-        if (pinIsAnimated(p)) {
-          this.skipped = (this.skipped || 0) + 1;
-          this.masonry.remove(cell);
-          if (this.status && this.statusBase) {
-            this.status.setText(this.statusBase + ' · ' + t('skipped {{n}} animated pins without a gif', { n: this.skipped }));
-          }
-        }
-      });
-      // 桌機：點格子＝開 Pinterest；手機：點格子＝顯示/收起按鈕
-      cell.onclick = () => {
-        if (this.isMobile) { cell.classList.toggle('gn-pin-cell-active'); return; }
-        this.openExternal(this.pinUrl(p));
-      };
-
-      // 動作按鈕：在 Pinterest / 下載（桌機 hover、手機點格顯示）
-      const actions = cell.createDiv('gn-pin-actions');
-      const openBtn = actions.createEl('button', { cls: 'gn-pin-act' });
-      setIcon(openBtn, 'external-link');
-      openBtn.setAttr('title', t('Open on Pinterest'));
-      openBtn.onclick = (e) => { e.stopPropagation(); this.openExternal(this.pinUrl(p)); };
-      const dl = actions.createEl('button', { cls: 'gn-pin-act' });
-      setIcon(dl, 'download');
-      dl.setAttr('title', t('Download and create note'));
-      dl.onclick = (e) => { e.stopPropagation(); this.downloadPin(p); };
-
-      this.masonry.add(cell);
-    }
-  }
-
-  // 預覽：燈箱放大
-  openPreview(url) {
-    const ov = this.modalEl.createDiv('gn-pin-lightbox');
-    const im = ov.createEl('img');
-    im.src = url;
-    ov.onclick = () => ov.remove();
-  }
-
-  // 下載大圖到 img/，並在來源資料夾建立一則嵌入該圖的 md
-  async downloadPin(pin) {
-    // gif pin → 抓原始 .gif（探測到的原檔），不要存成靜態縮圖
-    const url = pin._gifUrl || pin.image_large_url || pin.image_medium_url || pin.image_square_url;
-    if (!url) { new Notice(t('No downloadable image URL')); return; }
-    try {
-      new Notice(t('Downloading…'));
-      const res = await requestUrl({ url, method: 'GET' });
-      const extM = url.split('?')[0].match(/\.(jpe?g|png|gif|webp)$/i);
-      const ext = extM ? extM[1].toLowerCase() : 'jpg';
-      if (!this.app.vault.getAbstractFileByPath('img')) {
-        try { await this.app.vault.createFolder('img'); } catch (e) {}
-      }
-      // 1) 存圖到 img/
-      const base = 'pinterest_' + (pin.id || Date.now());
-      let imgPath = 'img/' + base + '.' + ext;
-      let n = 1;
-      while (this.app.vault.getAbstractFileByPath(imgPath)) { imgPath = 'img/' + base + '_' + n + '.' + ext; n++; }
-      await this.app.vault.createBinary(imgPath, res.arrayBuffer);
-
-      // 2) 在來源資料夾建立 md（內嵌該圖）
-      const pinUrl = this.pinUrl(pin);
-      const dir = this.srcFolder && this.app.vault.getAbstractFileByPath(this.srcFolder) ? this.srcFolder + '/' : '';
-      let title = String(pin.title || pin.grid_title || base)
-        .replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || base;
-      let mdPath = dir + title + '.md';
-      let m = 1;
-      while (this.app.vault.getAbstractFileByPath(mdPath)) { mdPath = dir + title + ' ' + m + '.md'; m++; }
-      const fm = ['---', 'cover: ' + imgPath, pinUrl ? 'source: ' + pinUrl : '', '---']
-        .filter(Boolean).join('\n');
-      const body = '![[' + imgPath + ']]' + (pinUrl ? '\n' + pinUrl : '') + '\n';
-      await this.app.vault.create(mdPath, fm + '\n' + body);
-      new Notice(t('Created note: {{path}}', { path: mdPath }));
-    } catch (e) {
-      new Notice(t('Download failed: {{msg}}', { msg: e && e.message ? e.message : e }));
-    }
-  }
-
-  onClose() {
-    if (this.io) { this.io.disconnect(); this.io = null; }
-    if (this.masonry) { this.masonry.destroy(); this.masonry = null; }
-    this.contentEl.empty();
-  }
-}
-
 /* ===== 常數 / 資料邏輯 ===== */
 
 const VIEW_TYPE = 'gallery-navigator';
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+
+/* 卡片主色快取上限（key = path:mtime，逛過的每張圖都會留一筆 → 沒上限就是單調成長）。
+   ⚠️ 2026-08-09：這行原本夾在 Pinterest 的常數群裡，瘦身時被整段掃掉 →
+      autoTintCard() 執行期噴 ReferenceError、整面卡片牆白掉。
+      常數要放在**它服務的功能**旁邊，不要因為「剛好有空位」就插在別人的區塊中間。 */
+const TINT_CACHE_MAX = 2000;
 
 /* 取圖片主色（2026-07-20，自動卡片底色用）
    畫進 16×16 canvas（只有 256 像素，成本可忽略）讀像素，**量化分組取最多的一群**——
@@ -1020,13 +586,21 @@ function iconForExt(ext) {
 }
 
 // 排序選項：value → { label, fn }
+/* 排序。icon 是給工具列的「輪播式排序鈕」用的（2026-08-10）——
+   點一下換下一種，圖示直接反映目前的排序，不開選單。
+   ⚠️ 物件的 key 順序就是輪播順序，調整順序前先想清楚：
+      新→舊 → 舊→新 是同一個維度的反向，擺在一起切換最直覺；A→Z / Z→A 同理。 */
 const SORTS = {
-  new: { label: 'Newest first', fn: (a, b) => b.ctime - a.ctime },
-  old: { label: 'Oldest first', fn: (a, b) => a.ctime - b.ctime },
-  mod: { label: 'Recently modified', fn: (a, b) => b.mtime - a.mtime },
-  az: { label: 'Name A→Z', fn: (a, b) => a.name.localeCompare(b.name, 'zh-Hant') },
-  za: { label: 'Name Z→A', fn: (a, b) => b.name.localeCompare(a.name, 'zh-Hant') },
+  new: { label: 'Newest first', icon: 'arrow-down-wide-narrow', fn: (a, b) => b.ctime - a.ctime },
+  old: { label: 'Oldest first', icon: 'arrow-up-wide-narrow', fn: (a, b) => a.ctime - b.ctime },
+  mod: { label: 'Recently modified', icon: 'history', fn: (a, b) => b.mtime - a.mtime },
+  /* ⚠️ 是 `arrow-down-az` 不是 `arrow-down-a-z`。lucide 後來把這兩顆改名加了連字號，
+     但 Obsidian 內建的是**改名前**的版本 —— 用新名字不會報錯，只是靜靜地畫不出圖示
+     （setIcon 找不到就什麼都不做）。加圖示前先確認名字在這個 Obsidian 版本裡存在。 */
+  az: { label: 'Name A→Z', icon: 'arrow-down-az', fn: (a, b) => a.name.localeCompare(b.name, 'zh-Hant') },
+  za: { label: 'Name Z→A', icon: 'arrow-up-az', fn: (a, b) => b.name.localeCompare(a.name, 'zh-Hant') },
 };
+const SORT_KEYS = Object.keys(SORTS);
 function sortItems(items, key) {
   const s = SORTS[key] || SORTS.new;
   return items.slice().sort(s.fn);
@@ -1067,17 +641,6 @@ const CARD_PALETTE = [
 ];
 const CARD_PALETTE_BY_KEY = Object.fromEntries(CARD_PALETTE.map((p) => [p.key, p]));
 
-// （2026-07-20 移除）GN_VIDEO_URL_RE：自動影片卡下架，卡片不再偵測影片連結
-
-// 卡片樣式選項（2026-07-18）：[key, i18n label, lucide icon]；null = 預設
-const CARD_STYLES = [
-  [null, 'Auto (default)', 'sparkles'],            // 2026-07-20 起自動偵測已全部下架（待辦卡/影片卡），此項等同一般卡片
-  ['plain', 'Plain card', 'rectangle-horizontal'], // 強制一般卡片（抑制自動偵測）
-  ['todo', 'To-do list card', 'list-checks'],
-  // 書籍卡/影片卡手動樣式暫時下架（2026-07-19 使用者要求；程式保留休眠，恢復＝加回此清單）
-  // ['video', 'Video card', 'play'],
-  // ['book', 'Book card', 'book'],
-];
 // 自動配色用的彩色子集（排除米/灰/黑，讓預設更繽紛）
 const AUTO_KEYS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'pink'];
 function paletteFor(item, colors) {
@@ -1333,27 +896,6 @@ class FileSuggest extends FuzzySuggestModal {
   onChooseItem(f) { this.onChoose(f); }
 }
 
-// 從 md 原文解析待辦：回傳 [{ line, done, text, depth }]，支援 - [ ] / - [x]（含 * +）
-// depth 用堆疊依縮排推算，相容 2/4 空格或 tab
-function parseTasks(raw) {
-  const rows = [];
-  const lines = raw.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^([ \t]*)[-*+]\s+\[([ xX])\]\s+(.*)$/);
-    if (m) {
-      const indent = m[1].replace(/\t/g, '    ').length;
-      rows.push({ line: i, indent, done: m[2].toLowerCase() === 'x', text: m[3].trim() });
-    }
-  }
-  const stack = [];
-  for (const r of rows) {
-    while (stack.length && stack[stack.length - 1] >= r.indent) stack.pop();
-    r.depth = stack.length;
-    stack.push(r.indent);
-  }
-  return rows;
-}
-
 /* ===== View ===== */
 
 class GalleryView extends ItemView {
@@ -1381,7 +923,6 @@ class GalleryView extends ItemView {
     this.render();
     // 開啟任一筆記時，若同步開著 → 定位到它的資料夾（從日曆開的會設跳過旗標）
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
-      if (this._graph) this._graph.setFile(file);
       // 只跳過「從行事曆開的那個特定檔案」——用路徑比對，不用無差別旗標
       // （否則日記若已開著、不觸發 file-open，旗標會殘留 → 被之後點的連結誤消耗 → 連結不定位）
       if (file && this.plugin._skipSyncPath === file.path) { this.plugin._skipSyncPath = null; return; }
@@ -1422,8 +963,6 @@ class GalleryView extends ItemView {
   }
 
   async onClose() {
-    if (this._dockRO) { try { this._dockRO.disconnect(); } catch (e) {} this._dockRO = null; }
-    if (this._graph) { this._graph.destroy(); this._graph = null; }   // 停掉 RAF 與 ResizeObserver
     // gn-leaf 掛在外層的 .workspace-leaf-content 上（不屬於 contentEl，empty() 清不到）
     // → 關閉時自己收回來，避免這個葉面板被別的 view 重用時殘留樣式
     if (this.contentEl && this.contentEl.parentElement) this.contentEl.parentElement.removeClass('gn-leaf');
@@ -1438,8 +977,10 @@ class GalleryView extends ItemView {
     if (this._syncRaf) { cancelAnimationFrame(this._syncRaf); this._syncRaf = 0; }
     // 關閉分頁 → 停掉還在背景解圖的長寬比預取（下次 render 會自己重啟）
     if (this.plugin.dimPrefetch) this.plugin.dimPrefetch.cancel();
-    this.closeTodoPopover();   // 連同 document 上的 mousedown 監聽一起解除
-    this.closeMorePopover();   // 掛在 body 上的浮動面板要一起收掉
+    // 掛在 body 上的浮層要一起收掉（它們不在 contentEl 內，empty() 清不到）
+    this.closeMorePopover();
+    this.closeTagPopover();
+    this.closeListPopover();
   }
 
   // 重排目前這面牆的所有分區。延遲載入（內文預覽 / og:image / PDF 縮圖）會改變卡片高度，
@@ -1696,35 +1237,45 @@ class GalleryView extends ItemView {
   // 而且會被迫再開一層子選單。這裡全部攤平成單層。
   openMorePopover(anchor) {
     if (this._morePop) { this.closeMorePopover(); return; }   // 再點一次＝收起（走同一條路徑，才會一併清事件）
+    this.closeTagPopover(); this.closeListPopover();   // 浮層互斥：同時開兩個會有兩顆錨點都亮著
     const state = this.plugin.state;
     const pop = document.body.createDiv('gn-more-pop');
     this._morePop = pop;
+    /* 選單開著時錨點鈕維持 hover 樣式。has-active-menu 是 **Obsidian 原生**就有的 class，
+       語意正是「這顆鈕的選單正開著」，主題（Velocity 等）本來就把它跟 :hover / :active
+       寫在同一條規則裡 → 有支援的主題直接吃到，沒支援的由 gallery.css 的保底規則接手。 */
+    this._moreAnchor = anchor;
+    this.markAnchorOpen(anchor, true);
 
-    // 定位：貼著按鈕、靠右對齊；按鈕在下半部就往上彈
-    const rect = anchor.getBoundingClientRect();
-    pop.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
-    if (rect.top > window.innerHeight * 0.5) pop.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
-    else pop.style.top = (rect.bottom + 6) + 'px';
 
-    /* ── 排序（清單列，打勾標示目前值） ── */
-    pop.createDiv('gn-more-label').setText(t('Sort'));
-    const cur = state.sort || 'new';
-    Object.keys(SORTS).forEach((key) => {
-      const row = pop.createDiv('gn-more-row');
-      row.toggleClass('gn-more-row-on', key === cur);
-      row.createSpan('gn-more-text').setText(t(SORTS[key].label));
-      const mark = row.createSpan('gn-more-check');
-      if (key === cur) setIcon(mark, 'check');
-      row.onclick = () => {
-        state.sort = key;
-        this.plugin.saveState();
-        this.closeMorePopover();
-        this.rerenderMainKeepScroll();   // sort 只被 renderNoteWall 讀到
-      };
-    });
+    /* ── 排序（清單列，打勾標示目前值）──
+       ⚠️ **手機限定**（2026-08-10）：桌機已改成工具列上的輪播式排序鈕
+          （點一下換下一種、圖示直接反映目前排序），不再開選單。
+          手機工具列放不下那顆，維持清單。 */
+    if (document.body.classList.contains('is-mobile')) {
+      pop.createDiv('gn-more-label').setText(t('Sort'));
+      const cur = state.sort || 'new';
+      SORT_KEYS.forEach((key) => {
+        const row = pop.createDiv('gn-more-row');
+        row.toggleClass('gn-more-row-on', key === cur);
+        row.createSpan('gn-more-text').setText(t(SORTS[key].label));
+        const mark = row.createSpan('gn-more-check');
+        if (key === cur) setIcon(mark, 'check');
+        row.onclick = () => {
+          state.sort = key;
+          this.plugin.saveState();
+          this.closeMorePopover();
+          this.rerenderMainKeepScroll();   // sort 只被 renderNoteWall 讀到
+        };
+      });
+    }
 
-    /* ── 本夾標籤：膠囊，點了就篩選這個資料夾的卡片（可複選；再點取消） ── */
-    const tags = this.folderTags();
+    /* ── 本夾標籤：膠囊，點了就篩選這個資料夾的卡片（可複選；再點取消） ──
+       ⚠️ **手機限定**（2026-08-10）。桌機已改成工具列的標籤鈕 + 專屬浮層
+          （openTagPopover），這裡再放一份就是兩個入口、兩份會不同步的 UI。
+          但手機的合併工具列沒有那顆鈕，這裡是手機**唯一**的資料夾內標籤篩選入口，
+          不能一起拿掉（左欄的「資料夾 ⇄ 標籤」是切換瀏覽模式，不是同一件事）。 */
+    const tags = document.body.classList.contains('is-mobile') ? this.folderTags() : [];
     if (tags.length) {
       const tagLabel = pop.createDiv('gn-more-label');
       tagLabel.setText(t('Tags in this folder'));
@@ -1772,40 +1323,119 @@ class GalleryView extends ItemView {
       pop.createDiv('gn-more-sep');
     }
 
-    /* ── 卡片大小：真的滑桿，拖曳即時生效（手機不顯示：手機是固定欄數，改在「更多」面板調） ── */
+    /* ── 卡片大小：**吸附式**滑桿（2026-08-10 改）──
+       手機不顯示（手機是固定欄數，用上面的「手機的卡片欄數」）。
+
+       這個值不是卡片寬度，是**最小欄寬**；實際欄數是
+         cols = max(1, floor((W + gap) / (minCol + gap)))
+       欄數是整數，所以「連續的 minCol」裡有大量值算出同一個結果。
+       舊版是 120–300 step 10 ＝ 19 格，但在 1000px 寬的右欄下只有 5 種真實結果
+       —— 190→230 拖了完全沒反應，到 240 才突然跳一次。
+
+       改法：先算出「每個欄數的第一個 minCol」當作檔位，滑桿的 value 變成**索引**，
+       每一格都真的會改變畫面。保留 minCol 機制的好處（視窗變窄自動減欄）。 */
     if (!document.body.classList.contains('is-mobile')) {
-      pop.createDiv('gn-more-label').setText(t('Card size'));
+      // 編輯風索引卡有欄寬下限（縮圖 94 + 內距塞不下更窄）→ 起點跟著提高
+      const zMin = state.imageCardLayout === 'editorial' ? GN_EDITORIAL_MIN_COL : 120;
+      const GAP = 16;   // 與 makeGrid 建 MasonryLayout 時的 gap 一致
+      /* 量「卡片牆容器」的寬度，不是 .gn-main —— MasonryLayout 量的就是 .gn-grid，
+         用 .gn-main 會多算它的左右 padding，算出來的斷點會偏掉一格。 */
+      const grid = this._main && this._main.querySelector('.gn-grid');
+      const W = (grid && grid.clientWidth) || (this._main ? this._main.clientWidth - 30 : 800);
+      const colsAt = (v) => Math.max(1, Math.floor((W + GAP) / (v + GAP)));
+
+      const steps = [];
+      let lastCols = -1;
+      for (let v = zMin; v <= 300; v++) {
+        const c = colsAt(v);
+        if (c !== lastCols) { steps.push(v); lastCols = c; }
+      }
+
+      const label = pop.createDiv('gn-more-label');
+      label.setText(t('Card size'));
+      const info = label.createSpan('gn-more-hint');   // 欄數即時回饋
+
+      const cur = Math.max(zMin, state.cardWidth || 120);
+      // 目前值落在哪一格：取最接近的檔位（換版面／換視窗寬後舊值不一定剛好等於某個檔位）
+      let idx = 0, best = Infinity;
+      steps.forEach((v, i) => { const d = Math.abs(v - cur); if (d < best) { best = d; idx = i; } });
+
+      // 顯示欄數（帶單位），不顯示像素 —— 使用者關心的是「排幾欄」，不是最小欄寬那個內部值
+      const showInfo = (v) => info.setText(t('{{n}} columns', { n: colsAt(v) }));
+      showInfo(steps[idx]);
+
       const zoom = pop.createEl('input', { type: 'range' });
       zoom.addClass('gn-zoom');
-      // 編輯風索引卡有欄寬下限（縮圖+內距塞不下）→ 滑桿最小值跟著提高，
-      // 否則拉到 120~140 會「看起來沒反應」（makeGrid 那邊會被 Math.max 夾住）。
-      const zMin = state.imageCardLayout === 'editorial' ? GN_EDITORIAL_MIN_COL : 120;
-      zoom.min = String(zMin); zoom.max = '300'; zoom.step = '10';
-      zoom.value = String(Math.max(zMin, state.cardWidth || 120));
+      // ⚠️ value 是**索引**不是像素值：step 1，每格保證換一個欄數
+      zoom.min = '0'; zoom.max = String(Math.max(0, steps.length - 1)); zoom.step = '1';
+      zoom.value = String(idx);
+      if (steps.length < 2) zoom.disabled = true;   // 視窗太窄，只有一種排法
       zoom.oninput = () => {
-        const v = Math.max(zMin, Number(zoom.value));
+        const v = steps[Number(zoom.value)] || zMin;
         state.cardWidth = v;
+        showInfo(v);
+        /* 改卡片大小**不會重建卡片**（只是 MasonryLayout 重寫 left/top/width），
+           所以吃不到卡片的進場動畫。改成「拖曳期間讓位移補間」——
+           ⚠️ 只在拖曳的這幾百毫秒內開啟：left/top 是版面屬性，常駐 transition 的話
+              每次圖片載入完重排都會補間一次，幾百張卡片同時動會掉幀。
+              停止輸入 260ms 後就拆掉（比 transition 的 200ms 長一點，確保收完）。 */
+        if (this.motionOk()) {
+          for (const g of (this._main ? this._main.querySelectorAll('.gn-grid') : [])) g.addClass('gn-wall-resizing');
+          clearTimeout(this._resizeAnimT);
+          this._resizeAnimT = setTimeout(() => {
+            if (!this._main) return;
+            for (const g of this._main.querySelectorAll('.gn-grid')) g.removeClass('gn-wall-resizing');
+          }, 260);
+        }
         for (const m of (this._masonries || [])) m.setMinCol(v);   // 各區瀑布流即時重排
+        /* ⚠️ 虛擬化模式（>300 張）**一定要一起通知 VirtualWall**。
+           renderVirtual() 會把該區的 masonry destroy 並從 _masonries 移除，
+           所以大資料夾裡上面那一行是在空陣列上跑 —— 漏掉這行的話滑桿只會存值，
+           畫面要等下一次整面重畫（切資料夾／按重新整理）才生效。 */
+        for (const vw of (this._virtuals || [])) vw.setMinCol(v);
         this.plugin.saveState();
       };
     }
 
     pop.createDiv('gn-more-sep');
 
-    /* ── 攤平（開關列） ── */
-    const flatRow = pop.createDiv('gn-more-row');
-    flatRow.toggleClass('gn-more-row-on', !!state.flattenFolders);
-    const flatIcon = flatRow.createSpan('gn-more-icon');
-    setIcon(flatIcon, 'layers');
-    flatRow.createSpan('gn-more-text').setText(t('Flatten: include all subfolders'));
-    const flatMark = flatRow.createSpan('gn-more-check');
-    if (state.flattenFolders) setIcon(flatMark, 'check');
-    flatRow.onclick = () => {
-      state.flattenFolders = !state.flattenFolders;
-      this.plugin.saveState();
-      this.closeMorePopover();
-      this.render();
-    };
+    /* ── 攤平（開關列）──
+       ⚠️ **手機限定**（2026-08-10）：桌機已把攤平提升成工具列的獨立按鈕，
+          這裡再留一份就是兩個入口。手機的工具列放不下，維持在面板裡。 */
+    if (document.body.classList.contains('is-mobile')) {
+      const flatRow = pop.createDiv('gn-more-row');
+      flatRow.toggleClass('gn-more-row-on', !!state.flattenFolders);
+      const flatIcon = flatRow.createSpan('gn-more-icon');
+      setIcon(flatIcon, 'layers');
+      flatRow.createSpan('gn-more-text').setText(t('Flatten: include all subfolders'));
+      const flatMark = flatRow.createSpan('gn-more-check');
+      if (state.flattenFolders) setIcon(flatMark, 'check');
+      flatRow.onclick = () => {
+        state.flattenFolders = !state.flattenFolders;
+        this.plugin.saveState();
+        this.closeMorePopover();
+        this.render();
+      };
+    }
+
+    /* ── 顯示隱藏的資料夾（2026-08-10 從工具列移入）──
+       ⚠️ **桌機限定**：手機的眼睛鈕還在底部工具列（手機維持原況），
+          兩邊都放就是兩個入口。沒有隱藏資料夾時整列不出現（不是 disabled，
+          面板裡的列不像工具列有「版位要固定」的問題）。 */
+    if (!document.body.classList.contains('is-mobile') && (state.hiddenFolders || []).length) {
+      const hidRow = pop.createDiv('gn-more-row');
+      hidRow.toggleClass('gn-more-row-on', !!this.showHidden);
+      const hIcon = hidRow.createSpan('gn-more-icon');
+      setIcon(hIcon, this.showHidden ? 'eye' : 'eye-off');
+      hidRow.createSpan('gn-more-text').setText(t('Show hidden folders'));
+      const hMark = hidRow.createSpan('gn-more-check');
+      if (this.showHidden) setIcon(hMark, 'check');
+      hidRow.onclick = () => {
+        this.showHidden = !this.showHidden;
+        this.closeMorePopover();
+        this.render();
+      };
+    }
 
     /* ── 同步定位（2026-07-19 從工具列移入）── */
     const syncRow = pop.createDiv('gn-more-row');
@@ -1822,26 +1452,16 @@ class GalleryView extends ItemView {
       if (state.syncActive) this.syncToFile(this.app.workspace.getActiveFile());
     };
 
-    /* ── 待辦筆記（2026-07-20）：工具列待辦鈕改成「有指定才顯示」，
-         這裡是沒指定時唯一的設定入口，指定後鈕就會回到工具列 ──
-         ⏸️ 暫時停用（2026-07-20 使用者要求）：連同工具列待辦鈕一起註解，恢復＝取消本區與工具列同標記區塊的註解 */
-    /*
-    const todoRow = pop.createDiv('gn-more-row');
-    const tdIcon = todoRow.createSpan('gn-more-icon');
-    setIcon(tdIcon, 'list-checks');
-    const tdFile = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
-    todoRow.createSpan('gn-more-text').setText(
-      tdFile instanceof TFile ? t('To-do note: {{name}}', { name: tdFile.basename }) : t('Pick a to-do note')
-    );
-    todoRow.onclick = () => { this.closeMorePopover(); this.pickTodoNote(); };
-    */
-
     /* ── 重新整理 ── */
     const refreshRow = pop.createDiv('gn-more-row');
     const rIcon = refreshRow.createSpan('gn-more-icon');
     setIcon(rIcon, 'refresh-cw');
     refreshRow.createSpan('gn-more-text').setText(t('Refresh'));
     refreshRow.onclick = () => { this.closeMorePopover(); this.render(); };
+
+    // 定位與內容依序浮現（與標籤／清單浮層同一套；定位必須在內容填完後才做）
+    this.placePopover(pop, anchor);
+    this.staggerPopContent(pop, ':scope > *');
 
     // 點面板外／按 Esc → 關閉（拖滑桿時不會誤關，因為滑桿在面板內）
     const closer = (e) => {
@@ -1860,6 +1480,9 @@ class GalleryView extends ItemView {
   closeMorePopover() {
     if (this._moreCloser) { document.removeEventListener('mousedown', this._moreCloser); this._moreCloser = null; }
     if (this._moreEsc) { document.removeEventListener('keydown', this._moreEsc); this._moreEsc = null; }
+    // ⚠️ 錨點可能已被 render 重建（class 隨舊 DOM 一起消失），但這裡照樣要清 ——
+    //    否則整頁重畫時若剛好沿用同一顆元素，會留下永遠亮著的鈕。
+    if (this._moreAnchor) { this.markAnchorOpen(this._moreAnchor, false); this._moreAnchor = null; }
     if (this._morePop) { this._morePop.remove(); this._morePop = null; }
   }
 
@@ -2587,77 +2210,65 @@ class GalleryView extends ItemView {
     requestAnimationFrame(() => { apply(); this._treeScrollLock = false; });
   }
 
-  /* 右欄底部的浮動面板（2026-08-01）
-     ⚠️ 刻意用「絕對定位掛在 .gn-split 上」而不是把 .gn-main 包一層：
-        手機的雙欄平移仰賴 .gn-main 是 .gn-split 的直接 flex 子元素
-        （flex: 0 0 100% + translateX），包一層就會壞掉。
-     ⚠️ 手機不啟用：螢幕太窄，面板會跟左右滑動的換欄手勢搶觸控。
-
-     目前預設內容是「本資料夾的標籤」。區域關聯圖（graph.js）先收起來不顯示，
-     程式碼保留 —— 開 state.enableGraph 就會改掛關聯圖。 */
-  mountDock(split) {
-    if (document.body.classList.contains('is-mobile')) return;
-
-    if (this.plugin.state.enableGraph) {
-      this._graph = this._graph || new LocalGraph(this.plugin);
-      this._graph.mount(split);
-      this._dockEl = this._graph.el;
-      this._graph.setFile(this.app.workspace.getActiveFile());
-    } else {
-      this._dockEl = this.buildTagDock(split);
-    }
-    if (!this._dockEl) return;
-
-    split.addClass('gn-has-dock');
-    this.syncDockBounds();
-    if (this._dockRO) { try { this._dockRO.disconnect(); } catch (e) {} }
-    try {
-      this._dockRO = new ResizeObserver(() => this.syncDockBounds());
-      this._dockRO.observe(this._main);   // 涵蓋：拖曳分隔線、左欄收合、視窗縮放
-    } catch (e) {}
-  }
-
-  /* 標籤面板：本資料夾出現過的 tag，點擊即篩選卡片牆。
-     可收合成右下角的懸浮按鈕（狀態存在 state.tagDockOpen）。 */
-  buildTagDock(split) {
+  /* 標籤面板（2026-08-10 改成「從工具列按鈕下方展開的浮層」）
+     沿革：2026-08-01 是右欄底部的常駐浮動面板 + 右下角收合圓鈕；按鈕集中到合併工具列後，
+     改成與「⋯ 更多」同一套 popover 機制 —— 同樣掛 document.body、同樣的 fixed 定位、
+     同樣的「點外面／Esc 關閉」。這樣右欄不再有任何浮在角落的獨立控制項。
+     ⚠️ 掛在 body 而不是 .gn-split：popover 用 position:fixed，掛在會被
+        overflow:hidden 裁切的容器裡會被切掉。
+     ⚠️ 開關狀態**不再持久化**（原本存 state.tagDockOpen）：下拉選單每次重畫都自己彈開
+        會很煩人，浮層就該是暫時的。篩選狀態（_tagFilter）照舊保留。
+     ⚠️ 手機不啟用：螢幕太窄，浮層會跟左右滑動的換欄手勢搶觸控。 */
+  openTagPopover(anchor) {
+    if (this._tagPop) { this.closeTagPopover(); return; }   // 再點一次＝收起（走同一條路徑才會清事件）
+    this.closeMorePopover(); this.closeListPopover();   // 浮層互斥
     const tags = this.folderTags();
-    if (!tags.length) return null;          // 沒有標籤就整個不出現，不佔空間
+    if (!tags.length) return;
 
-    const open = this.plugin.state.tagDockOpen !== false;
-    const dock = split.createDiv('gn-dock gn-dock-tags');
-    dock.toggleClass('gn-dock-mini', !open);
-    split.toggleClass('gn-dock-collapsed', !open);
+    const pop = document.body.createDiv('gn-more-pop gn-tag-pop');
+    this._tagPop = pop;
+    this._tagAnchor = anchor;
+    this.markAnchorOpen(anchor, true);   // 鈕維持 hover 樣式 + 群組維持展開
 
-    const setOpen = (v) => {
-      this.plugin.state.tagDockOpen = v;
-      this.plugin.saveState();
-      dock.toggleClass('gn-dock-mini', !v);
-      split.toggleClass('gn-dock-collapsed', !v);   // 卡片牆的底部留白（取代 :has()）
-      this.syncDockBounds();
-    };
-
-    /* 收合態＝一顆懸浮按鈕。整顆可點，展開後才顯示內容。
-       標籤數當作角標，收起來也知道這個資料夾有多少種標籤。 */
-    const fab = dock.createDiv('gn-dock-fab');
-    setIcon(fab.createDiv('gn-dock-fab-ic'), 'tags');
-    // 標籤種類數移到 tooltip，收合態就是一顆乾淨的圓鈕
-    fab.setAttr('aria-label', t('Tags in this folder') + ' · ' + tags.length);
-    fab.onclick = () => setOpen(true);
-
-    const head = dock.createDiv('gn-dock-head');
+    const head = pop.createDiv('gn-dock-head');
     head.createDiv('gn-dock-title').setText(t('Tags in this folder'));
-    const active = this._tagFilter && this._tagFilter.size;
-    if (active) {
+    if (this._tagFilter && this._tagFilter.size) {
       const clear = head.createDiv('gn-dock-clear');
       clear.setText(t('Clear'));
-      clear.onclick = (e) => { e.stopPropagation(); this._tagFilter = new Set(); this.render(); };
+      clear.onclick = (e) => { e.stopPropagation(); this._tagFilter = new Set(); this.closeTagPopover(); this.render(); };
     }
-    const collapse = head.createDiv('gn-dock-toggle');
-    setIcon(collapse, 'chevron-down');
-    collapse.setAttr('aria-label', t('Collapse'));
-    collapse.onclick = () => setOpen(false);
 
-    const body = dock.createDiv('gn-dock-body');
+    const body = pop.createDiv('gn-dock-body');
+    this.fillTagChips(body, tags);
+
+    this.placePopover(pop, anchor);   // 定位與動畫原點（見該函式）
+
+    // 標題與每顆標籤依序浮現（量完寬度後才掛，避免動畫中的 transform 影響 offsetWidth）
+    this.staggerPopContent(pop, '.gn-dock-title, .gn-dock-clear, .gn-more-chip');
+
+    // 點面板外／按 Esc → 關閉
+    const closer = (e) => {
+      if (!this._tagPop) return;
+      if (this._tagPop.contains(e.target) || anchor.contains(e.target)) return;
+      this.closeTagPopover();
+    };
+    const esc = (e) => { if (e.key === 'Escape') this.closeTagPopover(); };
+    this._tagCloser = closer; this._tagEsc = esc;
+    setTimeout(() => {
+      document.addEventListener('mousedown', closer);
+      document.addEventListener('keydown', esc);
+    }, 0);
+  }
+
+  closeTagPopover() {
+    if (this._tagCloser) { document.removeEventListener('mousedown', this._tagCloser); this._tagCloser = null; }
+    if (this._tagEsc) { document.removeEventListener('keydown', this._tagEsc); this._tagEsc = null; }
+    if (this._tagAnchor) { this.markAnchorOpen(this._tagAnchor, false); this._tagAnchor = null; }
+    if (this._tagPop) { this._tagPop.remove(); this._tagPop = null; }
+  }
+
+  // 標籤晶片：點擊即篩選卡片牆（可複選、再點取消），右鍵可改名／刪除
+  fillTagChips(body, tags) {
     for (const it of tags) {
       const chip = body.createDiv('gn-more-chip');   // 沿用「⋯ 更多」面板的晶片樣式
       chip.toggleClass('gn-more-chip-on', !!(this._tagFilter && this._tagFilter.has(it.tag)));
@@ -2705,28 +2316,6 @@ class GalleryView extends ItemView {
         return menu;
       });
     }
-    return dock;
-  }
-
-  /** 把面板的左右邊界對齊 .gn-main 的內容框（padding 以內）。
-      收合成懸浮按鈕時不撐寬，只靠右下角定位。 */
-  syncDockBounds() {
-    const el = this._dockEl, main = this._main, split = this._split;
-    if (!el || !el.isConnected || !main || !split) return;
-    /* ⚠️ 先把要用的幾何量一次讀完再寫。
-       原本是「讀 offsetLeft → 寫 style.right → 再讀 offsetLeft」，
-       中間那次寫會讓版面失效，第二次讀就強制重算一次。
-       這支掛在 _dockRO 上，拖分隔桿時每個 mousemove 都會觸發 → 每幀多付一次。 */
-    const cs = getComputedStyle(main);
-    const padR = parseFloat(cs.paddingRight) || 0;
-    const padL = parseFloat(cs.paddingLeft) || 0;
-    const mainLeft = main.offsetLeft;
-    const mainW = main.offsetWidth;
-    const splitW = split.clientWidth;
-
-    el.style.right = Math.max(0, splitW - (mainLeft + mainW) + padR) + 'px';
-    // 懸浮按鈕不撐寬
-    el.style.left = el.hasClass('gn-dock-mini') ? 'auto' : (mainLeft + padL) + 'px';
   }
 
   // 只重畫左樹（展開/收合/最愛/資料夾配色用）；沒左樹快取就退回整頁
@@ -2883,11 +2472,245 @@ class GalleryView extends ItemView {
     }
   }
 
+  /* 工具列按鈕工廠（2026-08-10）。桌機穿上 Obsidian 原生的 .clickable-icon.nav-action-button，
+     尺寸／圓角／hover 底色／:active 縮放／圖示線寬／disabled 淡化全部由 app.css 與主題提供
+     —— 與 2026-08-01「Image Peek 穿上原生 lightbox class」同一個手法。
+
+     ⚠️ 原生 class **只能在桌機掛**。`.clickable-icon` 在 app.css 有手機專屬的觸控尺寸與 padding
+        規則，一掛上去手機工具列就會跟著變，而手機現況是使用者明確要保留的（2026-08-10 確認）。
+        所以這裡在 JS 就分流，不是用 CSS 蓋 —— CSS 蓋不掉原生自己的手機規則。
+     ⚠️ tooltip 也要分流：桌機給 aria-label 走原生 tooltip（小黑框）；手機給 title。
+        兩個都給會同時跳出兩種提示。
+
+     opts: { cls 額外 class, on 開啟中, disabled 不可用 } */
+  mkBarBtn(parent, icon, label, opts) {
+    const o = opts || {};
+    const mobile = document.body.classList.contains('is-mobile');
+    const btn = parent.createDiv('gn-btn' + (o.cls ? ' ' + o.cls : ''));
+    if (!mobile) btn.addClass('clickable-icon', 'nav-action-button');
+    setIcon(btn, icon);
+    // 開啟中：桌機用原生的 .is-active（主題自帶樣式）；手機沿用 GN 的灰底膠囊
+    if (o.on) btn.addClass(mobile ? 'gn-btn-on' : 'is-active');
+    // 不可用：原生對 [aria-disabled=true] 有淡化規則，順便讓版位固定不跳（呼叫端不掛 onclick）
+    if (o.disabled) btn.setAttr('aria-disabled', 'true');
+    if (mobile) btn.setAttr('title', label);
+    else btn.setAttr('aria-label', label);
+    return btn;
+  }
+
+  /* 浮層定位（2026-08-10）：所有工具列浮層共用同一套規則，不要各寫各的。
+       · 垂直：貼著錨點，按鈕在畫面下半部就往上彈
+       · 水平：與錨點**置中對齊**，夾在視窗內留 8px 邊距
+       · 動畫原點跟著方向翻（gn-pop-up / gn-pop-center，見 gallery.css）
+     ⚠️ 一定要在**內容填完之後**呼叫：空浮層量到的 offsetWidth 不是最終寬度。
+     ⚠️ 設 left 前要清掉 right —— fixed 元素兩端都有值時寬度會被拉開撐爆。 */
+  placePopover(pop, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    const up = rect.top > window.innerHeight * 0.5;
+    pop.style.top = ''; pop.style.bottom = '';
+    if (up) pop.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+    else pop.style.top = (rect.bottom + 6) + 'px';
+    pop.toggleClass('gn-pop-up', up);
+
+    const w = pop.offsetWidth;
+    const centered = rect.left + rect.width / 2 - w / 2;
+    pop.style.right = '';
+    pop.style.left = Math.max(8, Math.min(centered, window.innerWidth - w - 8)) + 'px';
+    pop.addClass('gn-pop-center');
+  }
+
+  /* 清單式浮層（2026-08-10）：取代原生 Menu，讓排序／新建與標籤浮層長得一樣
+     —— 同樣的圓角陰影、同樣的置中對齊、同樣的展開動畫與依序浮現、
+     同樣「開著時錨點維持 hover、按鈕群組不縮回去」。
+     rows: [{ icon, label, checked, warn, onClick }]，null 代表分隔線。 */
+  openListPopover(anchor, rows) {
+    if (this._listPop && this._listAnchor === anchor) { this.closeListPopover(); return; }
+    this.closeMorePopover(); this.closeTagPopover();   // 浮層互斥
+    const pop = document.body.createDiv('gn-more-pop gn-list-pop');
+    this._listPop = pop;
+    this._listAnchor = anchor;
+    this.markAnchorOpen(anchor, true);
+
+    for (const r of rows) {
+      if (!r) { pop.createDiv('gn-more-sep'); continue; }
+      const row = pop.createDiv('gn-more-row');
+      row.toggleClass('gn-more-row-on', !!r.checked);
+      row.toggleClass('gn-more-row-warn', !!r.warn);
+      if (r.icon) setIcon(row.createSpan('gn-more-icon'), r.icon);
+      row.createSpan('gn-more-text').setText(r.label);
+      const mark = row.createSpan('gn-more-check');
+      if (r.checked) setIcon(mark, 'check');
+      row.onclick = () => { this.closeListPopover(); r.onClick(); };
+    }
+
+    this.placePopover(pop, anchor);
+    this.staggerPopContent(pop, ':scope > *');
+
+    const closer = (e) => {
+      if (!this._listPop) return;
+      if (this._listPop.contains(e.target) || anchor.contains(e.target)) return;
+      this.closeListPopover();
+    };
+    const esc = (e) => { if (e.key === 'Escape') this.closeListPopover(); };
+    this._listCloser = closer; this._listEsc = esc;
+    setTimeout(() => {
+      document.addEventListener('mousedown', closer);
+      document.addEventListener('keydown', esc);
+    }, 0);
+  }
+
+  closeListPopover() {
+    if (this._listCloser) { document.removeEventListener('mousedown', this._listCloser); this._listCloser = null; }
+    if (this._listEsc) { document.removeEventListener('keydown', this._listEsc); this._listEsc = null; }
+    if (this._listAnchor) { this.markAnchorOpen(this._listAnchor, false); this._listAnchor = null; }
+    if (this._listPop) { this._listPop.remove(); this._listPop = null; }
+  }
+
+  /* 浮層內容的依序浮現（2026-08-10）。容器自己先縮放淡入（CSS 的 gn-pop-in），
+     內容再一項一項跟上，做出「先長出盒子、東西再放進去」的層次。
+
+     ⚠️ 延遲寫成 inline 的 --gn-i，不是用 :nth-child()：項目數是動態的（標籤可能幾十個），
+        nth-child 要嘛寫死幾十條規則、要嘛只能涵蓋前幾個。
+     ⚠️ 索引**上限 12**：40 個標籤 × 每階 16ms ＝ 640ms，最後一顆會慢到像卡住。
+        超過的一律用同一個延遲，視覺上仍是「由上而下鋪開」但不會拖尾。
+     ⚠️ 尊重系統的減少動態效果：直接不掛 class，項目就是一般的靜態內容。 */
+  staggerPopContent(pop, selector) {
+    if (!this.motionOk()) return;
+    const items = pop.querySelectorAll(selector);
+    items.forEach((el, i) => {
+      el.addClass('gn-pop-item');
+      el.style.setProperty('--gn-i', String(Math.min(i, 12)));
+    });
+  }
+
+  /* 浮層開著時，把錨點鈕與它所屬的按鈕群組都標記成「選單開啟中」（2026-08-10）。
+
+     ① has-active-menu ＝ Obsidian 原生 class，語意就是「這顆鈕的選單正開著」，
+        主題本來就把它跟 :hover / :active 寫在一起 → 按鈕維持 hover 樣式。
+     ② ⚠️ 光有 ① 不夠。Velocity 讓整個 .nav-buttons-container 平常收成 48px 小膠囊、
+        只有 `.nav-header:hover > …` 時才展開。浮層一開，滑鼠就離開了工具列
+        → **整塊按鈕縮回小球**，只剩一顆亮著的鈕也看不到。
+        所以要在 .nav-header 上掛 gn-cluster-open，由 gallery.css 撐住展開態。
+     手機沒有 .nav-header（closest 回 null）→ 這一段自然是 no-op。 */
+  markAnchorOpen(anchor, on) {
+    if (!anchor) return;
+    anchor.toggleClass('has-active-menu', on);
+    const nh = anchor.closest && anchor.closest('.nav-header');
+    if (nh) nh.toggleClass('gn-cluster-open', on);
+  }
+
+  /* 搜尋鈕**之前**的那幾顆依序淡出，收完才執行 done()（2026-08-10）。
+     搜尋鈕與「⋯ 更多」留在原地 —— 膠囊寬度不變，只是前段換成輸入框。
+
+     ⚠️ 退場前先量下這幾顆佔的寬度並存起來（_searchFieldW），重畫後直接套給輸入框
+        → 膠囊總寬前後一致，不會抽動。用實測而不是「按鈕數 × 44」：
+        按鈕尺寸來自主題（Velocity 是 44×32），寫死等於綁死一個主題。
+     ⚠️ 刻意**等動畫真的播完才重畫**：renderInner() 第一件事就是 root.empty()，
+        DOM 一被清掉動畫就沒了，只會看到瞬間跳換。
+     ⚠️ 用 setTimeout 不用 animationend：退場的是多個元素，事件會各觸發一次還要自己數；
+        而且 reduce-motion 時根本不會有事件。 */
+  morphBarOut(before, done) {
+    const cluster = before && before.parentElement;
+    const all = cluster ? Array.from(cluster.children) : [];
+    const items = all.slice(0, all.indexOf(before));
+    if (!items.length) { done(); return; }
+
+    const first = items[0], last = items[items.length - 1];
+    this._searchFieldW = Math.round(last.offsetLeft + last.offsetWidth - first.offsetLeft);
+
+    if (!this.motionOk()) { done(); return; }
+    const STEP = 22, DUR = 140;
+    items.forEach((el, i) => {
+      el.style.setProperty('--gn-i', String(i));   // 由左而右依序退場
+      el.addClass('gn-btn-leaving');
+    });
+    window.setTimeout(done, (items.length - 1) * STEP + DUR);
+  }
+
+  // 收起工具列搜尋：輸入框先淡出，收完才換回按鈕（與進場對稱）
+  exitBarSearch() {
+    const wrap = this.contentEl.querySelector('.gn-bar-search');
+    const back = () => {
+      this._searchOn = false;
+      this._searchQ = '';
+      this._searchTreeOpen = false;   // 左欄回到「搜尋時預設收起」的初始狀態
+      this._barBtnsIn = true;         // 讓重畫後的按鈕依序進場（renderInner 消費一次）
+      this.render();
+    };
+    if (!wrap || !this.motionOk()) { back(); return; }
+    wrap.addClass('gn-bar-search-leaving');
+    window.setTimeout(back, 140);
+  }
+
+  /* 桌機：長在**膠囊內**的搜尋輸入框（2026-08-10）。
+     取代原本「按鈕開 Modal」的流程 —— 前五顆按鈕的位置換成輸入框，
+     搜尋鈕與「⋯ 更多」留在右側，膠囊總寬不變。
+     ⚠️ 輸入框在 .gn-bar 上（不在 .gn-main 內）：rerenderMain() 會 empty 掉 gn-main，
+        放進去的話每打一個字重畫結果就會失焦。 */
+  buildBarSearch(cluster) {
+    const wrap = cluster.createDiv('gn-bar-search');
+    if (this._searchFieldW) wrap.style.width = this._searchFieldW + 'px';
+    setIcon(wrap.createDiv('gn-bar-search-ic'), 'search');
+
+    const input = wrap.createEl('input', { type: 'search', cls: 'gn-bar-search-input' });
+    input.placeholder = t('Search full text…');
+    input.value = this._searchQ || '';
+
+    let timer = null;
+    const run = async () => {
+      const q = input.value.trim();
+      this._searchQ = q;
+      if (q && !this.plugin.search.ready) {
+        this.rerenderMain();                    // 先顯示「建立索引中…」
+        await this.plugin.search.ensureReady();
+        if (input.value.trim() !== q) return;   // 建索引期間又打了字 → 交給後面那次
+      }
+      this.rerenderMain();
+    };
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 150); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.exitBarSearch(); });
+    setTimeout(() => input.focus(), 0);
+  }
+
+  /* 搜尋輸入列。2026-08-10 抽成方法：桌機要掛在右欄（.gn-maincol）、手機掛在 root，
+     位置隨平台不同，但**兩邊都必須在 .gn-main 外面** —— rerenderMain() 會 empty() 掉
+     gn-main，放進去的話每次篩選／排序都會重建輸入框 → 打字打到一半失焦。
+     （舊註解還寫「gn-main 有頂部淡出遮罩」，那是過期的：全份 CSS 已無任何 mask 規則。） */
+  buildSearchRow(host) {
+    const srow = host.createDiv('gn-search-row');
+    const sinput = srow.createEl('input', { type: 'search', cls: 'gn-search-input' });
+    sinput.placeholder = t('Search full text…');
+    sinput.value = this._searchQ || '';
+
+    const sclose = srow.createDiv('gn-search-clear');
+    setIcon(sclose, 'x');
+    sclose.setAttr('title', t('Close search'));
+    const close = () => { this._searchOn = false; this._searchQ = ''; this._searchTreeOpen = false; this.render(); };
+    sclose.onclick = close;
+
+    let timer = null;
+    const run = async () => {
+      const q = sinput.value.trim();
+      this._searchQ = q;
+      if (q && !this.plugin.search.ready) {
+        this.rerenderMain();                      // 先顯示「建立索引中…」
+        await this.plugin.search.ensureReady();
+        if (sinput.value.trim() !== q) return;    // 建索引期間又打了字 → 交給後面那次
+      }
+      this.rerenderMain();
+    };
+    sinput.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 150); });
+    sinput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    setTimeout(() => sinput.focus(), 0);
+  }
+
   renderInner() {
     const app = this.app;
     const root = this.contentEl;
-    if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; }
-    this.closeMorePopover();   // 「更多」面板掛在 body 上 → 重畫前要收掉，不然會變孤兒
+    // 浮層都掛在 body 上 → 重畫前要收掉，不然錨點沒了它們會變孤兒留在畫面上
+    this.closeMorePopover();
+    this.closeTagPopover();
+    this.closeListPopover();
     // 整頁重畫會丟掉左欄捲動位置 → 清空前先記下來，_buildTree() 結尾再還原
     if (this._treeScroll && this._treeScroll.isConnected) {
       this.treeScrollStore()[this.treeScrollKey()] = this._treeScroll.scrollTop;
@@ -2935,81 +2758,71 @@ class GalleryView extends ItemView {
     const state = this.plugin.state;
 
     /* --- 頂部工具列：左＝資料夾相關（對齊左欄）、右＝卡片相關（靠右） --- */
-    const bar = root.createDiv('gn-bar');
-    const barL = bar.createDiv('gn-bar-group');   // 左：對應左側資料夾樹
-    const barR = bar.createDiv('gn-bar-group');   // 右：對應右側卡片牆
-    this._barTitle = barR.createDiv('gn-bar-title');   // 右段左側＝目前資料夾標題（Finder 風，2026-07-18）
-
-    /* ===== 搜尋（全文，中文 ICU 斷詞 + bigram；結果直接呈現為卡牆）===== */
-    // 搜尋鈕 → 開「懸浮搜尋」（GnSearchModal）；搜尋牆顯示中（Shift+↵ 進來的）→ 變成關閉搜尋
-    const searchBtn = barR.createDiv('gn-btn');
-    setIcon(searchBtn, 'search');
-    searchBtn.setAttr('title', this._searchOn ? t('Close search') : t('Search notes (full-text popup)'));
-    searchBtn.toggleClass('gn-btn-on', !!this._searchOn);
-    searchBtn.onclick = () => {
-      if (this._searchOn) {
-        this._searchOn = false;
-        this._searchQ = '';
-        this._searchTreeOpen = false;   // 左欄回到「搜尋時預設收起」的初始狀態
-        this.render();
-      } else {
-        this.plugin.search.ensureReady();   // 背景先把索引建起來
-        new GnSearchModal(this.app, this.plugin).open();
-      }
-    };
-
-    // 搜尋列放在 gn-root 底下（不在 gn-main 內）：
-    //  1) rerenderMain() 只清 gn-main → 輸入框不會被重建 → 不失焦
-    //  2) gn-main 有頂部淡出遮罩，放進去會被 mask 淡掉看不見
-    if (this._searchOn) {
-      const srow = root.createDiv('gn-search-row');
-      const sinput = srow.createEl('input', { type: 'search', cls: 'gn-search-input' });
-      sinput.placeholder = t('Search full text…');
-      sinput.value = this._searchQ || '';
-
-      const sclose = srow.createDiv('gn-search-clear');
-      setIcon(sclose, 'x');
-      sclose.setAttr('title', t('Close search'));
-      const close = () => { this._searchOn = false; this._searchQ = ''; this._searchTreeOpen = false; this.render(); };
-      sclose.onclick = close;
-
-      let timer = null;
-      const run = async () => {
-        const q = sinput.value.trim();
-        this._searchQ = q;
-        if (q && !this.plugin.search.ready) {
-          this.rerenderMain();                      // 先顯示「建立索引中…」
-          await this.plugin.search.ensureReady();
-          if (sinput.value.trim() !== q) return;    // 建索引期間又打了字 → 交給後面那次
-        }
-        this.rerenderMain();
-      };
-      sinput.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 150); });
-      sinput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
-      setTimeout(() => sinput.focus(), 0);
-    }
-    // 桌機：左段寬度對齊左欄（+9 補分隔桿）；收合時用自然寬（保留展開鈕）
+    /* ===== 版面骨架（2026-08-10 桌機重組）=====
+       桌機：**取消橫跨兩欄的頂部工具列**，按鈕依所屬欄位收進各自的欄頭
+         .gn-bar.gn-bar-merged ＝ 麵包屑 + 一塊 .nav-buttons-container（全部按鈕）
+         底下才是 .gn-split（左樹 / 分隔桿 / 卡片牆）
+       手機：完全維持原本的底部 .gn-bar 與 [bar][searchRow][split] 的 DOM 順序
+             （使用者確認手機現況已好，2026-08-10 一行都不要動）。
+       ⚠️ 按鈕一律用 mkBarBtn() 建立，不要再直接 createDiv('gn-btn')。 */
     const isMobileUI = document.body.classList.contains('is-mobile');
-    const syncBarL = (w) => {
-      if (isMobileUI) return;
-      barL.style.flex = '0 0 ' + w + 'px';
-      // 分界推到「樹寬 + 分隔桿 9px」＝右欄起點，灰色涵蓋分隔桿區，不留白縫
-      root.style.setProperty('--gn-treew', (w + 9) + 'px');
-    };
     // 搜尋時預設收起左欄（搜尋結果是全 vault，資料夾樹沒意義）；
     // 但搜尋中仍可用收合鈕手動展開（this._searchTreeOpen 當覆寫，不寫進 data.json）
     const treeHidden = this._searchOn ? !this._searchTreeOpen : !!state.treeCollapsed;
-    if (!isMobileUI && !treeHidden) syncBarL(state.treeWidth || 232);
-    if (!isMobileUI && treeHidden) root.style.setProperty('--gn-treew', '-1px');   // 左欄收合 → 整塊主底色（-1px：連交界線一起滑出畫面）
 
-    // 左：收合 / 展開資料夾面板
-    // 精簡（2026-07-20）：桌機「左欄展開時」不顯示——分隔線 hover 已有同功能的收合鈕。
-    // ⚠️ 但收合後分隔線本身也 display:none（見下方 treeHidden 分支）→ 那時**必須**留展開鈕，
-    //    否則左欄再也叫不回來。手機沒有分隔線 hover，一律保留。
+    /* 桌機：一條橫跨兩欄的合併欄，**只放按鈕**，全部集中在同一個群組（2026-08-10）。
+       以前是 barL／barR 兩段、左段寬度還要用 JS 對齊左欄，麵包屑也塞在右段。
+       麵包屑已移回右欄的牆內表頭（.gn-main-head，與手機同一條路徑）——
+       this._barTitle 保持 null，renderNoteWall() 的 useBarTitle 就會自動走牆內那條。
+       手機：維持原本的底部兩段式工具列，一行都不動。 */
+    const bar = root.createDiv('gn-bar');
+    let barL = null, barR = null;
+    this._barTitle = null;
+    if (isMobileUI) {
+      barL = bar.createDiv('gn-bar-group');   // 左：對應左側資料夾樹
+      barR = bar.createDiv('gn-bar-group');   // 右：對應右側卡片牆
+    } else {
+      bar.addClass('gn-bar-merged');
+    }
+    /* 搜尋列必須在 .gn-main 外面（rerenderMain 會 empty 掉它 → 輸入框失焦），
+       且 DOM 順序固定是 [bar][searchRow][split]。
+       ⚠️ **手機限定**：桌機的輸入框已經改成長在工具列裡（見下方 buildBarSearch）。 */
+    if (isMobileUI && this._searchOn) this.buildSearchRow(root);
+
+    /* 按鈕群組容器：桌機包成原生的 .nav-header > .nav-buttons-container，直接吃主題給的
+       膠囊底、hover 展開（Velocity 用 interpolate-size 對 fit-content 做尺寸補間）、按壓縮放。
+       ⚠️ 必須是 .nav-header 的**直接子元素** —— Velocity 的展開規則寫成
+          `.nav-header:hover > .nav-buttons-container`，少了父層就永遠停在 height:0
+          且子元素 filter:opacity(0) ＝ 整排按鈕隱形，而且不會報錯。 */
+    /* 桌機搜尋開啟時，膠囊**前段**換成輸入框（搜尋鈕與「⋯ 更多」留在右側），
+       膠囊本身照建，寬度不變。手機維持原況：按鈕開 GnSearchModal。 */
+    const barSearch = !isMobileUI && this._searchOn;
+    const cluster = isMobileUI ? null : bar.createDiv('nav-header').createDiv('nav-buttons-container');
+    /* ⚠️ 按鈕**先建進暫存容器**，最後才依平台的順序 append（見本段末尾的 order 陣列）。
+       桌機與手機的排列不同：桌機是一整塊、順序由使用者指定（2026-08-10）；
+       手機是左右兩段、順序必須維持原況（使用者確認手機不動）。
+       若照「建立順序＝DOM 順序」寫，改桌機排序就會連帶動到手機。 */
+    const tray = createDiv();
+    const leftHost = tray, rightHost = tray;
+    const btn = {};   // key → 元素，最後依序 append
+
+    /* --- 兩欄：左巢狀資料夾樹 + 右筆記牆 --- */
+    const split = root.createDiv('gn-split');
+    const tree = split.createDiv('gn-tree');             // 左欄容器（flex 直向）
+    tree.style.flex = '0 0 ' + (state.treeWidth || 232) + 'px';
+    const treeScroll = tree.createDiv('gn-tree-scroll');  // 可捲動的資料夾/標籤區
+    const splitter = split.createDiv('gn-split-handle');
+    const main = split.createDiv('gn-main');
+    this._split = split; this._main = main;   // 供手機「點資料夾 → 跳右欄」使用
+
+    /* 左欄收合 / 展開。合併欄橫跨兩欄、不隨左欄消失，所以這裡沒有「按鈕跟著左欄一起不見」
+       的風險（2026-07-20 那條警告是針對舊結構）。
+       桌機展開狀態仍不放此鈕：分隔線 hover 已有同功能的收合鈕。手機一律保留。 */
     if (isMobileUI || treeHidden) {
-      const collapseBtn = barL.createDiv('gn-btn gn-collapse-btn');
-      setIcon(collapseBtn, treeHidden ? 'panel-left-open' : 'panel-left-close');
-      collapseBtn.setAttr('title', treeHidden ? t('Expand folder pane') : t('Collapse folder pane'));
+      const collapseBtn = btn.collapse = this.mkBarBtn(leftHost,
+        treeHidden ? 'panel-left-open' : 'panel-left-close',
+        treeHidden ? t('Expand folder pane') : t('Collapse folder pane'),
+        { cls: 'gn-collapse-btn' });
       collapseBtn.onclick = () => {
         if (this._searchOn) { this._searchTreeOpen = !this._searchTreeOpen; this.render(); return; }   // 搜尋中：只切這次
         state.treeCollapsed = !state.treeCollapsed;
@@ -3018,32 +2831,35 @@ class GalleryView extends ItemView {
       };
     }
 
-    // 左：待辦按鈕（點了彈出面板；徽章顯示未完成數）
-    // ⏸️ 暫時停用（2026-07-20 使用者要求）：整顆待辦鈕連同「更多」面板的「選擇待辦筆記」一起註解。
-    //    恢復＝取消本區與 openMorePopover() 內同標記區塊的註解（openTodoPopover/renderTodoInto/pickTodoNote 都留著）。
-    // 精簡（2026-07-20）：**沒指定待辦筆記就不顯示**——那時這顆鈕只是個空殼。
-    // 設定入口改放「⋯ 更多」面板的「選擇待辦筆記」，指定後這顆鈕就會回到工具列。
-    /*
-    const tf = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
-    if (tf instanceof TFile) {
-      const todoBtn = barL.createDiv('gn-btn gn-todo-btn');
-      setIcon(todoBtn, 'list-checks');
-      todoBtn.setAttr('title', t('To-dos'));
-      const todoBadge = todoBtn.createSpan('gn-todo-badge');
-      todoBadge.style.display = 'none';
-      this.app.vault.cachedRead(tf).then((raw) => {
-        const undone = parseTasks(raw).filter((x) => !x.done).length;   // ⚠️ 勿叫 t（遮蔽 i18n）
-        if (undone > 0) { todoBadge.style.display = ''; todoBadge.setText(String(undone)); }
-      }).catch(() => {});
-      todoBtn.onclick = (e) => { e.stopPropagation(); this.openTodoPopover(todoBtn); };
-    }
-    */
+    /* ===== 搜尋（全文，中文 ICU 斷詞 + bigram；結果直接呈現為卡牆）=====
+       桌機（2026-08-10）：點下去**整條工具列變成搜尋欄** —— 按鈕先依序淡出，
+       動畫收完才重畫成輸入框（見 morphBarOut / buildBarSearch）。
+       手機：維持原況，開 GnSearchModal 懸浮搜尋。 */
+    const searchBtn = btn.search = this.mkBarBtn(rightHost, 'search',
+      barSearch ? t('Close search') : t('Search notes (full-text popup)'),
+      { on: barSearch });
+    searchBtn.onclick = () => {
+      if (barSearch) { this.exitBarSearch(); return; }   // 搜尋中 → 這顆變成關閉
+      this.plugin.search.ensureReady();                  // 背景先把索引建起來
+      if (isMobileUI) { new GnSearchModal(this.app, this.plugin).open(); return; }
+      // 前五顆依序淡出、量好寬度，收完才重畫成輸入框
+      this.morphBarOut(searchBtn, () => { this._searchOn = true; this._searchQ = ''; this.render(); });
+    };
+
+    // root 的雙欄底色分界推到「樹寬 + 分隔桿 9px」＝右欄起點，灰色涵蓋分隔桿區，不留白縫。
+    // （2026-08-10：原本這支還要同步工具列左段的寬度，桌機工具列取消後只剩這件事。）
+    const syncTreeVar = (w) => {
+      if (isMobileUI) return;
+      root.style.setProperty('--gn-treew', (w + 9) + 'px');
+    };
+    if (!isMobileUI && !treeHidden) syncTreeVar(state.treeWidth || 232);
+    if (!isMobileUI && treeHidden) root.style.setProperty('--gn-treew', '-1px');   // 左欄收合 → 整塊主底色（-1px：連交界線一起滑出畫面）
 
     // 左：資料夾 ⇄ 標籤 模式切換
-    const modeBtn = barL.createDiv('gn-btn');
-    modeBtn.toggleClass('gn-eye-on', state.leftMode === 'tag');
-    setIcon(modeBtn, state.leftMode === 'tag' ? 'hash' : 'folder');
-    modeBtn.setAttr('title', state.leftMode === 'tag' ? t('Current: tags (click to switch to folders)') : t('Current: folders (click to switch to tags)'));
+    const modeBtn = btn.mode = this.mkBarBtn(leftHost,
+      state.leftMode === 'tag' ? 'hash' : 'folder',
+      state.leftMode === 'tag' ? t('Current: tags (click to switch to folders)') : t('Current: folders (click to switch to tags)'),
+      { on: state.leftMode === 'tag' });
     modeBtn.onclick = () => {
       state.leftMode = state.leftMode === 'tag' ? 'folder' : 'tag';
       this.plugin.saveState();
@@ -3052,60 +2868,176 @@ class GalleryView extends ItemView {
 
     // 同步定位鈕已移入「⋯ 更多」面板（2026-07-19）
 
-    // 左：顯示 / 隱藏資料夾
-    if ((state.hiddenFolders || []).length) {
-      const eye = barL.createDiv('gn-btn');
-      eye.toggleClass('gn-eye-on', !!this.showHidden);
-      setIcon(eye, this.showHidden ? 'eye' : 'eye-off');
-      eye.setAttr('title', this.showHidden ? t('Hide hidden folders') : t('Show hidden folders'));
+    /* 顯示 / 隱藏資料夾。
+       ⚠️ **手機限定**（2026-08-10）：桌機已移進「⋯ 更多」面板（使用者要求），
+          工具列只留六顆常用的。手機維持「有隱藏資料夾才出現」的原況。 */
+    const hasHidden = (state.hiddenFolders || []).length > 0;
+    if (isMobileUI && hasHidden) {
+      const eye = btn.eye = this.mkBarBtn(leftHost,
+        this.showHidden ? 'eye' : 'eye-off',
+        this.showHidden ? t('Hide hidden folders') : t('Show hidden folders'),
+        { on: !!this.showHidden });
       eye.onclick = () => { this.showHidden = !this.showHidden; this.render(); };
     }
 
-    // 右：新建（筆記 / Canvas / Base / 資料夾）
-    // 精簡（2026-07-20）：**只在資料夾情境顯示**。搜尋牆沒有「這個資料夾」的概念，
-    // 「在此新建」在那裡沒有語意（會建到上次的 this.path，是個陷阱）。
-    const inFolderView = !this._searchOn;
-    if (inFolderView) {
-      const newBtn = barR.createDiv('gn-btn');
-      setIcon(newBtn, 'file-plus');
-      newBtn.setAttr('title', t('Create here (folder / note / canvas / base)'));
-      newBtn.onclick = (e) => this.newFileMenu(this.folderAt(this.path), e);
+    /* 右：新建（筆記 / Canvas / Base / 資料夾）
+       「在此新建」需要一個明確的「這裡」，所以兩種情況都沒有語意：
+         · 搜尋牆：結果是全 vault，沒有「這個資料夾」
+         · 標籤模式：左欄選的是標籤不是資料夾
+       兩者 folderAt() 都會**退回上次的 this.path 或根目錄** → 檔案建到使用者沒預期的地方。
+       ⚠️ 2026-08-10：以前只擋搜尋牆、漏了標籤模式，而牆面右鍵的 wireMainCreateMenu()
+          從一開始就兩種都擋（`if (leftMode === 'tag') return`）—— 同一個功能的兩個入口
+          行為不一致。這次一起比照，判斷條件也抽成同一個 inFolderView。
+       表現方式分兩種（與標籤／攤平鈕同一套原則）：
+         · 搜尋牆是**暫時狀態** → 給 aria-disabled，版位不跳
+         · 標籤模式是**使用者主動切換** → 整顆不顯示
+       ⚠️ 隱藏只做在桌機。手機底部列是 space-evenly 均分，少一顆會讓**整排位移**，
+          而使用者已確認手機維持原況（2026-08-10）。手機那邊標籤模式仍看得到這顆鈕，
+          點下去會建到上次的資料夾 —— 已知的既有行為，要修的話應該是「保留版位但
+          disabled」，而不是隱藏。 */
+    const inFolderView = !this._searchOn && state.leftMode !== 'tag';
+    if (isMobileUI ? !this._searchOn : state.leftMode !== 'tag') {
+      const newBtn = btn.new = this.mkBarBtn(rightHost, 'file-plus',
+        t('Create here (folder / note / canvas / base)'),
+        { disabled: !inFolderView });
+      /* 工具列這顆走共用的清單浮層（與排序、標籤同一種外觀與行為）。
+         牆面空白處右鍵仍走原生 Menu（newFileMenu）—— 那裡沒有錨點按鈕可以對齊，
+         而且右鍵跳原生選單本來就是使用者的預期。 */
+      if (inFolderView) newBtn.onclick = (e) => {
+        e.stopPropagation();
+        const f = this.folderAt(this.path);
+        if (!f) return;
+        this.openListPopover(newBtn, [
+          { icon: 'folder-plus', label: t('Folder'), onClick: () => this.newFolder(f) },
+          null,
+          { icon: 'file-text', label: t('Note'), onClick: () => this.newFile(f, 'md', '') },
+          { icon: 'layout-dashboard', label: t('Canvas'), onClick: () => this.newFile(f, 'canvas', '{}') },
+          { icon: 'database', label: t('Base'), onClick: () => this.newFile(f, 'base', 'views:\n  - type: table\n    name: Table\n') },
+        ]);
+      };
     }
 
-    // 右：⋯ 更多（排序 / 卡片大小滑桿 / 攤平 / 重新整理 → 單層浮動面板）
-    const moreBtn = barR.createDiv('gn-btn');
-    setIcon(moreBtn, 'more-horizontal');
-    moreBtn.setAttr('title', t('More (sort / card size / flatten)'));
+    /* 右：標籤（2026-08-10）。原本是右下角的懸浮圓鈕 + 右欄底部的常駐面板，
+       現在改成「從這顆按鈕下方展開的浮層」，與「⋯ 更多」同一套 popover 機制。
+       篩選中會亮 .is-active，讓收起浮層後仍看得出目前有套篩選。 */
+    /* ⚠️ 標籤模式**整顆不顯示**（2026-08-10 使用者要求）：那個模式本身就在看標籤，
+          「本資料夾的標籤」沒有意義（folderTags() 在該模式也直接回空陣列）。
+       ⚠️ 與「沒有標籤時給 disabled」的差別是刻意的：
+          · 資料夾有沒有標籤是**資料**決定的 → 用 disabled，版位才不會隨著逛資料夾跳動
+          · 切換模式是**使用者主動**的操作 → 整組工具改變是預期內的，直接隱藏更乾淨 */
+    if (!isMobileUI && state.leftMode !== 'tag') {
+      const nTags = this.folderTags().length;
+      const filtering = !!(this._tagFilter && this._tagFilter.size);
+      const tagsBtn = btn.tags = this.mkBarBtn(rightHost, 'tags',
+        nTags ? t('Tags in this folder') + ' · ' + nTags : t('Tags in this folder'),
+        { on: filtering, disabled: !nTags });
+      if (nTags) tagsBtn.onclick = (e) => { e.stopPropagation(); this.openTagPopover(tagsBtn); };
+    }
+
+    /* 排序：工具列按鈕 → 原生選單（2026-08-10 從「⋯ 更多」的清單移出來）。
+       **圖示反映目前的排序**，所以不用打開也知道現在照什麼排。桌機限定。
+       ⚠️ 選單開著時要 markAnchorOpen —— 否則滑鼠一移到選單上，Velocity 的
+          `.nav-header:hover` 不成立，整塊按鈕會縮回小膠囊（與浮層同一個坑）。
+          原生 Menu 用 onHide() 收尾。
+       ⚠️ 就地更新圖示與 tooltip，不走 render()：sort 只被 renderNoteWall 讀到，
+          整頁重畫會白白丟掉左樹狀態與捲動位置。
+       ⚠️ tooltip 只更新「當初 mkBarBtn 掛的那一個」屬性（桌機＝aria-label），
+          兩個都設會同時跳出兩種提示。 */
+    if (!isMobileUI) {
+      const sortLabel = (k) => t('Sort') + ' · ' + t(SORTS[k].label);
+      let sortKey = SORTS[state.sort] ? state.sort : 'new';
+      const sortBtn = btn.sort = this.mkBarBtn(rightHost, SORTS[sortKey].icon, sortLabel(sortKey));
+      sortBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.openListPopover(sortBtn, SORT_KEYS.map((key) => ({
+          icon: SORTS[key].icon,
+          label: t(SORTS[key].label),
+          checked: key === sortKey,
+          onClick: () => {
+            sortKey = key;
+            state.sort = key;
+            this.plugin.saveState();
+            setIcon(sortBtn, SORTS[key].icon);
+            sortBtn.setAttr('aria-label', sortLabel(key));
+            this.rerenderMainKeepScroll();   // sort 只被 renderNoteWall 讀到，不必整頁重畫
+          },
+        })));
+      };
+    }
+
+    /* 攤平：含所有子資料夾（2026-08-10 從「⋯ 更多」提升成獨立按鈕）。
+       桌機限定 —— 手機工具列放不下，那邊仍在面板裡。
+       ⚠️ 標籤模式不顯示（同標籤鈕）：那個模式走 renderTagNotes → renderNoteWall 的
+          folder 傳 null，而攤平的判斷是 `!filesOverride && folder && flattenFolders`
+          → **在標籤模式根本不生效**。留著會是一顆點了沒反應的鈕。 */
+    if (!isMobileUI && state.leftMode !== 'tag') {
+      const flatBtn = btn.flatten = this.mkBarBtn(rightHost, 'layers',
+        t('Flatten: include all subfolders'),
+        { on: !!state.flattenFolders });
+      flatBtn.onclick = () => {
+        state.flattenFolders = !state.flattenFolders;
+        this.plugin.saveState();
+        this.render();
+      };
+    }
+
+    // 右：⋯ 更多（排序 / 卡片大小滑桿 / 重新整理 → 單層浮動面板）
+    const moreBtn = btn.more = this.mkBarBtn(rightHost, 'more-horizontal', t('More (sort / card size / flatten)'));
     moreBtn.onclick = (e) => { e.stopPropagation(); this.openMorePopover(moreBtn); };
 
+    /* 依平台把按鈕排進實際的容器（見上面 tray 的說明）。
+       桌機順序由使用者指定（2026-08-10）：新建 · 搜尋 · 標籤模式 · 標籤 · 攤平 · 更多。
+       「展開左欄」只在左欄收合時出現，放最前面（它是版面層級的控制，不屬於上面那組）。
+       手機維持原況：左段＝收合·模式·眼睛，右段＝搜尋·新建·更多。 */
+    if (isMobileUI) {
+      for (const k of ['collapse', 'mode', 'eye']) if (btn[k]) barL.appendChild(btn[k]);
+      for (const k of ['search', 'new', 'more']) if (btn[k]) barR.appendChild(btn[k]);
+    } else {
+      if (barSearch) {
+        /* 搜尋中：前段換成輸入框，只留搜尋與更多。
+           ⚠️ 膠囊要強制展開 —— 平常是 .nav-header:hover 才展開，
+              滑鼠移開輸入框就會縮回小球，打字打到一半整條不見。 */
+        cluster.parentElement.addClass('gn-cluster-open');
+        this.buildBarSearch(cluster);
+        for (const k of ['search', 'more']) if (btn[k]) cluster.appendChild(btn[k]);
+      } else {
+      for (const k of ['collapse', 'new', 'mode', 'tags', 'sort', 'flatten', 'search', 'more']) {
+        if (btn[k]) cluster.appendChild(btn[k]);
+      }
+      }
+      /* 從搜尋欄切回按鈕時，讓按鈕依序進場（與 morphBarOut 的退場對稱）。
+         旗標由 buildBarSearch 的 close() 設定，**用一次就清掉** —— 否則之後每次
+         整頁重畫（換資料夾、拖卡片…）按鈕都會再抖一次。 */
+      if (this._barBtnsIn) {
+        this._barBtnsIn = false;
+        if (this.motionOk()) {
+          Array.from(cluster.children).forEach((el, i) => {
+            el.style.setProperty('--gn-i', String(i));
+            el.addClass('gn-btn-entering');
+          });
+        }
+      }
+    }
+
     // 鍵盤可及性：.gn-btn 是 div，預設不可 focus → 補上 button 語意與 Enter/Space 觸發。
-    // （工具列「懸浮膠囊」版已還原成左右兩段，此段與版面無關、保留。）
+    // aria-label 已由 mkBarBtn() 在建立時掛好（桌機），這裡只補 focus 與鍵盤觸發。
     if (!isMobileUI) {
-      for (const btn of Array.from(barR.children)) {
-        if (!btn.hasClass || !btn.hasClass('gn-btn')) continue;
-        btn.setAttr('tabindex', '0');
-        btn.setAttr('role', 'button');
-        const label = btn.getAttr('title');
-        if (label && !btn.getAttr('aria-label')) btn.setAttr('aria-label', label);
-        btn.addEventListener('keydown', (e) => {
+      // ⚠️ 要走 Object.values(btn) 而不是容器的 children：按鈕是先建進 tray、
+      //    再依順序 append 到 cluster 的，tray 這時已經空了。
+      for (const el of Object.values(btn)) {
+        if (!el || !el.isConnected) continue;                    // 沒被排進順序表的（如桌機的 eye）跳過
+        if (el.getAttr('aria-disabled') === 'true') continue;    // 不可用的鈕不進 Tab 順序
+        el.setAttr('tabindex', '0');
+        el.setAttr('role', 'button');
+        el.addEventListener('keydown', (e) => {
           if (e.key !== 'Enter' && e.key !== ' ') return;
           e.preventDefault();
-          btn.click();
+          el.click();
         });
       }
     }
 
-    const zoom = null;   // 滑桿已移進「更多」面板（makeGrid 對 null 有防呆）
-
-    /* --- 兩欄：左巢狀資料夾樹 + 右筆記牆 --- */
-    const split = root.createDiv('gn-split');
-    const tree = split.createDiv('gn-tree');            // 左欄容器（flex 直向）
-    tree.style.flex = '0 0 ' + (state.treeWidth || 232) + 'px';
-    const treeScroll = tree.createDiv('gn-tree-scroll'); // 上方：可捲動的資料夾/標籤區
-    const splitter = split.createDiv('gn-split-handle');
-    const main = split.createDiv('gn-main');
-    this._split = split; this._main = main;   // 供手機「點資料夾 → 跳右欄」使用
-    this.mountDock(split);                    // 右欄底部的浮動面板（桌機）
+    // （2026-08-10）右欄底部的常駐標籤面板已改成工具列按鈕下方的浮層，這裡不再掛任何東西。
     this.wireOverlayScrollbar(treeScroll);    // overlay 捲軸：捲動才浮現
     this.wireOverlayScrollbar(main);
     this.wireMainCreateMenu(main);            // 卡片區空白處右鍵 →「在此新建」
@@ -3192,7 +3124,7 @@ class GalleryView extends ItemView {
       let w = dragX - dragRect.left;
       w = Math.max(150, Math.min(dragRect.width - 200, w));
       tree.style.flex = '0 0 ' + w + 'px';
-      syncBarL(w);   // 工具列左段跟著左欄寬度
+      syncTreeVar(w);   // root 的雙欄底色分界跟著左欄寬度
       pendingW = w;
     };
     const onMove = (e) => {
@@ -3431,8 +3363,7 @@ class GalleryView extends ItemView {
     this._buildTree();
 
     /* --- 右：搜尋結果 / 連結牆 / 標籤筆記 / 資料夾筆記牆 --- */
-    this._zoom = zoom;
-    this.renderMainContent(main, zoom);
+    this.renderMainContent(main);
     this.restoreMainScroll();   // 同一面牆重畫（拖曳搬移/檔案變動）→ 還原捲動位置，不跳回頂部
   }
 
@@ -3495,19 +3426,19 @@ class GalleryView extends ItemView {
 
   // 右欄內容的分派。抽出來是為了讓搜尋打字時能「只重繪右欄」——
   // 若每次打字都跑整個 render()，輸入框會被重建 → 立刻失焦，根本沒法打字。
-  renderMainContent(main, zoom) {
+  renderMainContent(main) {
     if (this._barTitle) this._barTitle.empty();   // 各檢視自己填
     const state = this.plugin.state;
-    if (this._searchQ) { this.renderSearchWall(main, zoom); return; }
-    if (state.leftMode === 'tag') this.renderTagNotes(main, zoom);
-    else this.renderNoteWall(main, this.folderAt(this.path), zoom);
+    if (this._searchQ) { this.renderSearchWall(main); return; }
+    if (state.leftMode === 'tag') this.renderTagNotes(main);
+    else this.renderNoteWall(main, this.folderAt(this.path));
   }
 
   // 只重繪右欄（打字時用；搜尋列在 gn-root 底下，不會被清掉 → 保持焦點）
   rerenderMain() {
     if (!this._main) return;
     this._main.empty();
-    this.renderMainContent(this._main, this._zoom);
+    this.renderMainContent(this._main);
   }
 
   /* 只重繪右欄並保住捲動位置（釘選、排序、切換內文預覽等「只影響卡片牆」的小操作）。
@@ -3523,7 +3454,7 @@ class GalleryView extends ItemView {
   }
 
   // 搜尋結果 → 卡牆。keepOrder=true 保住 BM25 相關性排名（不套日期排序）
-  renderSearchWall(main, zoom) {
+  renderSearchWall(main) {
     const idx = this.plugin.search;
     if (!idx.ready) { main.createDiv('gn-empty').setText(t('Building index…')); return; }
     const hits = idx.search(this._searchQ, 0);          // 0 = 不設上限（卡牆本來就懶載入）
@@ -3532,175 +3463,13 @@ class GalleryView extends ItemView {
       .map((h) => this.app.vault.getAbstractFileByPath(h.path))
       .filter((f) => f instanceof TFile);
     this.renderNoteWall(
-      main, null, zoom, files,
+      main, null, files,
       t('Search "{{q}}" · {{n}} results', { q: this._searchQ, n: files.length }),
       true,                                            // keepOrder
       t('No matching notes')
     );
   }
 
-  // 選 / 換待辦筆記
-  pickTodoNote() {
-    new FileSuggest(this.app, (file) => {
-      this.plugin.state.todoNote = file.path;
-      this.plugin.saveState();
-      this.render();
-    }).open();
-  }
-
-  // 勾選 / 取消勾選某一行任務（改寫 - [ ] ⇄ - [x]）
-  // 批次指定卡片樣式（右鍵單張 / 多選動作列共用）；null = 還原預設
-  setCardStyle(paths, style) {
-    const map = Object.assign({}, this.plugin.state.cardStyles);
-    for (const p of paths) { if (style) map[p] = style; else delete map[p]; }
-    this.plugin.state.cardStyles = map;
-    this.plugin.saveState();
-    this.rerenderMain();   // 樣式會改卡片結構 → 重建右欄（捲動位置有記憶）
-  }
-
-  // 多選動作列的樣式選單
-  styleSelectedMenu(e) {
-    if (!this.selected.size) return;
-    const menu = new Menu();
-    for (const [key, label, icon] of CARD_STYLES) {
-      menu.addItem((i) => i.setTitle(t(label)).setIcon(icon)
-        .onClick(() => this.setCardStyle([...this.selected], key)));
-    }
-    menu.showAtMouseEvent(e);
-  }
-
-  // （2026-07-20 移除）detectVideoCard()：自動影片卡整套下架
-
-  // （2026-07-20 移除）loadCardTodos()：卡片上的待辦清單已下架，待辦只留浮動面板。
-
-
-  async toggleTask(file, lineNo) {
-    try {
-      const raw = await this.app.vault.read(file);
-      const lines = raw.split('\n');
-      const m = (lines[lineNo] || '').match(/^(\s*[-*+]\s+\[)([ xX])(\].*)$/);
-      if (!m) return;
-      const done = m[2].toLowerCase() === 'x';
-      lines[lineNo] = m[1] + (done ? ' ' : 'x') + m[3];
-      await this.app.vault.modify(file, lines.join('\n'));
-      if (this._todoPop) this.renderTodoInto(this._todoPop);   // 面板開著 → 只重繪面板，不收起
-      else this.render();
-    } catch (e) {
-      new Notice(t('Failed to update task: {{msg}}', { msg: e && e.message ? e.message : e }));
-    }
-  }
-
-  // 左樹上方的待辦區（可整區收合、任務依縮排分層級）
-  // 點待辦按鈕：彈出/收起浮動面板
-  /* ⚠️ 關閉一律走這裡。
-     舊寫法是「再點一次按鈕」時直接 remove 面板，但**沒有**解除掛在 document 上的
-     mousedown 監聽 —— 只有「點面板外面」那條路會解除。於是每開關一次就永久多留
-     一個 document 級監聽器，而且那個閉包還抓著整個 view，view 也回收不掉。
-     同檔的 closeMorePopover() 本來就寫對了，這裡是漏掉。 */
-  closeTodoPopover() {
-    if (this._todoCloser) {
-      document.removeEventListener('mousedown', this._todoCloser);
-      this._todoCloser = null;
-    }
-    if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; }
-  }
-
-  openTodoPopover(anchor) {
-    if (this._todoPop) { this.closeTodoPopover(); return; }
-    const pop = document.body.createDiv('gn-todo-pop');
-    this._todoPop = pop;
-    const rect = anchor.getBoundingClientRect();
-    pop.style.left = rect.left + 'px';
-    // 按鈕在下半部 → 往上彈；否則往下彈
-    if (rect.top > window.innerHeight * 0.5) {
-      pop.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
-    } else {
-      pop.style.top = (rect.bottom + 6) + 'px';
-    }
-    this.renderTodoInto(pop);
-    const closer = (e) => {
-      if (!this._todoPop) return;
-      if (this._todoPop.contains(e.target) || anchor.contains(e.target)) return;
-      this.closeTodoPopover();
-    };
-    this._todoCloser = closer;
-    setTimeout(() => document.addEventListener('mousedown', closer), 0);
-  }
-
-  // 把待辦清單渲染進指定容器（面板用）
-  renderTodoInto(box) {
-    box.empty();
-    const state = this.plugin.state;
-    const head = box.createDiv('gn-todo-head');
-    head.style.cursor = 'default';
-    head.createSpan('gn-todo-title').setText(t('To-dos'));
-    const acts = head.createDiv('gn-todo-acts');
-
-    const file = state.todoNote ? this.app.vault.getAbstractFileByPath(state.todoNote) : null;
-
-    // 開啟待辦來源筆記（錨定的那則）
-    if (file instanceof TFile) {
-      const openBtn = acts.createSpan('gn-todo-act');
-      setIcon(openBtn, 'file-text');
-      openBtn.setAttr('title', t('Open the to-do note'));
-      openBtn.onclick = (e) => {
-        e.stopPropagation();
-        this.openNote(file, false);
-        if (this._todoPop) { this._todoPop.remove(); this._todoPop = null; }
-      };
-    }
-
-    // 顯示 / 隱藏已完成（預設只顯示未完成）
-    const hideDone = state.todoHideDone !== false;
-    const eye = acts.createSpan('gn-todo-act');
-    setIcon(eye, hideDone ? 'eye-off' : 'eye');
-    eye.setAttr('title', hideDone ? t('Show completed') : t('Hide completed'));
-    eye.onclick = (e) => {
-      e.stopPropagation();
-      state.todoHideDone = !hideDone;
-      this.plugin.saveState();
-      this.renderTodoInto(box);
-    };
-
-    const gear = acts.createSpan('gn-todo-act');
-    setIcon(gear, 'settings');
-    gear.setAttr('title', t('Pick a to-do note'));
-    gear.onclick = (e) => { e.stopPropagation(); this.pickTodoNote(); };
-
-    if (!(file instanceof TFile)) {
-      const empty = box.createDiv('gn-todo-empty');
-      setIcon(empty.createSpan('gn-todo-empty-ic'), 'plus');
-      empty.createSpan().setText(t('Pick a to-do note'));
-      empty.onclick = (e) => { e.stopPropagation(); this.pickTodoNote(); };
-      return;
-    }
-
-    const list = box.createDiv('gn-todo-list');
-    list.createDiv('gn-ctodo-none').setText(t('Loading…'));
-    this.app.vault.cachedRead(file).then((raw) => {
-      list.empty();
-      const all = parseTasks(raw);
-      if (!all.length) { list.createDiv('gn-ctodo-none').setText(t('No to-dos')); return; }
-      const doneCount = all.filter((x) => x.done).length;
-      const tasks = hideDone ? all.filter((x) => !x.done) : all;
-      if (!tasks.length) { list.createDiv('gn-ctodo-none').setText(t('All done 🎉')); return; }
-      // gn-ctodo：原生核取方塊 + 單行省略（卡片版下架後，這是唯一使用者）
-      for (const task of tasks) {   // ⚠️ 迴圈變數勿叫 t，會遮蔽 i18n 的 t()
-        const item = list.createDiv('gn-todo-item gn-ctodo');
-        item.style.setProperty('--td-depth', String(task.depth));
-        const chk = item.createEl('input', { type: 'checkbox' });
-        chk.checked = task.done;
-        chk.setAttr('title', task.done ? t('Mark as not done') : t('Mark as done'));
-        chk.onclick = (e) => { e.stopPropagation(); this.toggleTask(file, task.line); };
-        item.createSpan({ cls: 'gn-ctodo-text' + (task.done ? ' gn-ctodo-done' : ''), text: task.text });
-        item.onclick = () => this.openNote(file, false);
-      }
-      if (hideDone && doneCount) list.createDiv('gn-ctodo-more').setText('✓ ' + doneCount);
-    }).catch(() => {
-      list.empty();
-      list.createDiv('gn-ctodo-none').setText(t('Cannot read the to-do note'));
-    });
-  }
 
   // 建標籤索引：tag 路徑（含祖先前綴）→ 筆記集合；以及未標籤清單
   buildTagIndex() {
@@ -4029,14 +3798,14 @@ class GalleryView extends ItemView {
   }
 
   // 右側：目前選中標籤的筆記
-  renderTagNotes(container, zoom) {
+  renderTagNotes(container) {
     const idx = this._tagIndex || this.buildTagIndex();
     const tag = this.plugin.state.activeTag;
     let files, head;
     if (tag === '__untagged__') { files = idx.untagged; head = t('Untagged'); }
     else if (tag && idx.map.has(tag)) { files = [...idx.map.get(tag)]; head = '#' + tag; }
     else { container.createDiv('gn-main-head').setText(t('Tags')); container.createDiv('gn-empty').setText(t('Pick a tag on the left')); return; }
-    this.renderNoteWall(container, null, zoom, files, head);
+    this.renderNoteWall(container, null, files, head);
   }
 
   /* ===== 多選 ===== */
@@ -4188,7 +3957,7 @@ class GalleryView extends ItemView {
   }
 
   // 建一個瀑布流 grid。一面牆可以有多個（連結 / 反向連結各一區）
-  makeGrid(container, zoom) {
+  makeGrid(container) {
     const grid = container.createDiv('gn-grid');
     // 換資料夾／換標籤時，整面牆淡入一次（同一個位置重畫則不動，避免捲動時閃）
     if (this.motionOk()) {
@@ -4210,13 +3979,8 @@ class GalleryView extends ItemView {
     const masonry = new MasonryLayout(grid, { gap: 16, minCol, fixedCols });   // 2026-07-18 12→16 更透氣
     if (!this._masonries) this._masonries = [];
     this._masonries.push(masonry);
-    if (zoom) zoom.oninput = () => {
-      const v = Number(zoom.value);
-      this.plugin.state.cardWidth = v;
-      for (const m of this._masonries) m.setMinCol(v);   // 兩區一起縮放
-      for (const vw of (this._virtuals || [])) vw.setMinCol(v);
-      this.plugin.saveState();
-    };
+    /* 卡片大小滑桿已移進「⋯ 更多」面板（2026-08-09 重構完成），
+       它自己會通知 _masonries 與 _virtuals，這裡不再接手。 */
     return { grid, masonry };
   }
 
@@ -4251,10 +4015,31 @@ class GalleryView extends ItemView {
     else img.addEventListener('load', run, { once: true });
   }
 
+  /* 卡片依序浮現用的批次序號（2026-08-10）。
+     同一個**同步批次**內建立的卡片共用一個起點：0,1,2…；批次結束（microtask）自動歸零。
+     這樣不管是整面重畫（換資料夾／標籤／排序／搜尋）、捲到底補下一批（renderInChunks），
+     還是虛擬牆捲動時掛上新卡片，都會自己形成一段「由前而後浮現」的節奏，
+     不必在每個呼叫端手動傳索引或重設計數器。
+     ⚠️ 上限 20：一批 120 張 × 每階 12ms ＝ 1.4 秒，最後幾張會慢到像沒載入。
+        超過的一律用同一個延遲，看起來仍是依序鋪開但不拖尾。 */
+  nextCardSeq() {
+    if (!this._cardSeqPending) {
+      this._cardSeq = 0;
+      this._cardSeqPending = true;
+      Promise.resolve().then(() => { this._cardSeqPending = false; });
+    }
+    return Math.min(this._cardSeq++, 20);
+  }
+
   makeCard(grid, masonry, it, opts) {
     const o = opts || {};
     const cardColors = this.plugin.state.cardColors || {};
     const card = grid.createDiv('gn-card');
+    // 依序浮現（見 nextCardSeq）。減少動態效果時整個跳過，卡片直接就位。
+    if (this.motionOk()) {
+      card.addClass('gn-card-in');
+      card.style.setProperty('--gn-i', String(this.nextCardSeq()));
+    }
     if (!this._cardEls.has(it.file.path)) {
       this._cardEls.set(it.file.path, []);
       this._cardOrder.push(it.file.path);   // 順序表不重複，範圍選取才不會亂
@@ -4310,6 +4095,15 @@ class GalleryView extends ItemView {
       const img = card.createEl('img');
       img.loading = 'lazy';
       img.decoding = 'async';   // 非同步解碼：不擋主執行緒（手機捲動時很有感）
+      /* 載入骨架（2026-08-10）：圖片還沒進來時給一塊會微微流動的底，
+         讓「還在載」看起來是刻意的狀態，而不是破圖或空白。
+         版位不會因此跳動 —— applyDim() 已用 _dimIndex 的長寬比先把高度佔好。
+         ⚠️ once 一定要加：捲動時同一張 img 可能被瀏覽器重新解碼觸發多次 load。 */
+      img.addClass('gn-img-skeleton');
+      const doneSkel = () => img.removeClass('gn-img-skeleton');
+      img.addEventListener('load', doneSkel, { once: true });
+      img.addEventListener('error', doneSkel, { once: true });
+      if (img.complete && img.naturalWidth) doneSkel();   // 快取命中：load 不會再觸發
       this.setCardImage(img, it);
       this.autoTintCard(card, img, it.file.path + ':' + it.file.stat.mtime);   // 自動卡片底色（設定可開關）
       // 圖片卡預設不顯示內文（2026-07-18 移除 hover 內文，省讀檔）；
@@ -4417,11 +4211,6 @@ class GalleryView extends ItemView {
       if (curTag && curTag !== '__untagged__') {
         menu.addItem((i) => i.setTitle(t('Remove #{{tag}} from this note', { tag: curTag }))
           .setIcon('tag').onClick(() => this.removeTagFromNote(it.file, curTag)));
-      }
-      if (it.src && this.plugin.state.enablePinterest) {
-        const srcFolder = it.file.parent && it.file.parent.path !== '/' ? it.file.parent.path : '';
-        menu.addItem((i) => i.setTitle(t('Pinterest visual search')).setIcon('search').onClick(() =>
-          new PinterestModal(this.app, it.src, it.name, srcFolder).open()));
       }
       menu.addSeparator();
       // 釘選到頂部（feature 4）
@@ -4554,7 +4343,7 @@ class GalleryView extends ItemView {
 
   // keepOrder: 保持傳入順序，不套日期排序、不把釘選浮到最前
   //            （搜尋結果必須維持 BM25 相關性排名，一排序就毀了）
-  renderNoteWall(container, folder, zoom, filesOverride, headOverride, keepOrder, emptyText) {
+  renderNoteWall(container, folder, filesOverride, headOverride, keepOrder, emptyText) {
     const app = this.app;
 
     // 攤平模式（全域開關）：遞迴顯示該資料夾底下所有子孫筆記
@@ -4618,7 +4407,7 @@ class GalleryView extends ItemView {
     const perFolderHide = folder ? (this.plugin.state.noPreviewFolders || []).includes(folder.path) : false;
 
     this.beginWall(container);
-    const { grid, masonry } = this.makeGrid(container, zoom);
+    const { grid, masonry } = this.makeGrid(container);
 
     if (!notes.length) {
       container.createDiv('gn-empty').setText(emptyText || t('No notes'));
@@ -5131,12 +4920,6 @@ class CalendarSettingTab extends PluginSettingTab {
       .setDesc(t('Notes opened from the gallery start unfocused, so a first-line image embed stays rendered instead of expanding to markdown. Click into the note to edit as usual.'))
       .addToggle((tg) => tg.setValue(st.openUnfocused !== false)
         .onChange((v) => { st.openUnfocused = v; save(); }));
-
-    new Setting(containerEl)
-      .setName(t('Pinterest visual search (experimental)'))
-      .setDesc(t('Adds a reverse-image search entry to image menus. Uses an unofficial Pinterest endpoint that may stop working at any time; the image you search with is uploaded to Pinterest.'))
-      .addToggle((tg) => tg.setValue(!!st.enablePinterest)
-        .onChange((v) => { st.enablePinterest = v; save(); this.plugin.refreshViews(); }));
 
     new Setting(containerEl)
       .setName(t('Image lightbox actions'))
@@ -5802,7 +5585,7 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], todoNote: '', todoCollapsed: false, todoHideDone: true, treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', enablePinterest: false, openUnfocused: true, cardStyles: {}, imageCardLayout: 'stacked', autoCardColor: false }, await this.loadData());
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', openUnfocused: true, imageCardLayout: 'stacked', autoCardColor: false }, await this.loadData());
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
 
     // 註冊外掛專屬圖示（必須在 registerView / addRibbonIcon 之前）
@@ -6015,14 +5798,6 @@ class GalleryPlugin extends Plugin {
           .onClick(() => { try { this.peek.open(img); } catch (e) {} }));
       }
 
-      // ② Pinterest 找相似：不需要 DOM，vault 的 resource path 就夠
-      if (this.state.enablePinterest) {
-        const srcFolder = note && note.parent && note.parent.path !== '/' ? note.parent.path : '';
-        menu.addItem((i) => i.setTitle(t('Pinterest visual search')).setIcon('search')
-          .onClick(() => new PinterestModal(
-            this.app, this.app.vault.getResourcePath(file), (img && img.alt) || '', srcFolder).open()));
-      }
-
       // ③ 交換圖片：要改寫來源筆記，所以必須確定「這張圖真的被目前這篇引用」——
       //    否則在檔案總管右鍵時會去改到一篇不相干的筆記。
       if (note && note.extension === 'md' && this.noteEmbeds(note, file)) {
@@ -6109,16 +5884,6 @@ class GalleryPlugin extends Plugin {
         const im = curImg();
         if (im) this.copyImage(im.currentSrc || im.src);
       });
-
-      if (this.state.enablePinterest) {
-        add('search', t('Pinterest visual search'), () => {
-          const im = curImg();
-          if (!im) return;
-          const af = this.app.workspace.getActiveFile();
-          const srcFolder = af && af.parent && af.parent.path !== '/' ? af.parent.path : '';
-          new PinterestModal(this.app, im.currentSrc || im.src, im.alt || '', srcFolder).open();
-        });
-      }
 
       // 只有 vault 內的圖才有實體檔案可以定位
       if (typeof this.app.showInFolder === 'function' && curFile()) {
