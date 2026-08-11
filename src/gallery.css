@@ -405,7 +405,8 @@ body:not(.is-mobile) .gn-bar-merged .nav-header.gn-cluster-open > .nav-buttons-c
 .gn-thidden { opacity: .5; }
 .gn-thidden:hover { opacity: 1; }
 .gn-tdragging { opacity: .4; }
-.gn-tmove { background: var(--interactive-accent) !important; box-shadow: inset 0 0 0 1px var(--interactive-accent); }
+/* (0,2,0) 且定義在 .gn-tsel:hover 之後 → 拖曳落點色能蓋過選取色，不必 !important */
+.gn-tnode.gn-tmove { background: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--interactive-accent); }
 .gn-tmove .gn-tname, .gn-tmove .gn-tcount { color: var(--text-on-accent); }
 /* 同層排序落點：上緣 / 下緣一條主題色線 */
 /* 同層排序落點：上緣 / 下緣一條完整直線（2026-08-01）
@@ -694,7 +695,9 @@ body:not(.is-mobile) .gn-card:hover {
 .gn-fileicon-ic svg { width: 16px; height: 16px; }   /* 與文字同大小 */
 /* icon 右側的字型標籤（BASE / CANVAS…），左右並排 */
 .gn-fileicon-label {
-  font-family: var(--font-monospace, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  /* fallback 不用 ui-monospace：那是「extended system font」，Obsidian 1.4.5
+     （minAppVersion）的 Electron 還不支援，會被 CSS lint 標記。 */
+  font-family: var(--font-monospace, "SFMono-Regular", Menlo, monospace);
   font-size: 16px; font-weight: 600; letter-spacing: .14em;
   color: var(--text-muted);
 }
@@ -826,12 +829,12 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
   overflow: hidden;                /* 裁掉滑出畫面的那一欄 */
 }
 .is-mobile .gn-tree {
-  flex: 0 0 86% !important;        /* 左樹寬一點，右側露一角卡片牆 */
+  flex: 0 0 86%;                   /* 左樹寬一點，右側露一角卡片牆（(0,2,0) 已贏過 .gn-tree 的 (0,1,0)） */
   border-right: none;
   padding-bottom: 0;               /* 手機工具列在頂部，下方免留白 */
 }
 .is-mobile .gn-main {
-  flex: 0 0 100% !important;       /* 滑到右邊時滿版 */
+  flex: 0 0 100%;                  /* 滑到右邊時滿版（(0,2,0) 已贏過 .gn-main 的 (0,1,0)） */
   min-width: 0;
   padding-left: 6px;               /* 手機螢幕窄 → 左右留白壓到最小，卡片才夠寬 */
   padding-right: 6px;
@@ -1030,7 +1033,7 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
    選擇器權重要贏過 CSS 片段裡的 `.is-mobile .gn-main`（(0,2,0) + !important）。 */
 .is-mobile .gn-root.gn-search-on .gn-main,
 .is-mobile .gn-root.gn-search-on .gn-tree-scroll {
-  padding-top: 8px !important;
+  padding-top: 8px;
   --gn-top-fade: 16px;   /* 上方已有搜尋列，長淡出沒必要 */
 }
 
@@ -1041,9 +1044,10 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
   border-radius: 3px;
   padding: 0 1px;
   background: color-mix(in srgb, var(--text-accent) 30%, transparent);
-  /* 換行時每一段都要有底色，否則只有第一行被塗到 */
+  /* 換行時每一段都要有底色，否則只有第一行被塗到。
+     只留 -webkit- 前綴：Obsidian 跑在 Chromium 上，這個版本一定支援；
+     標準屬性 box-decoration-break 在該引擎只有部分支援，留著只會被 lint 標記。 */
   -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
 }
 
 /* （已移除舊的圖片卡高亮覆寫：卡片文字不再是「疊在圖上的白字」，
@@ -1132,14 +1136,14 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
    ⚠️ .gn-more-chip 要留著 —— fillTagChips() 仍在用（gallery.js:2375）。 */
 
 /* ===== 設定頁：依功能分組，標題用左對齊的 H2（正常字色，不吃主題的彩色 heading） ===== */
-.gn-settings .gn-set-h {
+.gn-settings h2.gn-set-h {
   margin: 26px 0 4px;
   padding: 0;
   text-align: left;
   font-size: 1.15em;
   font-weight: 700;
   line-height: 1.3;
-  color: var(--text-normal) !important;   /* 蓋掉主題對 h2 的著色 */
+  color: var(--text-normal);   /* 蓋掉主題對 h2 的著色（靠選擇器的 h2 提高特異度，見規則開頭） */
   border: none;
 }
 /* 第一組緊貼頂端，不要多一截空白 */
