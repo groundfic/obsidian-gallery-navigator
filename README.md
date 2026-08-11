@@ -26,6 +26,8 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 
 Three layouts, switchable any time from the toolbar's **⋯ More** panel — they change how the title and date sit against the cover image:
 
+![The same note shown in all three card layouts](docs/card-info.png)
+
 - **Photo** — the title is overlaid on the image itself, so a folder reads as one continuous sheet of photographs. Best for image-heavy collections where the picture is the content.
 - **Museum** — the image sits on top with the caption below it, like a label beside an exhibit. Best when you want the covers to stay uncropped and still read the titles at a glance.
 - **Editor** — a small thumbnail paired with a large date block and a text excerpt. Best for text-first browsing, where the note matters more than its cover.
