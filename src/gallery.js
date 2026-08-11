@@ -6,7 +6,7 @@
  * 核心封面/標籤邏輯移植自 vault 內的 BASE/Code/Collections code.md (js-engine)。
  */
 
-const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, getIconIds, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
+const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, getIconIds, Modal, requestUrl, PluginSettingTab, Setting, loadPdfJs } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
 const { ThumbCache } = require('./thumbs.js');
 const { DimPrefetcher } = require('./dims.js');
@@ -2256,10 +2256,9 @@ class GalleryView extends ItemView {
     const dropLateFlag = () => { if (card._lateImg) { card._lateImg = false; this.relayoutWalls(card); } };
     // 已渲染過（同檔同 mtime）→ 直接用快取，不重新解析
     if (cache.has(key)) { const d = cache.get(key); if (d) put(d); else dropLateFlag(); return; }
-    /* pdf.js 是 Obsidian 開過 PDF 之後才注入的，這裡（進視野時）才檢查。
-       以前是在「建卡當下」查，本次工作階段還沒開過任何 PDF 的話，
-       那批卡就永遠不會被排進來渲染，直到整面牆重畫為止。 */
-    if (!window.pdfjsLib) { dropLateFlag(); return; }
+    /* 這裡**不再**檢查 window.pdfjsLib —— 改由 renderPdfFirstPage 呼叫 ensurePdfJs()
+       主動把模組載進來（見該處說明）。以前擋在這裡的話，沒開過 PDF 的使用者
+       整批 PDF 卡都不會有封面。 */
     /* 解析很吃記憶體（readBinary 整份 + pdfjs 解碼），一定要壓住併發：
        桌機 2、手機 1，與 thumbs.js 的縮圖佇列同一套哲學。 */
     const dataUrl = await this.plugin.pdfGate.run(key, () => this.renderPdfFirstPage(file, cache, key));
@@ -2281,8 +2280,8 @@ class GalleryView extends ItemView {
 
   /** 實際解析 PDF 第一頁 → dataURL（受 pdfGate 併發管制，結果進 _pdfThumbCache） */
   async renderPdfFirstPage(file, cache, key) {
-    const pdfjs = window.pdfjsLib;
-    if (!pdfjs) return null;
+    const pdfjs = await this.plugin.ensurePdfJs();
+    if (!pdfjs || !pdfjs.getDocument) return null;
     let doc = null;
     try {
       const buf = await this.app.vault.readBinary(file);
@@ -6318,6 +6317,23 @@ class GalleryPlugin extends Plugin {
       if (!(await a.exists(dir))) await a.mkdir(dir);
       await a.write(this.dimIndexPath(), JSON.stringify(this._dimIndex));
     } catch (e) {}
+  }
+
+  /* 取得 pdf.js（PDF 首頁縮圖用）。
+     ⚠️ 不可以直接查 window.pdfjsLib：那是 Obsidian **開過 PDF 檔之後**才注入的全域變數。
+        本次工作階段還沒開過任何 PDF 的使用者，查到的永遠是 undefined
+        → 整批 PDF 卡永遠不會有封面（而且完全沒有錯誤訊息，很難察覺）。
+        官方的 loadPdfJs() 會確保模組載入好再回傳，這才是正解。
+     結果快取成一個 promise：同時有多張 PDF 卡進視野時只會載入一次。 */
+  ensurePdfJs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    if (!this._pdfjsP) {
+      this._pdfjsP = Promise.resolve()
+        .then(() => (typeof loadPdfJs === 'function' ? loadPdfJs() : null))
+        .then((m) => m || window.pdfjsLib || null)
+        .catch(() => null);
+    }
+    return this._pdfjsP;
   }
 
   // 連結預覽快取：資料夾與索引檔（放外掛資料夾，不污染 vault 筆記）
