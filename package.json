@@ -7,7 +7,8 @@
     "dev": "npm run build:css && esbuild src/main.js --bundle --external:obsidian --external:@codemirror/* --format=cjs --outfile=main.js --target=es2020 --watch",
     "dev:css": "node scripts/build-css.mjs --watch",
     "build:css": "node scripts/build-css.mjs",
-    "build": "npm run build:css && esbuild src/main.js --bundle --external:obsidian --external:@codemirror/* --format=cjs --outfile=main.js --target=es2020 --minify-whitespace"
+    "build": "npm run build:css && esbuild src/main.js --bundle --external:obsidian --external:@codemirror/* --format=cjs --outfile=main.js --target=es2020 --minify-whitespace",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.21.0"
