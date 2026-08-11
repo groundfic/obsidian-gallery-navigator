@@ -41,6 +41,8 @@ class DimPrefetcher {
   start(items, onBatch) {
     this.cancel();
     const idx = this.plugin._dimIndex || (this.plugin._dimIndex = {});
+    const ogIdx = this.plugin._ogIndex || {};
+    const adapter = this.plugin.app.vault.adapter;
     const want = [];
     for (const it of items || []) {
       if (!it || !it.file) continue;
@@ -49,7 +51,20 @@ class DimPrefetcher {
          it.src 是惰性 getter（md 封面要解 frontmatter/內文），
          先讀的話等於把整個資料夾的封面全部強制求值一次。 */
       if (idx[key]) continue;
-      if (!it.src) continue;
+      if (!it.src) {
+        /* 沒有封面，但這則筆記的 og:image **已經下載在 og-cache 裡**（只是還沒人捲到
+           它、所以長寬比沒被記錄過）→ 一併補齊。
+           不補的話這類卡片會一直用文字卡的 180px 佔位，圖進來才撐開，
+           每次捲到就讓下方整批卡片跳位（IG 筆記夾整夾都是這型）。
+           PDF 不在這裡處理：它的縮圖是 runtime 才渲染的，沒有現成檔案可量，
+           改由 loadPdfThumb 渲染完順手記錄。 */
+        const ogKey = 'og:' + key;
+        const rec = ogIdx[key];
+        if (!idx[ogKey] && rec && rec.file) {
+          want.push({ key: ogKey, src: adapter.getResourcePath(this.plugin.ogCacheDir() + '/' + rec.file) });
+        }
+        continue;
+      }
       want.push({ key, src: it.src });
     }
     if (!want.length) return 0;

@@ -56,6 +56,7 @@ class VirtualWall {
     this.estimate = o.estimate;
     this.kindOf = o.kindOf || null;   // 把卡片分類，讓「版型固定開銷」分開學（見 _resetCorrection）
     this.isSettled = o.isSettled || null;   // 卡片內容是否已定案（圖片載完）——見 measure()
+    this.onMeasured = o.onMeasured || null; // 量到定案高度時回報（呼叫端可持久化，見 measure()）
     this._kindCache = [];
     this._lastScrollTop = 0;
     this._settleT = 0;
@@ -333,7 +334,10 @@ class VirtualWall {
        而這段在捲動時每一幀都會跑過所有掛載中的卡片。 */
     for (const [i, el] of this.mounted) {
       const l = this.left[i], t = this.top[i], w = this.colW;
-      if (el._vwL === l && el._vwT === t && el._vwW === w) continue;
+      /* 次像素級的差異不重寫：translate 寫入會讓合成層失效，
+         而這段在捲動時每一幀都會跑過所有掛載中的卡片。
+         （之前用嚴格相等，0.01px 的差也會整批重寫。） */
+      if (el._vwW === w && Math.abs(el._vwL - l) < 0.5 && Math.abs(el._vwT - t) < 0.5) continue;
       el.style.position = 'absolute';
       // 寬度只有真的變了才寫（換欄數時才會變）
       if (el._vwW !== w) el.style.width = w + 'px';
@@ -443,11 +447,25 @@ class VirtualWall {
       if (this.measured[i] && Math.abs(this.h[i] - hv) < 0.5) continue;
 
       if (!this.measured[i]) {
-        const ohBefore = (this._oh.get(this._kind(i)) || {}).mean;
+        const ohBefore = (this._oh.get(this._kind(i)) || {}).mean || 0;
         this._learn(i, hv);
-        if ((this._oh.get(this._kind(i)) || {}).mean !== ohBefore) learned = true;
+        const ohAfter = (this._oh.get(this._kind(i)) || {}).mean || 0;
+        /* ⚠️ 容差不可省。移動平均每吸收一張卡就一定會變（哪怕 0.01px），
+           用嚴格不等於的話，捲動中每量測到一張新卡就會觸發下面那段全域重算
+           → _pack() → 所有卡片的 translate 全部重寫 → 畫面上就是「整片卡片
+           在重新對位」。這與卡片是圖片卡或文字卡無關，是系統性的抖動來源。
+           0.5px 遠低於單張卡的視覺可辨差異，卻能擋掉絕大多數無意義的重排。 */
+        if (Math.abs(ohAfter - ohBefore) > 0.5) learned = true;
       }
       this.measured[i] = true;
+
+      /* 把實測值回報給呼叫端存起來（跨工作階段沿用）。
+         注意要放在 TOL 判斷**之前**：預測命中時 hv 一樣是有效的實測值，
+         那才是最該被記下來的「已經對了」的高度。
+         此處已通過 ok[k]（內容定案）檢查，不會記到骨架高度。 */
+      if (this.onMeasured) {
+        try { this.onMeasured(this.items[i], hv, this.colW); } catch (e) {}
+      }
 
       /* 預測夠準 → **採信預測**，不動高度也不重排。
          這是讓總高度停止變動的關鍵：只要預測命中，重排就不會發生。 */
@@ -463,7 +481,8 @@ class VirtualWall {
       for (let i = 0; i < this.items.length; i++) {
         if (this.measured[i]) continue;
         const next = this._estimateFor(i);
-        if (next !== this.h[i]) { this.h[i] = next; changed = true; }
+        // 同樣要容差：差 1px 就整批改寫等於每次都重排（見上方 _learn 的說明）
+        if (Math.abs(next - this.h[i]) >= 1) { this.h[i] = next; changed = true; }
       }
     }
     if (!changed) return;

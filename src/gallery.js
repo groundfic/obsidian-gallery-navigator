@@ -22,6 +22,10 @@ const OG_FAIL_TTL = 15 * 60 * 1000;
 const OG_MAX_IMAGE_BYTES = 300 * 1024;
 const OG_DOWNSCALE_WIDTH = 640;
 
+/* 長寬比索引裡，同一個筆記／檔案路徑可能對應三種 key。
+   刪除／改名時三種都要一起清或搬，少一種就會留下永遠回收不掉的孤兒。 */
+const DIM_KEY_PREFIXES = ['', 'og:', 'pdf:'];
+
 /* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
    ⚠️ addIcon() 的內容必須適配 0 0 100 100 的 viewBox，但原稿是 24×24
    → 包一層 scale(4.16667)（24 × 4.16667 = 100，幾何不變形）。
@@ -2234,25 +2238,35 @@ class GalleryView extends ItemView {
     const key = file.path + ':' + file.stat.mtime;
     const put = (dataUrl) => {
       const img = card.createEl('img');
+      /* 記下第一頁的長寬比（key: 'pdf:<路徑>'）。
+         以前完全不記，所以 PDF 卡永遠先以 180px 佔位、縮圖渲染完才撐開 →
+         每次捲到都讓下方整批卡片跳位。記起來之後，第二次起就能先把高度佔對。
+         ⚠️ 要在設定 src 之前掛，applyDim 的 load 監聽才接得到。 */
+      this.applyDim(img, 'pdf:' + file.path);
       img.src = dataUrl;
       img.addClass('gn-pdf-thumb');
       card.appendChild(img);   // 滿版圖片
       card.addClass('gn-has-img');
       card.removeClass('gn-icon-cover');   // 換成真圖 → 文字改回疊圖模式
       if (placeholder) placeholder.remove();
+      card._lateImg = false;   // 圖已入 DOM，之後由 img.complete 那關把守（見 cardSettled）
       this.relayoutWalls(card);
     };
+    // 「不會有縮圖了」→ 解除延後量測（同 loadLinkPreview 的 dropLateFlag）
+    const dropLateFlag = () => { if (card._lateImg) { card._lateImg = false; this.relayoutWalls(card); } };
     // 已渲染過（同檔同 mtime）→ 直接用快取，不重新解析
-    if (cache.has(key)) { const d = cache.get(key); if (d) put(d); return; }
+    if (cache.has(key)) { const d = cache.get(key); if (d) put(d); else dropLateFlag(); return; }
     /* pdf.js 是 Obsidian 開過 PDF 之後才注入的，這裡（進視野時）才檢查。
        以前是在「建卡當下」查，本次工作階段還沒開過任何 PDF 的話，
        那批卡就永遠不會被排進來渲染，直到整面牆重畫為止。 */
-    if (!window.pdfjsLib) return;
+    if (!window.pdfjsLib) { dropLateFlag(); return; }
     /* 解析很吃記憶體（readBinary 整份 + pdfjs 解碼），一定要壓住併發：
        桌機 2、手機 1，與 thumbs.js 的縮圖佇列同一套哲學。 */
     const dataUrl = await this.plugin.pdfGate.run(key, () => this.renderPdfFirstPage(file, cache, key));
+    // 被丟掉的會重排隊 → 保留 _lateImg（理由同 loadLinkPreview）
     if (dataUrl === GATE_DROPPED) { this.requeueLazy(card, '_pdfFile', file); return; }
     if (dataUrl && card.isConnected) put(dataUrl);
+    else dropLateFlag();
   }
 
   /* 排隊中的延遲任務被 dropPending 丟掉 → 把卡片放回 IntersectionObserver。
@@ -2324,6 +2338,18 @@ class GalleryView extends ItemView {
     return it.file ? it.file.path : '';
   }
 
+  /* 「現在沒有封面、但之後會長出圖」的卡片，其圖片長寬比記在這個 key 底下：
+       • PDF   → 'pdf:<路徑>'（第一頁縮圖，runtime 渲染完才記得起來）
+       • 其他  → 'og:<路徑>'（外部連結的 og:image，下載完才記得起來）
+     這類卡片以前一律被估成 180px，圖一進來高度就暴增（實測中位數 200px、
+     最高 650px）→ 遠超過虛擬牆的 6px 容差 → 整面牆重排、下方卡片跳位。
+     長寬比其實早就在索引裡了，只是估計函式沒查。 */
+  lateDimKeyOf(it) {
+    const p = this.dimKeyOf(it);
+    if (!p) return '';
+    return (it && it.ext === 'pdf' ? 'pdf:' : 'og:') + p;
+  }
+
   /* 決定卡片圖片實際要載入哪一個檔案：縮圖優先，原圖是退路。
      ⚠️ 沒有縮圖時**不先塞原圖再替換**——那樣峰值記憶體跟完全沒做縮圖一樣
         （見 thumbs.js 設計說明 2）。寧可先留白，縮圖好了再填。 */
@@ -2386,6 +2412,10 @@ class GalleryView extends ItemView {
       img.loading = 'lazy';
       img.addClass('gn-linkimg');
       card.appendChild(img);   // 滿版圖片
+      /* 圖已經在 DOM 裡了 → 解除「等圖」狀態，之後由 img.complete 那關把守。
+         這裡直接設值而不呼叫 dropLateFlag()：本函式結尾已經有 relayoutWalls()，
+         不必再排一次量測。 */
+      card._lateImg = false;
       // 載入成功 → 以圖代文：改成圖片卡。
       // 內文預覽**不刪除**（只是被 CSS 收起來），hover 時才展開 → 圖跟文都留得住。
       img.onload = () => {
@@ -2395,14 +2425,18 @@ class GalleryView extends ItemView {
            以及虛擬牆 grid 上的捕獲監聽各接一次，重排本來就會發生。
            以前這支在 put / onload / onerror 連叫三次，等於同一張圖排三輪。 */
       };
-      img.onerror = () => { img.remove(); this.relayoutWalls(card); };
+      img.onerror = () => { img.remove(); dropLateFlag(); this.relayoutWalls(card); };
       this.relayoutWalls(card);
     };
+    /* 「這張卡不會再長出圖了」→ 解除延後量測的旗標，讓虛擬牆去量它的真實高度。
+       每一條「確定沒有圖」的出口都要呼叫，否則卡片會永遠停在未定案狀態，
+       高度一直沿用估計值、和實際版面對不上。 */
+    const dropLateFlag = () => { if (card._lateImg) { card._lateImg = false; this.relayoutWalls(card); } };
     try {
       const c = this.app.metadataCache.getFileCache(file);
       const content = await this.app.vault.cachedRead(file);
       const url = firstExternalUrl(c && c.frontmatter, content);
-      if (!url) { idx[file.path] = { url: null, file: null }; plugin.saveOgIndex(); return; }
+      if (!url) { idx[file.path] = { url: null, file: null }; plugin.saveOgIndex(); dropLateFlag(); return; }
       // 快取命中（同筆記、同來源網址）
       const rec = idx[file.path];
       if (rec && rec.url === url) {
@@ -2413,8 +2447,9 @@ class GalleryView extends ItemView {
         } else if (rec.failTs) {
           /* 網路失敗的負記錄：15 分鐘內不再重打。
              以前 catch 什麼都不寫 → 離線或網站掛掉時，那張卡每捲進視野一次就重打一輪。 */
-          if (Date.now() - rec.failTs < OG_FAIL_TTL) return;
+          if (Date.now() - rec.failTs < OG_FAIL_TTL) { dropLateFlag(); return; }
         } else {
+          dropLateFlag();
           return;   // 查過確定「這頁就是沒有 og:image」→ 不重抓（刻意設計，非失敗）
         }
       }
@@ -2422,9 +2457,12 @@ class GalleryView extends ItemView {
       /* 網路段受併發閘管制（桌機 3／手機 2）＋ per-path 去重：
          以前一屏 20–40 張無封面的連結筆記會各自起跑，數十個 requestUrl 互搶頻寬。 */
       const fname = await plugin.ogGate.run('og:' + file.path, () => this.fetchOgImage(file, url));
+      /* 排隊中被丟掉（換頁）→ 卡片放回觀察佇列，**保留** _lateImg：
+         這張卡之後還會再跑一次，現在量它一樣會量到沒有圖的矮高度。 */
       if (fname === GATE_DROPPED) { this.requeueLazy(card, '_ogFile', file); return; }
       if (fname && card.isConnected) put(a.getResourcePath(dir + '/' + fname));
-    } catch (e) { /* 靜默：保留無圖，下次可再試 */ }
+      dropLateFlag();
+    } catch (e) { dropLateFlag(); /* 靜默：保留無圖，下次可再試 */ }
   }
 
   /** 抓網頁 og:image → 縮圖 → 存進 og-cache/，回傳檔名（無圖或失敗回 null）。
@@ -4464,7 +4502,11 @@ class GalleryView extends ItemView {
       /* 捲到才渲染。這裡**不查** window.pdfjsLib：pdf.js 是 Obsidian 開過 PDF 之後
          才注入的，建卡當下查的話，本次工作階段還沒開過 PDF 的使用者會讓整批卡片
          永遠不排縮圖（直到整面牆重畫）。檢查移到 loadPdfThumb（進視野時）。 */
-      if (it.ext === 'pdf') { card._pdfFile = it.file; card._pdfPh = ph; }
+      if (it.ext === 'pdf') {
+        card._pdfFile = it.file; card._pdfPh = ph;
+        // 高度已按縮圖的長寬比估 → 縮圖進來前先別量（見 cardSettled）
+        if ((this.plugin._dimIndex || {})[this.lateDimKeyOf(it)]) card._lateImg = true;
+      }
     } else {
       // md 無封面 → 顯示內文預覽；同時試抓外部連結 og:image，抓到則以圖代文
       if (!skipPreview) {
@@ -4472,6 +4514,8 @@ class GalleryView extends ItemView {
         card._prevEl = prev; card._prevFile = it.file;   // 延遲載入內文
       }
       card._ogFile = it.file;   // 捲到才抓 og:image（持久快取）
+      // 高度已按 og 圖的長寬比估 → 圖進來前先別量（見 cardSettled）
+      if ((this.plugin._dimIndex || {})[this.lateDimKeyOf(it)]) card._lateImg = true;
     }
 
     // （2026-07-20 移除）卡片上的「顯示連結牆」🔗 按鈕：連結牆功能整套下架。
@@ -4646,15 +4690,39 @@ class GalleryView extends ItemView {
     for (const im of imgs) {
       if (!im.complete || !im.naturalWidth) return false;
     }
+    /* 內文預覽同樣是非同步才填進來的（loadPreview 要 cachedRead）。
+       卡片剛建立時 .gn-preview 只是個空 div，這時量到的是「沒有預覽文字」的矮高度。
+
+       ⚠️ 以前這裡只擋圖片、沒擋文字，於是純文字卡會：
+         • 空殼高度被當成真值寫進高度表
+         • 更糟：還被 _learn() 學進該版型 'text' 類的固定開銷常數
+           → 連帶把所有尚未量測的文字卡一起壓扁
+         文字載入後高度又長回來 → _pack() 重排 → 下方卡片整批跳位。
+       這與上面「圖片還沒載完不能採信」是同一個坑，只是換成文字。
+
+       判斷方式：沒有內容可預覽時 loadPreview 會把元素 remove()（找不到文字、
+       或讀檔失敗都會），所以「元素還在、卻還沒有文字」就代表仍在載入中。 */
+    const prev = el.querySelector ? el.querySelector('.gn-preview') : null;
+    if (prev && !prev.textContent) return false;
+
+    /* 這張卡的高度是按「之後會長出 og 圖／PDF 縮圖」估的，但圖還沒插進來。
+       此刻量到的是「還沒有圖」的矮高度，採信它會造成兩次重排：
+       先被壓回文字卡高度，圖進來後再撐開。等圖到位（或確定不會有圖，
+       屆時 loadLinkPreview／loadPdfThumb 會清掉這個旗標）再量。 */
+    if (el._lateImg) return false;
+
     return true;
   }
 
   cardKind(it) {
     const layout = this._layout || 'overlay';
-    if (!it.src) return layout + ':text';
+    const dims = this.plugin._dimIndex || {};
+    /* 有長寬比可用的「延遲圖片卡」（og／PDF）走的是圖片算式，
+       固定開銷跟純文字卡差很多，混在一起學會把兩邊都拉歪 → 獨立一類。 */
+    if (!it.src) return layout + (dims[this.lateDimKeyOf(it)] ? ':late' : ':text');
     // 長寬比已知與未知要分開：未知的用 4:3 猜，算式基準本身就不可靠，
     // 不該把它的誤差混進「已知長寬比」那一類的開銷常數裡
-    const known = !!(this.plugin._dimIndex || {})[this.dimKeyOf(it)];
+    const known = !!dims[this.dimKeyOf(it)];
     return layout + (known ? ':img' : ':img?');
   }
 
@@ -4666,16 +4734,34 @@ class GalleryView extends ItemView {
             editorial      ：另有日期塊與內文預覽 → 約 +96px
           （見 gallery.css:540 / 1423 兩組規則） */
     const layout = this._layout;
-    if (it.src) {
-      const d = (this.plugin._dimIndex || {})[this.dimKeyOf(it)];
-      // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設，載入後會校正
-      const ratio = (d && d[0] > 0 && d[1] > 0) ? (d[1] / d[0]) : 0.75;
+    /* 上次實際量到的高度（同欄寬、同版型、檔案未改動）→ 直接採信。
+       這是「第二次開同一個資料夾完全不閃」的關鍵：_pack() 第一輪就算出正確位置，
+       之後 measure() 量到的與預測一致 → changed 恆為 false → 不再重排。
+       放在最前面，因為它比任何推算都準（它就是實測值）。 */
+    const known = this.plugin.cardHeightFor(this.dimKeyOf(it), colW, layout || 'overlay');
+    if (known) return known;
+
+    const dims = this.plugin._dimIndex || {};
+    // 圖片卡的高度：欄寬 × 長寬比，再加上該版型文字區的固定開銷
+    const imgCard = (ratio) => {
       const imgH = colW * ratio;
       if (layout === 'editorial') return imgH + 96;
       if (layout === 'stacked') return imgH + 62;
       return imgH;
+    };
+
+    if (it.src) {
+      const d = dims[this.dimKeyOf(it)];
+      // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設，載入後會校正
+      return imgCard((d && d[0] > 0 && d[1] > 0) ? (d[1] / d[0]) : 0.75);
     }
-    return layout === 'editorial' ? 150 : 180;   // 無封面：內文預覽卡
+
+    /* 現在沒封面，但 og:image／PDF 縮圖之後會補進來 → 照圖片卡估，別用文字卡的 180。
+       這是「捲動時下方卡片一直跳位」的主因（見 lateDimKeyOf）。 */
+    const late = dims[this.lateDimKeyOf(it)];
+    if (late && late[0] > 0 && late[1] > 0) return imgCard(late[1] / late[0]);
+
+    return layout === 'editorial' ? 150 : 180;   // 真的沒有圖：內文預覽卡
   }
 
   // keepOrder: 保持傳入順序，不套日期排序、不把釘選浮到最前
@@ -4877,6 +4963,8 @@ class GalleryView extends ItemView {
       estimate: (it, colW) => this.estimateCardHeight(it, colW),
       kindOf: (it) => this.cardKind(it),
       isSettled: (el) => this.cardSettled(el),
+      // 實測高度存進索引：下次開同一個資料夾就能一次算準、完全不重排
+      onMeasured: (it, h, colW) => this.plugin.recordCardHeight(this.dimKeyOf(it), h, colW, this._layout || 'overlay'),
     });
     // 圖片載入完成 → 卡片高度變了 → 重新量測。
     // 捕獲階段一條就涵蓋所有後續插入的圖（load 不冒泡）。
@@ -5681,6 +5769,10 @@ class GalleryPlugin extends Plugin {
     this._dimIndex = {};
     this.loadDimIndex();
 
+    // 卡片實測高度索引：長寬比算不出「標題／預覽折幾行」，這份補上那一段
+    this._cardH = {};
+    this.loadCardHeights();
+
     // 縮圖快取：卡片牆不再直接解碼原圖（見 thumbs.js 開頭的說明）
     this.thumbs = new ThumbCache(this);
     this.thumbs.load();
@@ -6118,6 +6210,106 @@ class GalleryPlugin extends Plugin {
     if (this._dimDirty) await this._writeDimIndex();
   }
 
+  /* ===== 卡片高度索引（2026-08-12）=====
+   *
+   * 為什麼長寬比還不夠：長寬比只能算出**圖片區**的高度，算不出「標題折幾行、
+   * 內文預覽折幾行」。這兩者的變異合計可達 100px（title clamp 3 行 × 16.9px
+   * ＋ preview clamp 5 行 × 17.25px），遠超過虛擬牆的 6px 容差 —— 每張卡第一次
+   * 被量到就會觸發一次重排。這是「捲動時畫面一直在對位」最後的殘留來源。
+   *
+   * 高度是**渲染結果**，會隨欄寬與版型改變，所以不能像長寬比那樣無條件沿用。
+   * 但欄寬與版型對整面牆是共用的 → 存成「檔案層級的版本戳」最省：
+   *   { v, colW, layout, h: { 筆記路徑: [高度, mtime] } }
+   * 版本戳不符（換版型、欄數變了）→ 整份丟棄重建，反正那時本來就要重新量測。
+   * 每筆只有兩個數字，1000 張卡約 54KB；分開存檔是刻意的 ——
+   * dims.json 已經 400KB，混在一起會讓每次落地都在 iCloud 上同步更大的檔案。
+   *
+   * ⚠️ 只記錄「已定案」的卡片高度（圖片載完＋預覽文字填好，見 cardSettled），
+   *    否則會把骨架高度寫成永久值，第二次開啟直接繼承錯誤。 */
+  cardHeightsPath() { return this.ogCacheDir() + '/card-heights.json'; }
+
+  async loadCardHeights() {
+    this._cardH = {};
+    this._cardHMeta = null;
+    try {
+      const a = this.app.vault.adapter;
+      const p = this.cardHeightsPath();
+      if (!(await a.exists(p))) return;
+      const raw = JSON.parse(await a.read(p));
+      if (raw && raw.h && typeof raw.h === 'object') {
+        this._cardH = raw.h;
+        this._cardHMeta = { colW: raw.colW, layout: raw.layout };
+      }
+    } catch (e) { this._cardH = {}; this._cardHMeta = null; }
+  }
+
+  /* 目前的欄寬／版型是否與存檔時相同。
+     欄寬給 1px 容差：視窗寬度些微變動會讓 colW 算出零點幾像素的差，
+     那不該讓整份索引失效。 */
+  cardHeightsUsable(colW, layout) {
+    const m = this._cardHMeta;
+    if (!m || !m.layout) return false;
+    if (m.layout !== layout) return false;
+    return Math.abs((m.colW || 0) - colW) < 1;
+  }
+
+  /* 記錄一張卡的實測高度。欄寬或版型與現存版本戳不同 → 整份重來。 */
+  recordCardHeight(path, h, colW, layout) {
+    if (!path || !(h > 0)) return;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    const mtime = file && file.stat ? file.stat.mtime : 0;
+    if (!this.cardHeightsUsable(colW, layout)) {
+      this._cardH = {};
+      this._cardHMeta = { colW, layout };
+    }
+    const rec = this._cardH[path];
+    const nh = Math.round(h);
+    if (rec && rec[0] === nh && rec[1] === mtime) return;   // 沒變就不寫
+    this._cardH[path] = [nh, mtime];
+    this.saveCardHeights();
+  }
+
+  /* 查出可直接採信的高度；沒有或已過期回 0。
+     mtime 不符代表筆記被編輯過（標題／內文可能變了）→ 不採信。 */
+  cardHeightFor(path, colW, layout) {
+    if (!this.cardHeightsUsable(colW, layout)) return 0;
+    const rec = this._cardH && this._cardH[path];
+    if (!rec) return 0;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    const mtime = file && file.stat ? file.stat.mtime : 0;
+    if (rec[1] !== mtime) return 0;
+    return rec[0] > 0 ? rec[0] : 0;
+  }
+
+  // 寫檔節流：比照 dims 的「累積門檻 + 固定窗 + 閒置才寫」
+  saveCardHeights() {
+    this._cardHDirty = (this._cardHDirty || 0) + 1;
+    if (this._cardHSaveT) return;
+    const wait = this._cardHDirty >= 50 ? 1500 : 4000;
+    this._cardHSaveT = setTimeout(() => {
+      this._cardHSaveT = 0;
+      const run = () => { this._writeCardHeights().catch(() => {}); };
+      if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2000 });
+      else run();
+    }, wait);
+  }
+
+  async flushCardHeights() {
+    if (this._cardHSaveT) { clearTimeout(this._cardHSaveT); this._cardHSaveT = 0; }
+    if (this._cardHDirty) await this._writeCardHeights();
+  }
+
+  async _writeCardHeights() {
+    this._cardHDirty = 0;
+    try {
+      const a = this.app.vault.adapter;
+      const dir = this.ogCacheDir();
+      if (!(await a.exists(dir))) await a.mkdir(dir);
+      const m = this._cardHMeta || {};
+      await a.write(this.cardHeightsPath(), JSON.stringify({ v: 1, colW: m.colW, layout: m.layout, h: this._cardH || {} }));
+    } catch (e) {}
+  }
+
   async _writeDimIndex() {
     this._dimDirty = 0;
     try {
@@ -6199,12 +6391,22 @@ class GalleryPlugin extends Plugin {
         } catch (e) {}
       }
     }
-    // 長寬比索引：vault 圖片的 key 是路徑本身，og 圖的是 'og:<筆記路徑>'
+    /* 長寬比索引有三種 key，全部都要清：
+         '<路徑>'      vault 圖片本身
+         'og:<路徑>'   該筆記的 og:image
+         'pdf:<路徑>'  該 PDF 的第一頁縮圖  */
     const dim = this._dimIndex;
     if (dim) {
-      const keys = this._pathsUnder(dim, path, '').concat(this._pathsUnder(dim, path, 'og:'));
+      const keys = DIM_KEY_PREFIXES.flatMap((pre) => this._pathsUnder(dim, path, pre));
       for (const k of keys) delete dim[k];
       if (keys.length) this.saveDimIndex();
+    }
+    // 卡片高度索引（key 就是筆記路徑，同樣要含子路徑）
+    const ch = this._cardH;
+    if (ch) {
+      const keys = this._pathsUnder(ch, path, '');
+      for (const k of keys) delete ch[k];
+      if (keys.length) this.saveCardHeights();
     }
   }
 
@@ -6223,7 +6425,9 @@ class GalleryPlugin extends Plugin {
     };
     if (this._ogIndex && swap(this._ogIndex, '')) this.saveOgIndex();
     const dim = this._dimIndex;
-    if (dim && (swap(dim, '') + swap(dim, 'og:'))) this.saveDimIndex();
+    // 三種前綴都要搬（用 reduce 而非 || ，每一種都必須執行，不能短路）
+    if (dim && DIM_KEY_PREFIXES.reduce((n, pre) => n + swap(dim, pre), 0)) this.saveDimIndex();
+    if (this._cardH && swap(this._cardH, '')) this.saveCardHeights();
   }
 
   /* og-cache 裡沒有任何索引項引用的圖檔＝孤兒，清掉。
@@ -6264,6 +6468,7 @@ class GalleryPlugin extends Plugin {
     clearTimeout(this._saveT);
     if (this.search) this.search.disposeTimers();   // modify 去抖的待觸發計時器
     await this.flushDimIndex();                     // 長寬比索引改成閒置才寫 → 這裡要補刷
+    await this.flushCardHeights();                  // 卡片高度索引同理
     /* og 圖與縮圖：圖片檔已落地、索引卻還卡在去抖窗（800ms／1500ms）裡就被停用／更新的話，
        下次啟動索引對不上 → 重抓重做、舊檔成孤兒。兩者都要補刷。 */
     await this.flushOgIndex();
