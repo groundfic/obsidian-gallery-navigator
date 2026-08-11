@@ -14,6 +14,9 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 |---|---|---|
 | ![Card wall](docs/cards.jpg) | ![Tag tree](docs/tree.jpg) | ![Search](docs/search.jpg) |
 
+> [!TIP]
+> These screenshots were taken with the [**Velocity**](https://github.com/gonzalo-d-sales/obsidian-velocity) theme — a good pairing if you want the card wall to look like the shots above. The plugin styles itself from Obsidian's CSS variables, so it follows whatever theme you use, in both light and dark mode.
+
 ## Features
 
 ### Card wall
