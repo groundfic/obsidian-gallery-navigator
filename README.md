@@ -19,7 +19,10 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 ### Card wall
 - True JS masonry layout with lazy, chunked rendering (handles folders with thousands of files, mobile-friendly)
 - Covers from `cover:` frontmatter, first embedded image, image files themselves, PDF first pages, and web page `og:image` for link notes
-- Two image-card layouts (text overlaid on the image, or image-on-top with text below) — switchable in settings
+- Three image-card layouts, switchable from the toolbar's **⋯ More** panel:
+  - **Photo** — title overlaid on the image, so the wall reads as a sheet of photographs
+  - **Museum** — image on top, caption below, like a label beside an exhibit
+  - **Editor** — small thumbnail with a large date block and a text excerpt, for text-first browsing
 - Pin cards to top, per-card background colors, multi-select with batch move / delete (optionally removing orphaned attachments) / copy-wiki-links
 - Canvas and Base files render as cards too (Canvas uses its first embedded image as the cover when available)
 
