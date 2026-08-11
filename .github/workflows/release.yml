@@ -1,0 +1,74 @@
+name: Release
+
+# 推 tag 就自動建置、簽署並發布。
+# 手動上傳資產無法產生 artifact attestation —— 那需要 GitHub Actions 環境的 OIDC token，
+# 所以發版一律走這裡，不要在本機 gh release create。
+on:
+  push:
+    tags:
+      - "*"
+  # 允許對既有 tag 手動重跑（例如補簽 attestation）
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要發布的 tag（例如 0.2.0）"
+        required: true
+
+permissions:
+  contents: write      # 建立 release
+  id-token: write      # attestation 用的 OIDC token
+  attestations: write  # 寫入 attestation
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # 手動觸發時要 checkout 指定的 tag，而不是預設分支
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      # 確認 tag 與 manifest.json 的版本一致，避免發出對不上的版本
+      - name: Verify version matches manifest
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          MANIFEST=$(node -p "require('./manifest.json').version")
+          if [ "$TAG" != "$MANIFEST" ]; then
+            echo "::error::tag ($TAG) 與 manifest.json ($MANIFEST) 的版本不一致"
+            exit 1
+          fi
+          echo "版本一致：$TAG"
+
+      # 讓使用者能以密碼學方式驗證資產確實由本 repo 的原始碼建置而來
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            styles.css
+
+      # 冪等：release 已存在就只覆蓋資產，不存在才建立 —— 這樣重跑不會失敗
+      - name: Create or update release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG 已存在 → 覆蓋資產"
+            gh release upload "$TAG" main.js manifest.json styles.css --clobber
+          else
+            echo "建立 release $TAG"
+            gh release create "$TAG" --title "$TAG" --generate-notes \
+              main.js manifest.json styles.css
+          fi
