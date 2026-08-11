@@ -151,6 +151,7 @@ async function fetchImageBlob(
 	vaultPath: string | null
 ): Promise<Blob> {
 	if (vaultPath) {
+		// app 是本函式的參數（見上方簽名），不是全域——不可改成 this.app，這裡沒有 this
 		const data = await app.vault.adapter.readBinary(vaultPath);
 		return new Blob([data], { type: mimeFromPath(vaultPath) });
 	}
@@ -710,7 +711,7 @@ class PeekOverlay {
 		});
 		setIcon(revealBtn, "folder");
 		revealBtn.addEventListener("click", () => {
-			app.showInFolder?.(vaultPath);
+			(this.plugin.app as AppWithDesktopInternals).showInFolder?.(vaultPath);
 		});
 	}
 

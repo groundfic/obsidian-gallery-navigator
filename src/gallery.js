@@ -3676,7 +3676,7 @@ class GalleryView extends ItemView {
         if (hasKids && isOpen) buildLevel(it.folder, depth + 1);
       }
     };
-    buildLevel(app.vault.getRoot(), 1);
+    buildLevel(this.app.vault.getRoot(), 1);
     }
     this.restoreTreeScroll();   // 內容畫完 → 還原捲動位置（並解除上鎖）
     };
