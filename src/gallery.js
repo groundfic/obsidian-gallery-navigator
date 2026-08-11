@@ -156,7 +156,7 @@ async function copyToClipboard(text, okMsg) {
 }
 
 
-/* ===== 瀑布流版面引擎（shortest-column，同 Pinterest） ===== */
+/* ===== 瀑布流版面引擎（shortest-column：每張卡都放進目前最矮的那一欄） ===== */
 
 class MasonryLayout {
   constructor(container, opts) {
@@ -432,7 +432,7 @@ const VIEW_TYPE = 'gallery-navigator';
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
 
 /* 卡片主色快取上限（key = path:mtime，逛過的每張圖都會留一筆 → 沒上限就是單調成長）。
-   ⚠️ 2026-08-09：這行原本夾在 Pinterest 的常數群裡，瘦身時被整段掃掉 →
+   ⚠️ 2026-08-09：這行原本夾在另一個模組的常數群裡，該模組整段移除時被一起掃掉 →
       autoTintCard() 執行期噴 ReferenceError、整面卡片牆白掉。
       常數要放在**它服務的功能**旁邊，不要因為「剛好有空位」就插在別人的區塊中間。 */
 const TINT_CACHE_MAX = 2000;

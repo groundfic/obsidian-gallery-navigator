@@ -2,8 +2,8 @@
  *
  * 三個模組：
  *   1. Gallery（核心，永遠啟用）：資料夾／標籤導覽 + 卡片牆 + 全文搜尋（含 PDF）+ 連結牆
- *      （Mini Calendar 與 Pinterest 找相似都於 2026-08-11 整套移除，已另行備份。
- *        Pinterest 用的是逆向的私有 API，過不了上架審查。）
+ *      （Mini Calendar 與「找相似圖片」都於 2026-08-11 整套移除，已另行備份。
+ *        後者用的是某站台逆向出來的私有 API，過不了上架審查——不要再加回來。）
  *   2. Image Peek（可關閉）      ：Quick Look 式圖片預覽（雙擊 / Space）
  *   3. Link Cards（可關閉）      ：裸網址 → Apple 風格連結卡片
  *

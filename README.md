@@ -2,7 +2,7 @@
 
 # Gallery Navigator
 
-A visual way to browse your Obsidian vault: a folder/tag tree on the left, a Pinterest-style **cover-image card wall** on the right. Designed as a visual alternative to list-based file explorers.
+A visual way to browse your Obsidian vault: a folder/tag tree on the left, a **masonry wall of cover-image cards** on the right. Designed as a visual alternative to list-based file explorers.
 
 Interface available in **English** and **繁體中文** (follows your Obsidian language setting, with a manual override in settings).
 
