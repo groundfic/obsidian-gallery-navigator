@@ -41,9 +41,36 @@ function failTtl(n) {
   return 24 * 60 * 60 * 1000;                   // 第 3 次以後 → 1 天
 }
 // 這筆快取還能用多久（poor = 抓取失敗，走退避；正常結果走 META_TTL）
+/* 標題其實是空的嗎？
+   很多站台的 <title> 是「內容標題 - 站名」，抓取失敗（被擋、影片還在處理、
+   臨時錯誤頁）時內容標題會是空的，只剩下分隔符與站名 —— YouTube 就會回
+   「- YouTube」。這種標題看起來有值，實際上零資訊。
+   不擋掉的話會被判定成「抓取成功」而快取七天，那張卡就整整七天不會再試。 */
+function isEmptyTitle(title, hostname) {
+  const t = String(title || '').trim();
+  if (!t) return true;
+  // 去掉頭尾的分隔符（- – — | · : ~ 與空白）後，若什麼都不剩就是空殼
+  const stripped = t.replace(/^[\s\-–—|·:~]+/, '').replace(/[\s\-–—|·:~]+$/, '').trim();
+  if (!stripped) return true;
+  /* 「只剩站名」要再加一個條件：原本必須**帶著分隔符**。
+     「- YouTube」是模板 <內容> - <站名> 在內容為空時留下的殘骸 → 是失敗；
+     而「Gradientor」這種沒有分隔符的，很可能就是那個網站首頁的正式標題 →
+     不能判成失敗，否則會害它反覆重抓。 */
+  if (stripped === t) return false;
+  const site = String(hostname || '').replace(/^www\./, '').split('.')[0];
+  return !!site && stripped.toLowerCase() === site.toLowerCase();
+}
+
 function entryTtl(entry) {
   if (!entry || !entry.meta) return 0;
-  return entry.meta.poor ? failTtl(entry.fail) : META_TTL;
+  const m = entry.meta;
+  /* 舊快取裡混進的空殼結果（在 isEmptyTitle 上線前被存成「成功」的那些）
+     → 回傳 0 讓它立刻過期重抓，使用者不必等七天或手動清快取。
+     ⚠️ 這裡**不能**加上「沒有描述」的條件：站台的錯誤／通用頁往往帶著站台的
+        預設描述（YouTube 回的是「在 YouTube 上盡情享受自己喜愛的影片…」），
+        要求沒描述就永遠擋不到這種。標題是空殼又沒有圖，就已經沒有價值了。 */
+  if (!m.image && !hasLocalImage(m) && isEmptyTitle(m.title, m.hostname)) return 0;
+  return m.poor ? failTtl(entry.fail) : META_TTL;
 }
 const MAX_CACHE_ENTRIES = 500; // 快取項目上限，超過時淘汰最舊的
 const MAX_IMAGE_BYTES = 300 * 1024;
@@ -650,8 +677,17 @@ async function fetchMetaUncached(url, entry) {
 
   // 品質判定：沒抓到圖也沒抓到實質標題／描述 → 視為失敗，走短 TTL
   const hostname = meta.hostname;
-  meta.poor = !meta.image && !hasLocalImage(meta) && !meta.description &&
-    (meta.title === hostname || meta.title === 'Threads' || meta.title === 'Instagram');
+  /* 沒有圖是前提；在那之上，標題已經沒有資訊量就算失敗。
+     ⚠️ 空殼標題這條**不要求**「沒有描述」：站台的錯誤／通用頁常常帶著站台預設
+        描述（YouTube 回「在 YouTube 上盡情享受自己喜愛的影片…」），加了就擋不到。
+        Threads／Instagram 那兩條維持原樣 —— 貼文卡片本來就可能只有內文沒有標題，
+        那是合法結果，不能因為標題等於站名就當成失敗。 */
+  const noImage = !meta.image && !hasLocalImage(meta);
+  meta.poor = noImage && (
+    meta.title === hostname
+    || isEmptyTitle(meta.title, hostname)
+    || (!meta.description && (meta.title === 'Threads' || meta.title === 'Instagram'))
+  );
 
   /* 失敗次數：連續失敗才累加，成功一次就歸零（退避見 failTtl）。 */
   const prevFail = (entry && entry.fail) || 0;
