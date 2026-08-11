@@ -8,9 +8,9 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 
 ## Screenshots
 
-| Card wall | Tag tree | Search | Calendar |
-|---|---|---|---|
-| ![Card wall](docs/cards.png) | ![Tag tree](docs/tree.png) | ![Search](docs/search.png) | ![Calendar](docs/calendar.png) |
+| Card wall | Tag tree | Search |
+|---|---|---|
+| ![Card wall](docs/cards.png) | ![Tag tree](docs/tree.png) | ![Search](docs/search.png) |
 
 ## Features
 
@@ -33,15 +33,10 @@ Interface available in **English** and **繁體中文** (follows your Obsidian l
 - `Shift+Enter` sends all results to the card wall
 - PDF text is read from the [Text Extractor](https://github.com/scambier/obsidian-text-extractor) plugin's cache when available (optional dependency — file-name search works without it)
 
-### Calendar sidebar
-- Month view + day timeline fed by **Google Calendar ICS URLs** (read-only, multiple calendars with colors)
-- Daily notes integration: shows notes created on each day, creates daily notes from a configurable template
-
 ### Extras (can be disabled individually)
 - **Image peek**: Quick Look-style image preview with share/copy actions
 - **Link cards**: bare URLs rendered as rich preview cards
 - **Clean links**: strips tracking parameters (`utm_*`, `xmt`, `slof`, `fbclid`, `igsh`, `gclid`…) from URLs — automatically on paste, from the editor right-click menu (one link, the selection, or the whole note), or by right-clicking a link card. Blacklist-based, so functional parameters like YouTube's `?v=` are never touched; extra/keep lists are configurable. Parameter stripping is entirely offline. Threads/Instagram `/share/` links hide their tracking code in the path instead, so expanding those to the real post URL is an opt-out network request (see below).
-- **Pinterest visual search** (experimental, off by default): reverse-image search from any cover. This uses an unofficial Pinterest endpoint and may stop working at any time — see the network disclosure below.
 
 ## Network use disclosure
 
@@ -49,12 +44,14 @@ This plugin makes network requests only for the features below. Nothing is colle
 
 | Feature | What is sent | To where |
 |---|---|---|
-| Calendar | GET requests for the ICS URLs you configure | Your calendar provider (e.g. Google) |
 | Link previews / link cards | GET requests for URLs found in your notes, to read `og:image`/metadata | The sites your notes link to |
-| Pinterest visual search (optional, experimental) | The image you explicitly search with | `api.pinterest.com` (unofficial endpoint) |
+| Site icons on link cards | The domain name of each linked site | Google favicon service (`www.google.com/s2/favicons`) |
+| Link cards for Threads / Instagram posts | The post URL being previewed, to read the author name and post text | Meta's oEmbed endpoints (`instagram.com`, `threads.net`) |
 | Clean links — short link expansion (on by default, can be turned off) | A GET request for the `threads.com/share/…` or `instagram.com/share/…` link being expanded, to read its `canonical` URL | Threads / Instagram |
 
-All caches (link previews, calendar events, PDF thumbnails) are stored locally in the plugin folder.
+**About User-Agent headers.** Metadata requests are sent with the User-Agent of a common browser or of a link-preview bot (`facebookexternalhit`, `Slackbot-LinkExpanding`), trying them in that order until one returns usable metadata. Some sites return `403` to a default User-Agent but serve `og:` tags to link-preview bots, so without this most cards would come back empty. This is the same mechanism chat apps such as Slack and iMessage use to render link previews, and only public metadata is read — no login, no credentials, no user data.
+
+All caches (link previews, PDF thumbnails) are stored locally in the plugin folder.
 
 ## Install
 
@@ -83,8 +80,8 @@ Source lives in `src/`. **Both `main.js` and `styles.css` in the plugin root are
   | Part | Scope |
   |---|---|
   | `src/header.css` | File header comment |
-  | `src/gallery.css` | `.gn-*` — tree, card wall, toolbar, calendar |
-  | `src/peek.css` | `.qp-*`, `.ip-pin-*` — image peek |
+  | `src/gallery.css` | `.gn-*` — tree, card wall, toolbar |
+  | `src/peek.css` | `.qp-*` — image peek |
   | `src/linkcard.css` | `.lcp-*` — link cards |
 
   Order matters (later parts can override earlier ones). The build refuses to write `styles.css` if braces are unbalanced, so a truncated part fails loudly instead of silently breaking the stylesheet.

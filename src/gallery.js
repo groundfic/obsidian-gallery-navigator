@@ -6,12 +6,21 @@
  * 核心封面/標籤邏輯移植自 vault 內的 BASE/Code/Collections code.md (js-engine)。
  */
 
-const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
+const { Plugin, ItemView, MarkdownView, TFolder, TFile, Menu, FuzzySuggestModal, SuggestModal, Notice, setIcon, addIcon, getIconIds, Modal, requestUrl, PluginSettingTab, Setting } = require('obsidian');
 const { t, setLang, isZh } = require('./i18n.js');
 const { ThumbCache } = require('./thumbs.js');
 const { DimPrefetcher } = require('./dims.js');
 const { setupCanvasImageToNote } = require('./canvasnote.js');
 const { VirtualWall } = require('./virtual.js');
+const { downscaleBytes } = require('./linkcard.js');   // og-cache 的縮圖沿用同一支
+
+/* og-cache 治理（2026-08-12）：
+   • 網路失敗的負記錄有效期 15 分鐘（「確定沒有 og:image」則是永久，兩者分開記）
+   • 下載的圖超過 300KB 就縮到 640px 再落地——卡片最寬約 300px，存 1200px 原圖純屬浪費
+     （實測 325 檔長到 70MB） */
+const OG_FAIL_TTL = 15 * 60 * 1000;
+const OG_MAX_IMAGE_BYTES = 300 * 1024;
+const OG_DOWNSCALE_WIDTH = 640;
 
 /* 外掛專屬圖示（2026-07-20）：三個互扣的圓角方塊＝卡片牆意象。
    ⚠️ addIcon() 的內容必須適配 0 0 100 100 的 viewBox，但原稿是 24×24
@@ -42,6 +51,78 @@ const GN_ICON_SVG =
   '<rect x=".9" y="13.7" width="4.3" height="4.3" rx="1.3" ry="1.3"/>' +
   '</g>';
 
+
+/* ===== 併發閘（2026-08-12）=====
+ *
+ * og:image 抓取與 PDF 首頁渲染，過去都是「卡片捲進視野就直接 async 起跑」，完全沒有上限。
+ * 一屏 20–40 張卡同時觸發時：
+ *   • og  → 數十個併發 requestUrl 互搶頻寬，誰都慢
+ *   • PDF → 同時 readBinary + pdfjs 解多份大檔，峰值記憶體爆掉（iOS WebView 會被系統砍掉）
+ * thumbs.js 開頭就寫明「併發一定要壓住」，這裡等於同一個問題換個檔案格式重演一次。
+ *
+ * 三個設計重點（與 ThumbCache._pump 同一套）：
+ *   1. LIFO：後進先出。使用者剛捲到的那一屏優先，跟捲動方向一致。
+ *   2. dropPending()：換資料夾／換頁時丟掉還沒開工的（已在飛的無法中斷，
+ *      但呼叫端有 card.isConnected 檢查會自行放棄）。
+ *   3. per-key in-flight 去重：run() 回傳「工作結果」而不是直接操作 DOM，
+ *      虛擬牆把同一張卡卸載再掛回來時共用同一個 promise，兩邊都拿得到結果。
+ */
+/* 「排隊中被丟掉」的哨兵值，與「做過了但失敗（null）」區分開 —— 見 dropPending() */
+const GATE_DROPPED = Symbol('gate-dropped');
+
+class TaskGate {
+  constructor(limit) {
+    this.limit = Math.max(1, limit);
+    this.busy = 0;
+    this.queue = [];             // { key, fn, resolve }
+    this.inflight = new Map();   // key → promise
+  }
+
+  /** 排入一件工作；同 key 正在進行中就共用它的 promise。回傳 fn 的結果（失敗為 null） */
+  run(key, fn) {
+    const hit = this.inflight.get(key);
+    if (hit) return hit;
+    let resolve;
+    const p = new Promise((r) => { resolve = r; });
+    this.inflight.set(key, p);
+    this.queue.push({ key, fn, resolve });
+    this._pump();
+    return p;
+  }
+
+  _pump() {
+    while (this.busy < this.limit && this.queue.length) {
+      const item = this.queue.pop();   // LIFO
+      this.busy++;
+      Promise.resolve().then(() => item.fn()).then(
+        (v) => this._done(item, v),
+        () => this._done(item, null),
+      );
+    }
+  }
+
+  _done(item, value) {
+    this.busy--;
+    this.inflight.delete(item.key);
+    item.resolve(value);
+    this._pump();
+  }
+
+  /* 還沒開工的一律放棄（換頁／換資料夾）。
+     ⚠️ 等待者拿到的是 GATE_DROPPED 而**不是** null：兩者必須分得開。
+        null = 這件事做過了但失敗（已寫負快取，不該重試）；
+        GATE_DROPPED = 根本沒開始，呼叫端要把卡片放回觀察佇列，否則那張卡會
+        永久停在無圖狀態（IntersectionObserver 早就 unobserve 了）。
+        兩個閘掛在 plugin 上、由所有畫廊面板共用，所以同時開兩個面板時，
+        A 面板換資料夾就會丟掉 B 面板還在排隊的任務——沒有重排路徑的話 B 就中獎。 */
+  dropPending() {
+    const pending = this.queue.splice(0, this.queue.length);
+    for (const item of pending) {
+      this.inflight.delete(item.key);
+      item.resolve(GATE_DROPPED);
+    }
+  }
+}
 
 // 穩健複製：優先 clipboard API，失敗退回 textarea+execCommand（手機 webview 常需要），並給提示
 // okMsg：自訂成功提示（例如批次複製時顯示筆數，避免把整串多行內容塞進 Notice）
@@ -201,6 +282,11 @@ class MasonryLayout {
         el.style.top = T + 'px';
         this._pos.set(el, { l: L, t: T });
       }
+      /* 定位完成才讓卡片現身（2026-08-10）。
+         .gn-card 是 position: absolute，但 left/top 要等到這裡（rAF）才寫 ——
+         在那之前所有卡片都疊在容器原點，畫面上會閃一下「一疊卡片」。
+         addClass 是冪等的，之後每次重排重複加不會重跑動畫。 */
+      el.classList.add('gn-placed');
       colH[c] += heights[i] + this.gap;
     });
     const H = Math.max.apply(null, colH);
@@ -601,6 +687,9 @@ const SORTS = {
   za: { label: 'Name Z→A', icon: 'arrow-up-az', fn: (a, b) => b.name.localeCompare(a.name, 'zh-Hant') },
 };
 const SORT_KEYS = Object.keys(SORTS);
+/* 合法的圖片卡版面。單一來源，全域設定與資料夾覆寫都用它驗證 ——
+   下架某個版面時只要從這裡拿掉，舊 data.json 裡的殘值就會自動退回預設。 */
+const GN_LAYOUTS = ['overlay', 'stacked', 'editorial'];
 function sortItems(items, key) {
   const s = SORTS[key] || SORTS.new;
   return items.slice().sort(s.fn);
@@ -883,17 +972,118 @@ class InputModal extends Modal {
   }
 }
 
-/* ===== 檔案選擇器（選待辦筆記） ===== */
+/* ===== 資料夾自訂圖示 ===== */
 
-class FileSuggest extends FuzzySuggestModal {
-  constructor(app, onChoose, placeholder) {
+/* 可選圖示清單。用官方的 getIconIds()、**不自己維護一份名單** ——
+   ⚠️ setIcon() 找不到名字時是「靜靜地什麼都不畫」，不報錯也不留 console 訊息
+      （2026-08-10 的 arrow-down-a-z 就是這樣踩到的）。手寫名單一旦跟 Obsidian
+      版本對不上，使用者選了就是一個看不見的圖示，而且完全無從察覺。
+   只留 lucide-*：其餘是各外掛用 addIcon() 註冊的，換個 vault／停用外掛就消失，
+   拿來當持久化的設定值不可靠。 */
+let _iconIdCache = null;
+function allIconIds() {
+  if (_iconIdCache) return _iconIdCache;
+  let ids = [];
+  try { ids = (typeof getIconIds === 'function' ? getIconIds() : []) || []; } catch (e) { ids = []; }
+  const lucide = ids.filter((id) => id.startsWith('lucide-'));
+  _iconIdCache = (lucide.length ? lucide : ids).slice().sort();
+  return _iconIdCache;
+}
+let _iconIdSet = null;
+/** 這個圖示名現在還存在嗎（外掛移除／改版後舊設定會失效） */
+function iconExists(name) {
+  if (!name) return false;
+  if (!_iconIdSet) _iconIdSet = new Set(allIconIds());
+  return _iconIdSet.has(name);
+}
+/** 顯示／搜尋用的短名：lucide-folder-open → folder-open */
+function iconLabel(id) { return id.replace(/^lucide-/, ''); }
+
+/* 圖示選擇器：搜尋框 + 網格 + **捲到底自動補下一批**。
+   lucide 有一千多個圖示，一次全部 setIcon 會建出一千多個 <svg>，開啟面板會卡一下
+   → 分批畫，哨兵進視野就補下一批（與卡片牆 renderInChunks 同一套機制）。 */
+const GN_ICONPICK_CHUNK = 120;
+
+class IconPickerModal extends Modal {
+  constructor(app, current, onPick, onReset) {
     super(app);
-    this.onChoose = onChoose;
-    this.setPlaceholder(placeholder || t('Pick a to-do note…'));
+    this.current = current || '';
+    this.onPick = onPick;
+    this.onReset = onReset;
+    this._io = null;
   }
-  getItems() { return this.app.vault.getMarkdownFiles(); }
-  getItemText(f) { return f.path; }
-  onChooseItem(f) { this.onChoose(f); }
+  onOpen() {
+    const { contentEl } = this;
+    this.setTitle(t('Choose folder icon'));
+    this.modalEl.addClass('gn-iconpick-modal');
+
+    const search = contentEl.createEl('input', { type: 'text', cls: 'gn-input' });
+    search.placeholder = t('Search icons…');
+
+    const hint = contentEl.createDiv('gn-iconpick-hint');
+    // 捲動容器包住網格：哨兵要當網格的**兄弟**而不是格子，否則它會佔掉一格版位
+    const scroll = contentEl.createDiv('gn-iconpick-scroll');
+    const grid = scroll.createDiv('gn-iconpick-grid');
+    const sentinel = scroll.createDiv('gn-iconpick-sentinel');
+
+    const all = allIconIds();
+    let hits = all;
+    let drawn = 0;
+
+    const drawNext = () => {
+      const end = Math.min(drawn + GN_ICONPICK_CHUNK, hits.length);
+      for (let i = drawn; i < end; i++) {
+        const id = hits[i];
+        const cell = grid.createDiv('gn-iconpick-cell');
+        cell.setAttr('aria-label', iconLabel(id));
+        if (id === this.current) cell.addClass('gn-iconpick-on');
+        setIconCached(cell, id);
+        cell.onclick = () => { this.close(); this.onPick(id); };
+      }
+      drawn = end;
+      const done = drawn >= hits.length;
+      if (done && this._io) { this._io.disconnect(); this._io = null; }
+      sentinel.style.display = done ? 'none' : '';
+      hint.setText(
+        !hits.length ? t('No icons found')
+          : done ? t('{{n}} icons', { n: hits.length })
+            : t('{{n}} of {{total}}', { n: drawn, total: hits.length })
+      );
+    };
+
+    const reset = (q) => {
+      const key = q.trim().toLowerCase();
+      hits = key ? all.filter((id) => iconLabel(id).includes(key)) : all;
+      grid.empty();
+      drawn = 0;
+      scroll.scrollTop = 0;
+      /* 每次重新搜尋都重建 observer：上一輪可能已經畫完並把它 disconnect 掉，
+         而 disconnect 過的 observer 再 observe 也不會恢復。 */
+      if (this._io) this._io.disconnect();
+      this._io = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) drawNext();
+      }, { root: scroll, rootMargin: '200px 0px' });
+      drawNext();   // 第一批
+      /* ⚠️ 搜尋結果少於一批時，drawNext 已經把 _io 收掉設成 null，
+         直接 .observe 會炸 "null is not an object"（卡片牆那邊踩過同一個坑）。 */
+      if (this._io) this._io.observe(sentinel);
+    };
+    reset('');
+
+    search.addEventListener('input', () => reset(search.value));
+
+    const btns = contentEl.createDiv('modal-button-container');
+    const resetBtn = btns.createEl('button', { text: t('Reset to default') });
+    resetBtn.onclick = () => { this.close(); this.onReset(); };
+    const cancel = btns.createEl('button', { text: t('Cancel') });
+    cancel.onclick = () => this.close();
+
+    setTimeout(() => search.focus(), 0);
+  }
+  onClose() {
+    if (this._io) { this._io.disconnect(); this._io = null; }   // 不留孤兒 observer
+    this.contentEl.empty();
+  }
 }
 
 /* ===== View ===== */
@@ -919,7 +1109,17 @@ class GalleryView extends ItemView {
   getDisplayText() { return 'Gallery Navigator'; }
   getIcon() { return GN_ICON_ID; }   // 外掛專屬圖示（2026-07-20，取代原本的 egg 🥚）
 
+  /* 被藏起來時累積的重畫要求，等真的顯示出來（尺寸重新量得到）才補畫。
+     Obsidian 會在 leaf 尺寸變化與顯示時呼叫 onResize。 */
+  onResize() {
+    if (this._needsRender && this.contentEl && this.contentEl.clientWidth > 0) {
+      this._needsRender = false;
+      this.render();
+    }
+  }
+
   async onOpen() {
+    this._needsRender = false;
     this.render();
     // 開啟任一筆記時，若同步開著 → 定位到它的資料夾（從日曆開的會設跳過旗標）
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
@@ -956,7 +1156,8 @@ class GalleryView extends ItemView {
           e.preventDefault();
           this.selectAll();
         }
-      } else if (e.key === 'Escape' && this.selected && this.selected.size) {
+      } else if (e.key === 'Escape' && this._hover && this.selected && this.selected.size) {
+        // 跟 Cmd+A 一樣要求滑鼠在本視圖上：否則在別的面板按 Esc 會順手清掉畫廊的多選
         this.clearSel();
       }
     });
@@ -979,7 +1180,6 @@ class GalleryView extends ItemView {
     if (this.plugin.dimPrefetch) this.plugin.dimPrefetch.cancel();
     // 掛在 body 上的浮層要一起收掉（它們不在 contentEl 內，empty() 清不到）
     this.closeMorePopover();
-    this.closeTagPopover();
     this.closeListPopover();
   }
 
@@ -1232,12 +1432,24 @@ class GalleryView extends ItemView {
     return false;
   }
 
-  // 工具列的「⋯ 更多」面板：排序 / 卡片大小（真滑桿）/ 攤平 / 重新整理
+  /* 把卡片圓角寫成 .gn-root 上的 CSS 變數（滑桿與每次重畫都會呼叫）。
+     ⚠️ 沒設定過就**移除變數**，不要寫死 10px —— CSS 那邊是用 var(--gn-card-radius, 10px)
+        取預設值，變數存在（即使是 10px）會讓「預設」與「使用者剛好選 10」在 DOM 上
+        分不出來，日後想改預設值就得同時改兩個地方。 */
+  applyCardRadius() {
+    const root = this.contentEl;   // .gn-root 就是 contentEl
+    if (!root) return;
+    const v = this.plugin.state.cardRadius;
+    if (Number.isFinite(v)) root.style.setProperty('--gn-card-radius', v + 'px');
+    else root.style.removeProperty('--gn-card-radius');
+  }
+
+  // 工具列的「⋯ 更多」面板：排序 / 卡片大小（真滑桿）/ 圓角 / 攤平 / 重新整理
   // 用自訂浮動面板而不是 Obsidian 的 Menu —— Menu 只吃「選項列」，塞不進滑桿，
   // 而且會被迫再開一層子選單。這裡全部攤平成單層。
   openMorePopover(anchor) {
     if (this._morePop) { this.closeMorePopover(); return; }   // 再點一次＝收起（走同一條路徑，才會一併清事件）
-    this.closeTagPopover(); this.closeListPopover();   // 浮層互斥：同時開兩個會有兩顆錨點都亮著
+    this.closeListPopover();   // 浮層互斥：同時開兩個會有兩顆錨點都亮著
     const state = this.plugin.state;
     const pop = document.body.createDiv('gn-more-pop');
     this._morePop = pop;
@@ -1248,65 +1460,17 @@ class GalleryView extends ItemView {
     this.markAnchorOpen(anchor, true);
 
 
-    /* ── 排序（清單列，打勾標示目前值）──
-       ⚠️ **手機限定**（2026-08-10）：桌機已改成工具列上的輪播式排序鈕
-          （點一下換下一種、圖示直接反映目前排序），不再開選單。
-          手機工具列放不下那顆，維持清單。 */
-    if (document.body.classList.contains('is-mobile')) {
-      pop.createDiv('gn-more-label').setText(t('Sort'));
-      const cur = state.sort || 'new';
-      SORT_KEYS.forEach((key) => {
-        const row = pop.createDiv('gn-more-row');
-        row.toggleClass('gn-more-row-on', key === cur);
-        row.createSpan('gn-more-text').setText(t(SORTS[key].label));
-        const mark = row.createSpan('gn-more-check');
-        if (key === cur) setIcon(mark, 'check');
-        row.onclick = () => {
-          state.sort = key;
-          this.plugin.saveState();
-          this.closeMorePopover();
-          this.rerenderMainKeepScroll();   // sort 只被 renderNoteWall 讀到
-        };
-      });
-    }
+    /* （2026-08-11 移除）排序清單。桌機 08-10 就改成工具列的排序鈕（圖示直接反映
+       目前排序、點開走統一的 openListPopover），這次手機也換成同一顆
+       → 這裡再留一份就是兩個入口、兩套會不同步的 UI。 */
 
-    /* ── 本夾標籤：膠囊，點了就篩選這個資料夾的卡片（可複選；再點取消） ──
-       ⚠️ **手機限定**（2026-08-10）。桌機已改成工具列的標籤鈕 + 專屬浮層
-          （openTagPopover），這裡再放一份就是兩個入口、兩份會不同步的 UI。
-          但手機的合併工具列沒有那顆鈕，這裡是手機**唯一**的資料夾內標籤篩選入口，
-          不能一起拿掉（左欄的「資料夾 ⇄ 標籤」是切換瀏覽模式，不是同一件事）。 */
-    const tags = document.body.classList.contains('is-mobile') ? this.folderTags() : [];
-    if (tags.length) {
-      const tagLabel = pop.createDiv('gn-more-label');
-      tagLabel.setText(t('Tags in this folder'));
-      if (this._tagFilter && this._tagFilter.size) {
-        const clear = tagLabel.createSpan('gn-more-clear');
-        clear.setText(t('Clear'));
-        clear.onclick = (e) => {
-          e.stopPropagation();
-          this._tagFilter = new Set();
-          this.closeMorePopover();
-          this.rerenderMain();
-        };
-      }
-      const tagRow = pop.createDiv('gn-more-tags');   // 標籤多時會自己出現捲軸（限高）
-      for (const t of tags) {
-        const chip = tagRow.createDiv('gn-more-chip');
-        chip.toggleClass('gn-more-chip-on', !!(this._tagFilter && this._tagFilter.has(t.tag)));
-        chip.setText('#' + t.tag + ' ' + t.n);
-        chip.onclick = () => {
-          if (!this._tagFilter) this._tagFilter = new Set();
-          if (this._tagFilter.has(t.tag)) this._tagFilter.delete(t.tag);
-          else this._tagFilter.add(t.tag);
-          chip.toggleClass('gn-more-chip-on', this._tagFilter.has(t.tag));
-          this.rerenderMain();     // 只重畫右側卡片牆，面板留著繼續點
-        };
-      }
-    }
+    /* （2026-08-11 移除）本夾標籤膠囊。手機的牆內表頭已跟桌機一樣有標籤鈕，
+       點開是表頭下方的內嵌標籤列（.gn-tagbar）—— 同一個功能、更貼近作用範圍，
+       而且這段膠囊在標籤多時會換行成好幾列，是「更多」面板最長的一塊。 */
 
     /* ── 手機：卡片欄數 1/2/3（2026-07-19 從設定頁移入；選了即時重畫） ──
          編輯風索引卡固定 2 欄 → 該模式下不顯示此區，免得點了沒反應。 */
-    if (document.body.classList.contains('is-mobile') && state.imageCardLayout !== 'editorial') {
+    if (document.body.classList.contains('is-mobile') && this.effectiveLayout() !== 'editorial') {
       pop.createDiv('gn-more-label').setText(t('Mobile columns'));
       for (const n of [1, 2, 3]) {
         const row = pop.createDiv('gn-more-row');
@@ -1323,6 +1487,39 @@ class GalleryView extends ItemView {
       pop.createDiv('gn-more-sep');
     }
 
+    /* ── 圖片卡版面（2026-08-10 從設定頁移入）──
+       有封面的卡片，標題與日期怎麼擺。兩個平台都有：手機也吃得到這個版面差異
+       （editorial 在手機是固定 2 欄），設定頁那份已移除，這裡是唯一入口。 */
+    pop.createDiv('gn-more-label').setText(t('Image card layout'));
+    const curLayout = GN_LAYOUTS.includes(state.imageCardLayout) ? state.imageCardLayout : 'overlay';
+    /* ⚠️ 左邊的 key（overlay / stacked / editorial）是**存進 data.json 的值**，
+       不能改 —— 改了既有使用者的設定會失效。這裡只換顯示名稱：
+       用場景命名取代描述式的長句（2026-08-10 使用者定名）。
+         Photo   ＝ 文字疊在圖上，整面看起來就是一牆照片
+         Museum  ＝ 圖在上、說明在下，像展品旁的標示牌
+         Editor  ＝ 小縮圖＋大日期的索引卡，文字為主 */
+    const LAYOUTS = [
+      ['overlay', 'image', 'Photo'],        // 一張照片本身
+      ['stacked', 'frame', 'Museum'],       // 畫框：作品 + 下方標示牌
+      ['editorial', 'type', 'Editor'],      // 字體 T：文字為主
+    ];
+    for (const [key, icon, label] of LAYOUTS) {
+      const row = pop.createDiv('gn-more-row');
+      row.toggleClass('gn-more-row-on', key === curLayout);
+      setIcon(row.createSpan('gn-more-icon'), icon);
+      row.createSpan('gn-more-text').setText(t(label));
+      const mark = row.createSpan('gn-more-check');
+      if (key === curLayout) setIcon(mark, 'check');
+      row.onclick = () => {
+        state.imageCardLayout = key;
+        this.plugin.saveState();
+        this.closeMorePopover();
+        // 版面會改卡片結構與欄寬下限 → 整頁重畫（卡片大小滑桿的檔位也要跟著重算）
+        this.render();
+      };
+    }
+    pop.createDiv('gn-more-sep');
+
     /* ── 卡片大小：**吸附式**滑桿（2026-08-10 改）──
        手機不顯示（手機是固定欄數，用上面的「手機的卡片欄數」）。
 
@@ -1336,7 +1533,7 @@ class GalleryView extends ItemView {
        每一格都真的會改變畫面。保留 minCol 機制的好處（視窗變窄自動減欄）。 */
     if (!document.body.classList.contains('is-mobile')) {
       // 編輯風索引卡有欄寬下限（縮圖 94 + 內距塞不下更窄）→ 起點跟著提高
-      const zMin = state.imageCardLayout === 'editorial' ? GN_EDITORIAL_MIN_COL : 120;
+      const zMin = this.effectiveLayout() === 'editorial' ? GN_EDITORIAL_MIN_COL : 120;
       const GAP = 16;   // 與 makeGrid 建 MasonryLayout 時的 gap 一致
       /* 量「卡片牆容器」的寬度，不是 .gn-main —— MasonryLayout 量的就是 .gn-grid，
          用 .gn-main 會多算它的左右 padding，算出來的斷點會偏掉一格。 */
@@ -1385,6 +1582,10 @@ class GalleryView extends ItemView {
           this._resizeAnimT = setTimeout(() => {
             if (!this._main) return;
             for (const g of this._main.querySelectorAll('.gn-grid')) g.removeClass('gn-wall-resizing');
+            /* 收尾再全量重排一次（保險）：拖曳期間若有圖片正好載入完，
+               它的高度可能是在舊欄寬下量到的。停手後重算一次，版面一定收斂。 */
+            for (const m of (this._masonries || [])) m.scheduleLayout();
+            for (const vw of (this._virtuals || [])) vw.relayout();
           }, 260);
         }
         for (const m of (this._masonries || [])) m.setMinCol(v);   // 各區瀑布流即時重排
@@ -1397,32 +1598,48 @@ class GalleryView extends ItemView {
       };
     }
 
-    pop.createDiv('gn-more-sep');
+    /* ── 卡片圓角滑桿（2026-08-11）──
+       與「卡片大小」不同，這條**兩個平台都給**：手機一樣看得到卡片，
+       而且圓角不影響版面（不像欄寬，手機是固定欄數所以那條才桌機限定）。
 
-    /* ── 攤平（開關列）──
-       ⚠️ **手機限定**（2026-08-10）：桌機已把攤平提升成工具列的獨立按鈕，
-          這裡再留一份就是兩個入口。手機的工具列放不下，維持在面板裡。 */
-    if (document.body.classList.contains('is-mobile')) {
-      const flatRow = pop.createDiv('gn-more-row');
-      flatRow.toggleClass('gn-more-row-on', !!state.flattenFolders);
-      const flatIcon = flatRow.createSpan('gn-more-icon');
-      setIcon(flatIcon, 'layers');
-      flatRow.createSpan('gn-more-text').setText(t('Flatten: include all subfolders'));
-      const flatMark = flatRow.createSpan('gn-more-check');
-      if (state.flattenFolders) setIcon(flatMark, 'check');
-      flatRow.onclick = () => {
-        state.flattenFolders = !state.flattenFolders;
+       0–10px：**上限就是現行預設值**，所以滑桿只往「更方」的方向調，不會比現在更圓。
+       做法是寫一個 CSS 變數到 .gn-root，卡片本體／滿版圖／檔型封面三者都吃它
+       （見 gallery.css 的 .gn-card）。
+       ⚠️ 不呼叫 render()／relayout()：border-radius **不影響版面**，
+          改變數就即時重繪，重建卡片只會讓拖曳時閃爍又掉幀。 */
+    {
+      const RADIUS_DEF = 10;
+      const label = pop.createDiv('gn-more-label');
+      label.setText(t('Card corners'));
+      const info = label.createSpan('gn-more-hint');
+
+      const cur = Number.isFinite(state.cardRadius) ? state.cardRadius : RADIUS_DEF;
+      const showInfo = (v) => info.setText(v + 'px');
+      showInfo(cur);
+
+      const rad = pop.createEl('input', { type: 'range' });
+      rad.addClass('gn-zoom');   // 與卡片大小滑桿共用外觀
+      rad.min = '0'; rad.max = String(RADIUS_DEF); rad.step = '1';
+      rad.value = String(cur);
+      rad.oninput = () => {
+        const v = Number(rad.value);
+        state.cardRadius = v;
+        showInfo(v);
+        this.applyCardRadius();
         this.plugin.saveState();
-        this.closeMorePopover();
-        this.render();
       };
     }
 
-    /* ── 顯示隱藏的資料夾（2026-08-10 從工具列移入）──
-       ⚠️ **桌機限定**：手機的眼睛鈕還在底部工具列（手機維持原況），
-          兩邊都放就是兩個入口。沒有隱藏資料夾時整列不出現（不是 disabled，
-          面板裡的列不像工具列有「版位要固定」的問題）。 */
-    if (!document.body.classList.contains('is-mobile') && (state.hiddenFolders || []).length) {
+    pop.createDiv('gn-more-sep');
+
+    /* （2026-08-11 移除）攤平開關列。手機的牆內表頭已跟桌機一樣有攤平鈕
+       （見 renderNoteWall 的 .gn-head-acts），這裡再留一份就是兩個入口。 */
+
+    /* ── 顯示隱藏的資料夾（2026-08-10 從工具列移入，2026-08-11 手機也跟上）──
+       兩個平台都在這裡，工具列不再有眼睛鈕（見 renderInner 的說明）。
+       沒有隱藏資料夾時整列不出現（不是 disabled）—— 面板裡的列不像工具列
+       有「版位要固定」的問題，可以自由增減。 */
+    if ((state.hiddenFolders || []).length) {
       const hidRow = pop.createDiv('gn-more-row');
       hidRow.toggleClass('gn-more-row-on', !!this.showHidden);
       const hIcon = hidRow.createSpan('gn-more-icon');
@@ -1795,6 +2012,32 @@ class GalleryView extends ItemView {
     this.rerenderMainKeepScroll();
   }
 
+  /* 資料夾自訂圖示（2026-08-11）：name=null → 回到內建的開/合資料夾圖示。
+     ⚠️ 方法名刻意不叫 setFolderIcon —— 模組層已經有一個同名函式
+        setFolderIcon(el, open)（畫圖示用）。同名不會真的衝突（一個是 this.、
+        一個是自由變數），但讀起來會以為是同一個東西。 */
+  setFolderIconChoice(path, name) {
+    const map = Object.assign({}, this.plugin.state.folderIcons);
+    if (name) map[path] = name; else delete map[path];
+    this.plugin.state.folderIcons = map;
+    this.plugin.saveState();
+    this.refreshTree();
+  }
+
+  /* 把圖示畫進樹列的圖示格：有自訂就用自訂的，否則用內建的開/合資料夾圖示。
+     ⚠️ 要檢查圖示是否還存在。setIcon() 對不認得的名字是靜靜地什麼都不畫，
+        使用者換 vault 或停用某個外掛後，舊設定就會變成一格空白且無從察覺 →
+        退回內建圖示，至少看得到東西。 */
+  applyFolderThumb(thumb, path, open) {
+    const custom = (this.plugin.state.folderIcons || {})[path];
+    if (custom && iconExists(custom)) {
+      thumb.addClass('gn-tthumb-custom');
+      setIconCached(thumb, custom);
+    } else {
+      setFolderIcon(thumb, open);
+    }
+  }
+
   setFolderColor(path, key) {
     const map = Object.assign({}, this.plugin.state.folderColors);
     if (key) map[path] = key; else delete map[path];   // key=null → 回到自動配色
@@ -1857,7 +2100,7 @@ class GalleryView extends ItemView {
     if (collapsed) sec.addClass('gn-fav-collapsed');
     const head = sec.createDiv('gn-fav-head');
     /* 2026-07-31：原本是「箭頭一欄 + 星星一欄」，比下面的資料夾列多一欄，
-       所以「最愛」的文字跟「Yaoting」對不齊。改用跟資料夾樹同一個圖示欄：
+       所以「最愛」的文字跟 vault 名對不齊。改用跟資料夾樹同一個圖示欄：
        平常顯示星星、hover 才換成箭頭，縮排就跟其他列一致了。
        整列本來就可點擊收合（head.onclick），箭頭只是視覺提示，藏起來不損失功能。 */
     const fav = makeIconSlot(head);
@@ -1879,7 +2122,7 @@ class GalleryView extends ItemView {
       // 最愛是捷徑、不能展開 → 只用圖示欄的圖示
       const { thumb } = makeIconSlot(row);
       // 資料夾用和樹狀圖同一個自訂資料夾圖示（並加 folder class 一起藏）；筆記用 lucide file-text（保留）
-      if (f.type === 'folder') { thumb.addClass('gn-tthumb-folder'); setFolderIcon(thumb, false); }
+      if (f.type === 'folder') { thumb.addClass('gn-tthumb-folder'); this.applyFolderThumb(thumb, af.path, false); }
       else setIconCached(thumb, 'file-text');
       row.createSpan('gn-tname').setText(af.basename || af.name);
       row.onclick = () => {
@@ -2001,8 +2244,31 @@ class GalleryView extends ItemView {
     };
     // 已渲染過（同檔同 mtime）→ 直接用快取，不重新解析
     if (cache.has(key)) { const d = cache.get(key); if (d) put(d); return; }
+    /* pdf.js 是 Obsidian 開過 PDF 之後才注入的，這裡（進視野時）才檢查。
+       以前是在「建卡當下」查，本次工作階段還沒開過任何 PDF 的話，
+       那批卡就永遠不會被排進來渲染，直到整面牆重畫為止。 */
+    if (!window.pdfjsLib) return;
+    /* 解析很吃記憶體（readBinary 整份 + pdfjs 解碼），一定要壓住併發：
+       桌機 2、手機 1，與 thumbs.js 的縮圖佇列同一套哲學。 */
+    const dataUrl = await this.plugin.pdfGate.run(key, () => this.renderPdfFirstPage(file, cache, key));
+    if (dataUrl === GATE_DROPPED) { this.requeueLazy(card, '_pdfFile', file); return; }
+    if (dataUrl && card.isConnected) put(dataUrl);
+  }
+
+  /* 排隊中的延遲任務被 dropPending 丟掉 → 把卡片放回 IntersectionObserver。
+     觸發當下 observer 回呼已經 unobserve 並把 _ogFile/_pdfFile 清成 null，
+     不還原的話這張卡就再也不會被排進來（除非整面牆重畫）。
+     卡片已經不在文件裡（自己換頁）→ 什麼都不用做，本來就不該再畫。 */
+  requeueLazy(card, field, file) {
+    if (!card || !card.isConnected || !this._ogObserver) return;
+    card[field] = file;
+    try { this._ogObserver.observe(card); } catch (e) {}
+  }
+
+  /** 實際解析 PDF 第一頁 → dataURL（受 pdfGate 併發管制，結果進 _pdfThumbCache） */
+  async renderPdfFirstPage(file, cache, key) {
     const pdfjs = window.pdfjsLib;
-    if (!pdfjs) return;
+    if (!pdfjs) return null;
     let doc = null;
     try {
       const buf = await this.app.vault.readBinary(file);
@@ -2027,8 +2293,8 @@ class GalleryView extends ItemView {
         cache.delete(oldest);
       }
       cache.set(key, dataUrl);
-      if (card.isConnected) put(dataUrl);
-    } catch (e) { /* 保留圖示 */ }
+      return dataUrl;
+    } catch (e) { return null; /* 保留圖示 */ }
     finally { try { if (doc) doc.destroy(); } catch (e) {} }
   }
 
@@ -2042,7 +2308,7 @@ class GalleryView extends ItemView {
 
      ⚠️ 這裡踩過一個很貴的坑，不要改回去。
         原本是拿 vault.getResourcePath() 回來的字串（去掉 ?mtime）當 key，
-        長這樣：app://8a1c160e943893115be8616e16ea16b19f23/Users/…
+        長這樣：app://<隨機權杖>/<vault 絕對路徑>/…
         但那串十六進位前綴是 Obsidian 每次啟動向主行程要的隨機權杖
         （app.js：resourcePathPrefix = ipcRenderer.sendSync("file-url")）。
 
@@ -2140,32 +2406,67 @@ class GalleryView extends ItemView {
       // 快取命中（同筆記、同來源網址）
       const rec = idx[file.path];
       if (rec && rec.url === url) {
-        if (!rec.file) return;                        // 查過確定無圖 → 不重抓
-        const p = dir + '/' + rec.file;
-        if (await a.exists(p)) { put(a.getResourcePath(p)); return; }
-        // 快取檔遺失 → 往下重抓
+        if (rec.file) {
+          const p = dir + '/' + rec.file;
+          if (await a.exists(p)) { put(a.getResourcePath(p)); return; }
+          // 快取檔遺失 → 往下重抓
+        } else if (rec.failTs) {
+          /* 網路失敗的負記錄：15 分鐘內不再重打。
+             以前 catch 什麼都不寫 → 離線或網站掛掉時，那張卡每捲進視野一次就重打一輪。 */
+          if (Date.now() - rec.failTs < OG_FAIL_TTL) return;
+        } else {
+          return;   // 查過確定「這頁就是沒有 og:image」→ 不重抓（刻意設計，非失敗）
+        }
       }
+      if (!card.isConnected) return;   // 排隊前先確認卡片還在畫面上
+      /* 網路段受併發閘管制（桌機 3／手機 2）＋ per-path 去重：
+         以前一屏 20–40 張無封面的連結筆記會各自起跑，數十個 requestUrl 互搶頻寬。 */
+      const fname = await plugin.ogGate.run('og:' + file.path, () => this.fetchOgImage(file, url));
+      if (fname === GATE_DROPPED) { this.requeueLazy(card, '_ogFile', file); return; }
+      if (fname && card.isConnected) put(a.getResourcePath(dir + '/' + fname));
+    } catch (e) { /* 靜默：保留無圖，下次可再試 */ }
+  }
+
+  /** 抓網頁 og:image → 縮圖 → 存進 og-cache/，回傳檔名（無圖或失敗回 null）。
+   *  只由 ogGate 呼叫，確保同時在飛的請求數受控。 */
+  async fetchOgImage(file, url) {
+    const plugin = this.plugin;
+    const idx = plugin._ogIndex || (plugin._ogIndex = {});
+    const a = this.app.vault.adapter;
+    const dir = plugin.ogCacheDir();
+    // 網路失敗 → 記時間戳，短期內不重試（與「確定無圖」的永久負記錄區分開）
+    const fail = () => { idx[file.path] = { url, file: null, failTs: Date.now() }; plugin.saveOgIndex(); return null; };
+    try {
       // 抓網頁 HTML → 解析 og:image
       const res = await requestUrl({ url, method: 'GET', throw: false });
-      let imgUrl = ogImageFrom(res && res.text, url);
+      if (!res || res.status >= 400) return fail();
+      let imgUrl = ogImageFrom(res.text, url);
       // Meta 系（Threads/IG）og:image 過濾：-19/ 是作者頭像、rsrc.php 是 logo 佔位圖，
       // 都不是內容、不配當卡片封面 → 記 null（-15/ 的貼文照片照常使用）
       if (imgUrl && (/rsrc\.php|static\.cdninstagram/.test(imgUrl) || /\/t\d+[\d.-]*-19\//.test(imgUrl))) imgUrl = null;
-      if (!imgUrl) { idx[file.path] = { url, file: null }; plugin.saveOgIndex(); return; }
+      if (!imgUrl) { idx[file.path] = { url, file: null }; plugin.saveOgIndex(); return null; }
       // 下載圖片位元組 → 存進 og-cache/
       const ir = await requestUrl({ url: imgUrl, method: 'GET', throw: false });
-      if (!ir || !ir.arrayBuffer || ir.arrayBuffer.byteLength < 64) {
-        idx[file.path] = { url, file: null }; plugin.saveOgIndex(); return;
-      }
+      if (!ir || !ir.arrayBuffer || ir.arrayBuffer.byteLength < 64) return fail();
+
+      let bytes = ir.arrayBuffer;
       const extM = imgUrl.split('?')[0].match(/\.(jpe?g|png|gif|webp|avif)$/i);
-      const ext = extM ? extM[1].toLowerCase().replace('jpeg', 'jpg') : 'jpg';
+      let ext = extM ? extM[1].toLowerCase().replace('jpeg', 'jpg') : 'jpg';
+      /* 卡片最寬約 300px，但 og:image 常是 1200×630 以上的原圖，過去原封不動落地
+         → og-cache 實測長到 70MB。比照 linkcard 的做法縮到 640px 再存（同一支函式）。 */
+      if (bytes.byteLength > OG_MAX_IMAGE_BYTES) {
+        const mime = String(ir.headers?.['content-type'] || ir.headers?.['Content-Type'] || 'image/jpeg').split(';')[0];
+        const small = await downscaleBytes(bytes, mime, OG_DOWNSCALE_WIDTH, 0.82);
+        if (small) { bytes = small.bytes; ext = small.ext; }
+      }
+
       const fname = hashStr(file.path) + '.' + ext;
       if (!(await a.exists(dir))) await a.mkdir(dir);
-      await a.writeBinary(dir + '/' + fname, ir.arrayBuffer);
+      await a.writeBinary(dir + '/' + fname, bytes);
       idx[file.path] = { url, file: fname, ts: Date.now() };
       plugin.saveOgIndex();
-      put(a.getResourcePath(dir + '/' + fname));
-    } catch (e) { /* 靜默：保留無圖，下次可再試 */ }
+      return fname;
+    } catch (e) { return fail(); }
   }
 
   // macOS overlay 捲軸：捲動中才顯示（掛 .gn-scrolling，停止 700ms 後移除淡出）
@@ -2210,63 +2511,14 @@ class GalleryView extends ItemView {
     requestAnimationFrame(() => { apply(); this._treeScrollLock = false; });
   }
 
-  /* 標籤面板（2026-08-10 改成「從工具列按鈕下方展開的浮層」）
-     沿革：2026-08-01 是右欄底部的常駐浮動面板 + 右下角收合圓鈕；按鈕集中到合併工具列後，
-     改成與「⋯ 更多」同一套 popover 機制 —— 同樣掛 document.body、同樣的 fixed 定位、
-     同樣的「點外面／Esc 關閉」。這樣右欄不再有任何浮在角落的獨立控制項。
-     ⚠️ 掛在 body 而不是 .gn-split：popover 用 position:fixed，掛在會被
-        overflow:hidden 裁切的容器裡會被切掉。
-     ⚠️ 開關狀態**不再持久化**（原本存 state.tagDockOpen）：下拉選單每次重畫都自己彈開
-        會很煩人，浮層就該是暫時的。篩選狀態（_tagFilter）照舊保留。
-     ⚠️ 手機不啟用：螢幕太窄，浮層會跟左右滑動的換欄手勢搶觸控。 */
-  openTagPopover(anchor) {
-    if (this._tagPop) { this.closeTagPopover(); return; }   // 再點一次＝收起（走同一條路徑才會清事件）
-    this.closeMorePopover(); this.closeListPopover();   // 浮層互斥
-    const tags = this.folderTags();
-    if (!tags.length) return;
+  /* 標籤面板（2026-08-10 最終版）：**內嵌在右欄、表頭下方、卡片上方**，展開時把卡片往下推。
+     沿革：08-01 是右欄底部的常駐浮動面板 → 當天稍早改成工具列按鈕下方的浮層 →
+     最後定案內嵌。內嵌的好處是「篩選中」這件事一直看得見，不像浮層收起後只剩一顆亮著的鈕。
 
-    const pop = document.body.createDiv('gn-more-pop gn-tag-pop');
-    this._tagPop = pop;
-    this._tagAnchor = anchor;
-    this.markAnchorOpen(anchor, true);   // 鈕維持 hover 樣式 + 群組維持展開
-
-    const head = pop.createDiv('gn-dock-head');
-    head.createDiv('gn-dock-title').setText(t('Tags in this folder'));
-    if (this._tagFilter && this._tagFilter.size) {
-      const clear = head.createDiv('gn-dock-clear');
-      clear.setText(t('Clear'));
-      clear.onclick = (e) => { e.stopPropagation(); this._tagFilter = new Set(); this.closeTagPopover(); this.render(); };
-    }
-
-    const body = pop.createDiv('gn-dock-body');
-    this.fillTagChips(body, tags);
-
-    this.placePopover(pop, anchor);   // 定位與動畫原點（見該函式）
-
-    // 標題與每顆標籤依序浮現（量完寬度後才掛，避免動畫中的 transform 影響 offsetWidth）
-    this.staggerPopContent(pop, '.gn-dock-title, .gn-dock-clear, .gn-more-chip');
-
-    // 點面板外／按 Esc → 關閉
-    const closer = (e) => {
-      if (!this._tagPop) return;
-      if (this._tagPop.contains(e.target) || anchor.contains(e.target)) return;
-      this.closeTagPopover();
-    };
-    const esc = (e) => { if (e.key === 'Escape') this.closeTagPopover(); };
-    this._tagCloser = closer; this._tagEsc = esc;
-    setTimeout(() => {
-      document.addEventListener('mousedown', closer);
-      document.addEventListener('keydown', esc);
-    }, 0);
-  }
-
-  closeTagPopover() {
-    if (this._tagCloser) { document.removeEventListener('mousedown', this._tagCloser); this._tagCloser = null; }
-    if (this._tagEsc) { document.removeEventListener('keydown', this._tagEsc); this._tagEsc = null; }
-    if (this._tagAnchor) { this.markAnchorOpen(this._tagAnchor, false); this._tagAnchor = null; }
-    if (this._tagPop) { this._tagPop.remove(); this._tagPop = null; }
-  }
-
+     ⚠️ 開合**不重畫**，只切 .gn-tagbar-open 這個 class：
+       · 卡片牆是 position:relative 的正常流元素，上面多一塊自然就被推下去
+       · 不重畫就沒有「錨點被 empty 掉」的問題（浮層版為此得寫 reanchorHeadButtons）
+     ⚠️ 高度用 interpolate-size 補間 0 ↔ auto —— 不必量高度、標籤幾行都適用。 */
   // 標籤晶片：點擊即篩選卡片牆（可複選、再點取消），右鍵可改名／刪除
   fillTagChips(body, tags) {
     for (const it of tags) {
@@ -2472,6 +2724,56 @@ class GalleryView extends ItemView {
     }
   }
 
+  /* 左欄收合 / 展開（2026-08-10）。**完全就地更新，不呼叫 render()。**
+
+     ⚠️ 這是重點：以前走 render() 整頁重畫 → 卡片牆砍掉重建，不管怎麼藏都會閃一下。
+        開合其實只需要動四樣東西（左欄寬度／display、分隔桿的角色、箭頭方向、--gn-treew），
+        卡片牆一張都不用重建 —— 讓 masonry 的 ResizeObserver 隨欄寬變化連續重排就好。
+        手感會跟拖曳「卡片大小」滑桿一模一樣，因為機制本來就是同一套。
+     ⚠️ 收合要等動畫收完才 display:none，否則寬度動畫還沒跑就先消失。
+     ⚠️ 展開要先 display:'' 再等**一幀**才放寬度：同一幀內改完，瀏覽器只會看到最終值。 */
+  toggleTree(nextHidden) {
+    if (this._searchOn) {
+      this._searchTreeOpen = !nextHidden;   // 搜尋中只切這次，不寫進 data.json
+    } else {
+      this.plugin.state.treeCollapsed = nextHidden;
+      this.plugin.saveState();
+    }
+    this.applyTreeCollapsed(nextHidden);
+  }
+
+  applyTreeCollapsed(hidden) {
+    const root = this.contentEl;
+    const tree = this._tree, splitter = this._splitter;
+    if (!tree || !tree.isConnected || !splitter) { this.render(); return; }   // 保險：結構不在就退回重畫
+
+    const w = this.plugin.state.treeWidth || 232;
+    const anim = this.motionOk();
+    if (anim) root.addClass('gn-tree-animating');
+
+    splitter.toggleClass('gn-split-handle-collapsed', hidden);
+    if (this._splitToggle) {
+      setIcon(this._splitToggle, hidden ? 'chevron-right' : 'chevron-left');
+      this._splitToggle.setAttr('aria-label', hidden ? t('Expand folder pane') : t('Collapse folder pane'));
+    }
+
+    clearTimeout(this._treeHideT);
+    if (hidden) {
+      tree.style.flex = '0 0 0px';
+      root.style.setProperty('--gn-treew', '-1px');   // 交界線一起滑出畫面
+      this._treeHideT = setTimeout(() => { tree.style.display = 'none'; }, anim ? 200 : 0);
+    } else {
+      tree.style.display = '';
+      requestAnimationFrame(() => {           // 已是 0 寬（收合時設的）→ 等一幀再放開才有補間
+        tree.style.flex = '0 0 ' + w + 'px';
+        root.style.setProperty('--gn-treew', (w + 9) + 'px');
+      });
+    }
+
+    clearTimeout(this._treeAnimT);
+    this._treeAnimT = setTimeout(() => root.removeClass('gn-tree-animating'), 240);
+  }
+
   /* 工具列按鈕工廠（2026-08-10）。桌機穿上 Obsidian 原生的 .clickable-icon.nav-action-button，
      尺寸／圓角／hover 底色／:active 縮放／圖示線寬／disabled 淡化全部由 app.css 與主題提供
      —— 與 2026-08-01「Image Peek 穿上原生 lightbox class」同一個手法。
@@ -2487,6 +2789,7 @@ class GalleryView extends ItemView {
     const o = opts || {};
     const mobile = document.body.classList.contains('is-mobile');
     const btn = parent.createDiv('gn-btn' + (o.cls ? ' ' + o.cls : ''));
+    if (o.key) btn.setAttr('data-gnk', o.key);   // 供 reanchorHeadButtons() 在重畫後找回同一顆
     if (!mobile) btn.addClass('clickable-icon', 'nav-action-button');
     setIcon(btn, icon);
     // 開啟中：桌機用原生的 .is-active（主題自帶樣式）；手機沿用 GN 的灰底膠囊
@@ -2524,8 +2827,17 @@ class GalleryView extends ItemView {
      同樣「開著時錨點維持 hover、按鈕群組不縮回去」。
      rows: [{ icon, label, checked, warn, onClick }]，null 代表分隔線。 */
   openListPopover(anchor, rows) {
-    if (this._listPop && this._listAnchor === anchor) { this.closeListPopover(); return; }
-    this.closeMorePopover(); this.closeTagPopover();   // 浮層互斥
+    /* 舊浮層一律先收掉，再決定要不要開新的。
+       只擋「同錨點」不夠：工具列的 a11y 路徑是 Enter → el.click()，全程沒有 mousedown，
+       closer 不會被觸發。Tab 到另一顆鈕按 Enter 時，_listPop／_listCloser／_listEsc
+       會被直接覆寫 → 舊浮層變成孤兒節點留在畫面上，每換一次錨點就多漏一對
+       document mousedown/keydown（閉包持有 view 參照 → 記憶體滯留）。 */
+    if (this._listPop) {
+      const same = this._listAnchor === anchor;
+      this.closeListPopover();
+      if (same) return;        // 同一顆鈕 = toggle 關閉
+    }
+    this.closeMorePopover();   // 浮層互斥
     const pop = document.body.createDiv('gn-more-pop gn-list-pop');
     this._listPop = pop;
     this._listAnchor = anchor;
@@ -2709,7 +3021,6 @@ class GalleryView extends ItemView {
     const root = this.contentEl;
     // 浮層都掛在 body 上 → 重畫前要收掉，不然錨點沒了它們會變孤兒留在畫面上
     this.closeMorePopover();
-    this.closeTagPopover();
     this.closeListPopover();
     // 整頁重畫會丟掉左欄捲動位置 → 清空前先記下來，_buildTree() 結尾再還原
     if (this._treeScroll && this._treeScroll.isConnected) {
@@ -2720,6 +3031,7 @@ class GalleryView extends ItemView {
     if (this._main && this._main.isConnected) {
       this._mainScrollSaved = { key: this.mainScrollKey(), top: this._main.scrollTop };
     }
+    this._layout = this.effectiveLayout();   // 熱路徑（makeCard 等）只讀這個快取
     this._treeScrollLock = true;
     root.empty();
     root.addClass('gn-root');
@@ -2737,13 +3049,14 @@ class GalleryView extends ItemView {
     //    否則會套到用不到的單欄豁免規則（2026-07-20）。
     root.toggleClass('gn-mobile-1col',
       document.body.classList.contains('is-mobile')
-      && this.plugin.state.imageCardLayout !== 'editorial'
+      && this._layout !== 'editorial'
       && (this.plugin.state.mobileCols || 2) === 1);
 
     // 圖片卡版面（2026-07-20，設定 → 卡片牆 可選）：預設「白字疊圖」（圖滿版）；
     // 'stacked' ＝ 舊版「圖上文下」，CSS 用 .gn-imgcard-stacked 切回底層規則（見 gallery.css）。
-    root.toggleClass('gn-imgcard-stacked', this.plugin.state.imageCardLayout === 'stacked');
-    root.toggleClass('gn-imgcard-editorial', this.plugin.state.imageCardLayout === 'editorial');
+    root.toggleClass('gn-imgcard-stacked', this._layout === 'stacked');
+    root.toggleClass('gn-imgcard-editorial', this._layout === 'editorial');
+    this.applyCardRadius();   // 卡片圓角（「⋯ 更多」的滑桿）：重畫後要重新套上
 
     // 手機：contentEl 本身就是 .view-content；它的父層（.workspace-leaf-content）
     // 在手機不是 flex 直向，導致 gn-root 撐不滿高度 → 底部工具列上方留白。
@@ -2771,19 +3084,20 @@ class GalleryView extends ItemView {
     const treeHidden = this._searchOn ? !this._searchTreeOpen : !!state.treeCollapsed;
 
     /* 桌機：一條橫跨兩欄的合併欄，**只放按鈕**，全部集中在同一個群組（2026-08-10）。
-       以前是 barL／barR 兩段、左段寬度還要用 JS 對齊左欄，麵包屑也塞在右段。
+       以前是 barL／barR 兩段、左段寬度還要用 JS 對齊左欄，麵包屑也塞在右段
+       （那兩段已於 2026-08-11 一併移除，見下方說明）。
        麵包屑已移回右欄的牆內表頭（.gn-main-head，與手機同一條路徑）——
        this._barTitle 保持 null，renderNoteWall() 的 useBarTitle 就會自動走牆內那條。
        手機：維持原本的底部兩段式工具列，一行都不動。 */
     const bar = root.createDiv('gn-bar');
-    let barL = null, barR = null;
     this._barTitle = null;
-    if (isMobileUI) {
-      barL = bar.createDiv('gn-bar-group');   // 左：對應左側資料夾樹
-      barR = bar.createDiv('gn-bar-group');   // 右：對應右側卡片牆
-    } else {
-      bar.addClass('gn-bar-merged');
-    }
+    if (!isMobileUI) bar.addClass('gn-bar-merged');
+    /* （2026-08-11）手機的 barL / barR 兩個 .gn-bar-group 已移除。
+       它們原本代表「左段＝資料夾工具、右段＝卡片工具」，但 CSS 早就寫成
+       `.is-mobile .gn-bar-group { display: contents }` —— 兩段在手機**不產生任何
+       視覺分隔**，所有按鈕都是 .gn-bar 的直接子元素、由 space-evenly 均分。
+       也就是說它們只剩「決定 DOM 順序」這個作用，而順序現在已由下方的 order
+       陣列統一決定。桌機從 08-10 起就走 cluster、根本沒用到這兩個 group。 */
     /* 搜尋列必須在 .gn-main 外面（rerenderMain 會 empty 掉它 → 輸入框失焦），
        且 DOM 順序固定是 [bar][searchRow][split]。
        ⚠️ **手機限定**：桌機的輸入框已經改成長在工具列裡（見下方 buildBarSearch）。 */
@@ -2803,7 +3117,7 @@ class GalleryView extends ItemView {
        手機是左右兩段、順序必須維持原況（使用者確認手機不動）。
        若照「建立順序＝DOM 順序」寫，改桌機排序就會連帶動到手機。 */
     const tray = createDiv();
-    const leftHost = tray, rightHost = tray;
+
     const btn = {};   // key → 元素，最後依序 append
 
     /* --- 兩欄：左巢狀資料夾樹 + 右筆記牆 --- */
@@ -2814,28 +3128,17 @@ class GalleryView extends ItemView {
     const splitter = split.createDiv('gn-split-handle');
     const main = split.createDiv('gn-main');
     this._split = split; this._main = main;   // 供手機「點資料夾 → 跳右欄」使用
+    this._tree = tree; this._splitter = splitter;   // 供 applyTreeCollapsed() 就地更新
 
-    /* 左欄收合 / 展開。合併欄橫跨兩欄、不隨左欄消失，所以這裡沒有「按鈕跟著左欄一起不見」
-       的風險（2026-07-20 那條警告是針對舊結構）。
-       桌機展開狀態仍不放此鈕：分隔線 hover 已有同功能的收合鈕。手機一律保留。 */
-    if (isMobileUI || treeHidden) {
-      const collapseBtn = btn.collapse = this.mkBarBtn(leftHost,
-        treeHidden ? 'panel-left-open' : 'panel-left-close',
-        treeHidden ? t('Expand folder pane') : t('Collapse folder pane'),
-        { cls: 'gn-collapse-btn' });
-      collapseBtn.onclick = () => {
-        if (this._searchOn) { this._searchTreeOpen = !this._searchTreeOpen; this.render(); return; }   // 搜尋中：只切這次
-        state.treeCollapsed = !state.treeCollapsed;
-        this.plugin.saveState();
-        this.render();
-      };
-    }
+    /* （2026-08-10 移除）工具列的「展開左欄」鈕。
+       桌機收合後分隔桿會留成左邊界的感應區（滑過去就有紫線與箭頭），
+       手機那顆本來就被 .is-mobile .gn-collapse-btn { display:none } 藏著 —— 兩邊都用不到了。 */
 
     /* ===== 搜尋（全文，中文 ICU 斷詞 + bigram；結果直接呈現為卡牆）=====
        桌機（2026-08-10）：點下去**整條工具列變成搜尋欄** —— 按鈕先依序淡出，
        動畫收完才重畫成輸入框（見 morphBarOut / buildBarSearch）。
        手機：維持原況，開 GnSearchModal 懸浮搜尋。 */
-    const searchBtn = btn.search = this.mkBarBtn(rightHost, 'search',
+    const searchBtn = btn.search = this.mkBarBtn(tray, 'search',
       barSearch ? t('Close search') : t('Search notes (full-text popup)'),
       { on: barSearch });
     searchBtn.onclick = () => {
@@ -2856,7 +3159,7 @@ class GalleryView extends ItemView {
     if (!isMobileUI && treeHidden) root.style.setProperty('--gn-treew', '-1px');   // 左欄收合 → 整塊主底色（-1px：連交界線一起滑出畫面）
 
     // 左：資料夾 ⇄ 標籤 模式切換
-    const modeBtn = btn.mode = this.mkBarBtn(leftHost,
+    const modeBtn = btn.mode = this.mkBarBtn(tray,
       state.leftMode === 'tag' ? 'hash' : 'folder',
       state.leftMode === 'tag' ? t('Current: tags (click to switch to folders)') : t('Current: folders (click to switch to tags)'),
       { on: state.leftMode === 'tag' });
@@ -2871,14 +3174,10 @@ class GalleryView extends ItemView {
     /* 顯示 / 隱藏資料夾。
        ⚠️ **手機限定**（2026-08-10）：桌機已移進「⋯ 更多」面板（使用者要求），
           工具列只留六顆常用的。手機維持「有隱藏資料夾才出現」的原況。 */
-    const hasHidden = (state.hiddenFolders || []).length > 0;
-    if (isMobileUI && hasHidden) {
-      const eye = btn.eye = this.mkBarBtn(leftHost,
-        this.showHidden ? 'eye' : 'eye-off',
-        this.showHidden ? t('Hide hidden folders') : t('Show hidden folders'),
-        { on: !!this.showHidden });
-      eye.onclick = () => { this.showHidden = !this.showHidden; this.render(); };
-    }
+    /* （2026-08-11）「顯示隱藏資料夾」的眼睛鈕已從工具列移除，兩個平台都改到「⋯ 更多」
+       裡（桌機 08-10 就先移過去了，這次手機跟上）。除了統一之外還修掉一個實際問題：
+       它是「有隱藏資料夾才出現」的條件式按鈕，而手機底部列是 space-evenly 均分
+       → 隱藏／取消隱藏任一個資料夾，整排按鈕都會左右位移。移走之後手機固定五顆。 */
 
     /* 右：新建（筆記 / Canvas / Base / 資料夾）
        「在此新建」需要一個明確的「這裡」，所以兩種情況都沒有語意：
@@ -2897,7 +3196,7 @@ class GalleryView extends ItemView {
           disabled」，而不是隱藏。 */
     const inFolderView = !this._searchOn && state.leftMode !== 'tag';
     if (isMobileUI ? !this._searchOn : state.leftMode !== 'tag') {
-      const newBtn = btn.new = this.mkBarBtn(rightHost, 'file-plus',
+      const newBtn = btn.new = this.mkBarBtn(tray, 'file-plus',
         t('Create here (folder / note / canvas / base)'),
         { disabled: !inFolderView });
       /* 工具列這顆走共用的清單浮層（與排序、標籤同一種外觀與行為）。
@@ -2917,23 +3216,6 @@ class GalleryView extends ItemView {
       };
     }
 
-    /* 右：標籤（2026-08-10）。原本是右下角的懸浮圓鈕 + 右欄底部的常駐面板，
-       現在改成「從這顆按鈕下方展開的浮層」，與「⋯ 更多」同一套 popover 機制。
-       篩選中會亮 .is-active，讓收起浮層後仍看得出目前有套篩選。 */
-    /* ⚠️ 標籤模式**整顆不顯示**（2026-08-10 使用者要求）：那個模式本身就在看標籤，
-          「本資料夾的標籤」沒有意義（folderTags() 在該模式也直接回空陣列）。
-       ⚠️ 與「沒有標籤時給 disabled」的差別是刻意的：
-          · 資料夾有沒有標籤是**資料**決定的 → 用 disabled，版位才不會隨著逛資料夾跳動
-          · 切換模式是**使用者主動**的操作 → 整組工具改變是預期內的，直接隱藏更乾淨 */
-    if (!isMobileUI && state.leftMode !== 'tag') {
-      const nTags = this.folderTags().length;
-      const filtering = !!(this._tagFilter && this._tagFilter.size);
-      const tagsBtn = btn.tags = this.mkBarBtn(rightHost, 'tags',
-        nTags ? t('Tags in this folder') + ' · ' + nTags : t('Tags in this folder'),
-        { on: filtering, disabled: !nTags });
-      if (nTags) tagsBtn.onclick = (e) => { e.stopPropagation(); this.openTagPopover(tagsBtn); };
-    }
-
     /* 排序：工具列按鈕 → 原生選單（2026-08-10 從「⋯ 更多」的清單移出來）。
        **圖示反映目前的排序**，所以不用打開也知道現在照什麼排。桌機限定。
        ⚠️ 選單開著時要 markAnchorOpen —— 否則滑鼠一移到選單上，Velocity 的
@@ -2943,10 +3225,10 @@ class GalleryView extends ItemView {
           整頁重畫會白白丟掉左樹狀態與捲動位置。
        ⚠️ tooltip 只更新「當初 mkBarBtn 掛的那一個」屬性（桌機＝aria-label），
           兩個都設會同時跳出兩種提示。 */
-    if (!isMobileUI) {
+    {
       const sortLabel = (k) => t('Sort') + ' · ' + t(SORTS[k].label);
       let sortKey = SORTS[state.sort] ? state.sort : 'new';
-      const sortBtn = btn.sort = this.mkBarBtn(rightHost, SORTS[sortKey].icon, sortLabel(sortKey));
+      const sortBtn = btn.sort = this.mkBarBtn(tray, SORTS[sortKey].icon, sortLabel(sortKey));
       sortBtn.onclick = (e) => {
         e.stopPropagation();
         this.openListPopover(sortBtn, SORT_KEYS.map((key) => ({
@@ -2958,40 +3240,29 @@ class GalleryView extends ItemView {
             state.sort = key;
             this.plugin.saveState();
             setIcon(sortBtn, SORTS[key].icon);
-            sortBtn.setAttr('aria-label', sortLabel(key));
+            /* ⚠️ 只更新「當初 mkBarBtn 掛的那一個」屬性：桌機是 aria-label、
+               手機是 title。兩個都設會同時跳出兩種提示。 */
+            sortBtn.setAttr(isMobileUI ? 'title' : 'aria-label', sortLabel(key));
             this.rerenderMainKeepScroll();   // sort 只被 renderNoteWall 讀到，不必整頁重畫
           },
         })));
       };
     }
 
-    /* 攤平：含所有子資料夾（2026-08-10 從「⋯ 更多」提升成獨立按鈕）。
-       桌機限定 —— 手機工具列放不下，那邊仍在面板裡。
-       ⚠️ 標籤模式不顯示（同標籤鈕）：那個模式走 renderTagNotes → renderNoteWall 的
-          folder 傳 null，而攤平的判斷是 `!filesOverride && folder && flattenFolders`
-          → **在標籤模式根本不生效**。留著會是一顆點了沒反應的鈕。 */
-    if (!isMobileUI && state.leftMode !== 'tag') {
-      const flatBtn = btn.flatten = this.mkBarBtn(rightHost, 'layers',
-        t('Flatten: include all subfolders'),
-        { on: !!state.flattenFolders });
-      flatBtn.onclick = () => {
-        state.flattenFolders = !state.flattenFolders;
-        this.plugin.saveState();
-        this.render();
-      };
-    }
-
     // 右：⋯ 更多（排序 / 卡片大小滑桿 / 重新整理 → 單層浮動面板）
-    const moreBtn = btn.more = this.mkBarBtn(rightHost, 'more-horizontal', t('More (sort / card size / flatten)'));
+    const moreBtn = btn.more = this.mkBarBtn(tray, 'more-horizontal', t('More (card layout / size / corners)'));
     moreBtn.onclick = (e) => { e.stopPropagation(); this.openMorePopover(moreBtn); };
 
     /* 依平台把按鈕排進實際的容器（見上面 tray 的說明）。
-       桌機順序由使用者指定（2026-08-10）：新建 · 搜尋 · 標籤模式 · 標籤 · 攤平 · 更多。
-       「展開左欄」只在左欄收合時出現，放最前面（它是版面層級的控制，不屬於上面那組）。
-       手機維持原況：左段＝收合·模式·眼睛，右段＝搜尋·新建·更多。 */
+       ⚠️ **兩個平台共用同一份順序**（2026-08-11）：新建 · 標籤模式 · 排序 · 搜尋 · 更多。
+          以前手機是另一份「左段 mode·eye／右段 search·new·more」，等於同一條工具列
+          維護兩份排列，改一邊很容易忘了另一邊。現在只有這一個陣列。
+          平台差異只剩**容器**（手機直接掛在 .gn-bar，桌機掛在原生膠囊 cluster）
+          與**外觀**（mkBarBtn 只在桌機掛 .clickable-icon —— 那個 class 在 app.css
+          有手機專屬的觸控尺寸規則，掛上去手機會跟著變，CSS 蓋不掉）。 */
+    const BAR_ORDER = ['new', 'mode', 'sort', 'search', 'more'];
     if (isMobileUI) {
-      for (const k of ['collapse', 'mode', 'eye']) if (btn[k]) barL.appendChild(btn[k]);
-      for (const k of ['search', 'new', 'more']) if (btn[k]) barR.appendChild(btn[k]);
+      for (const k of BAR_ORDER) if (btn[k]) bar.appendChild(btn[k]);
     } else {
       if (barSearch) {
         /* 搜尋中：前段換成輸入框，只留搜尋與更多。
@@ -3001,7 +3272,7 @@ class GalleryView extends ItemView {
         this.buildBarSearch(cluster);
         for (const k of ['search', 'more']) if (btn[k]) cluster.appendChild(btn[k]);
       } else {
-      for (const k of ['collapse', 'new', 'mode', 'tags', 'sort', 'flatten', 'search', 'more']) {
+      for (const k of BAR_ORDER) {
         if (btn[k]) cluster.appendChild(btn[k]);
       }
       }
@@ -3041,7 +3312,10 @@ class GalleryView extends ItemView {
     this.wireOverlayScrollbar(treeScroll);    // overlay 捲軸：捲動才浮現
     this.wireOverlayScrollbar(main);
     this.wireMainCreateMenu(main);            // 卡片區空白處右鍵 →「在此新建」
-    if (treeHidden) { tree.style.display = 'none'; splitter.style.display = 'none'; }
+    /* 收合時**保留分隔桿**當左邊界的感應區（2026-08-10）：滑鼠移過去就浮出紫線與箭頭，
+       點一下展開。以前是連分隔桿一起 display:none，左邊界完全沒有 hover 目標，
+       只能靠工具列那顆展開鈕（那也是當初必須留那顆鈕的原因）。 */
+    if (treeHidden) { tree.style.display = 'none'; splitter.addClass('gn-split-handle-collapsed'); }
 
     // 手機：方案⑤ 並排雙欄一起平移（左欄 86% + 右欄 100%，兩欄同步 translateX）
     // 手指拖曳時「即時跟著手指」（inline transform 蓋掉 transition），放開才吸附到某一欄。
@@ -3140,6 +3414,8 @@ class GalleryView extends ItemView {
       if (pendingW != null) { state.treeWidth = Math.round(pendingW); this.plugin.saveState(); }
     };
     splitter.addEventListener('mousedown', (e) => {
+      // ⚠️ 讀即時狀態，不用 render 當下的 treeHidden —— 就地開合不重畫，快照會過期
+      if (splitter.hasClass('gn-split-handle-collapsed')) return;
       e.preventDefault();
       dragRect = split.getBoundingClientRect();   // 拖曳期間容器不會變 → 讀一次就夠
       dragX = e.clientX;
@@ -3147,16 +3423,15 @@ class GalleryView extends ItemView {
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
-    // 分隔線上的收合鈕（hover 分隔線時浮出；點了收合，不觸發拖曳）
-    const splitToggle = splitter.createDiv('gn-split-toggle');
-    setIcon(splitToggle, 'chevron-left');
-    splitToggle.setAttr('title', t('Collapse folder pane'));
+    /* 分隔線上的開合鈕（hover 分隔線時浮出，不觸發拖曳）。
+       收合中箭頭朝右＝展開，展開中箭頭朝左＝收合。 */
+    const splitToggle = this._splitToggle = splitter.createDiv('gn-split-toggle');
+    setIcon(splitToggle, treeHidden ? 'chevron-right' : 'chevron-left');
+    splitToggle.setAttr('aria-label', treeHidden ? t('Expand folder pane') : t('Collapse folder pane'));
     splitToggle.addEventListener('mousedown', (e) => e.stopPropagation());
     splitToggle.onclick = (e) => {
       e.stopPropagation();
-      state.treeCollapsed = true;
-      this.plugin.saveState();
-      this.render();
+      this.toggleTree(!splitter.hasClass('gn-split-handle-collapsed'));   // 同上：讀即時狀態
     };
 
     // 左樹內容包成可單獨重畫（展開/收合/最愛/資料夾配色只重畫這裡，不動右卡片牆）
@@ -3181,7 +3456,7 @@ class GalleryView extends ItemView {
     const rootSlot = makeIconSlot(rootRow);
     rootSlot.thumb.addClass('gn-tthumb-home');
     setIcon(rootSlot.thumb, 'home');   // 根目錄＝家（2026-07-18）
-    rootRow.createSpan('gn-tname').setText(this.app.vault.getName());  // 動態 vault 名（原本寫死 Yaoting）
+    rootRow.createSpan('gn-tname').setText(this.app.vault.getName());  // 動態 vault 名（原本寫死）
     rootRow.onclick = () => this.navigate('');
     this.wireMoveTarget(rootRow, '', 'gn-tmove');
 
@@ -3217,7 +3492,7 @@ class GalleryView extends ItemView {
         // 圖示欄：平常是資料夾圖示，hover 時換成箭頭（可展開的話）
         const { thumb, caret } = makeIconSlot(row);
         thumb.addClass('gn-tthumb-folder');   // folder class 保留：日後要再藏資料夾圖示用
-        setFolderIcon(thumb, hasKids && isOpen);
+        this.applyFolderThumb(thumb, it.folder.path, hasKids && isOpen);
         // 資料夾配色套在圖示上（2026-07-25 還原；07-20 曾因藏圖示改套在名稱文字）
         if (folderColors[it.folder.path]) thumb.style.color = paletteFor(it, folderColors).bg;
 
@@ -3281,6 +3556,14 @@ class GalleryView extends ItemView {
           menu.addItem((i) => i.setTitle(t('Copy path')).setIcon('link').onClick(() => copyToClipboard(it.folder.path)));
           menu.addItem((i) => i.setTitle(t('Move to…')).setIcon('folder-input').onClick(() =>
             new FolderSuggest(this.app, (target) => this.moveItem(it.folder, target), it.folder.path).open()));
+          // 自訂圖示（2026-08-11）：放在「顏色」旁邊，兩者都是這個資料夾的外觀設定
+          menu.addItem((i) => i.setTitle(t('Change icon')).setIcon('shapes')
+            .onClick(() => new IconPickerModal(
+              this.app,
+              (state.folderIcons || {})[it.folder.path] || '',
+              (name) => this.setFolderIconChoice(it.folder.path, name),
+              () => this.setFolderIconChoice(it.folder.path, null),
+            ).open()));
           menu.addItem((i) => {
             i.setTitle(t('Color')).setIcon('palette');
             const sub = i.setSubmenu();
@@ -3437,8 +3720,27 @@ class GalleryView extends ItemView {
   // 只重繪右欄（打字時用；搜尋列在 gn-root 底下，不會被清掉 → 保持焦點）
   rerenderMain() {
     if (!this._main) return;
+    this._layout = this.effectiveLayout();
     this._main.empty();
     this.renderMainContent(this._main);
+    this.reanchorHeadButtons();
+  }
+
+  /* 牆內表頭的按鈕會被 rerenderMain() 的 empty() 清掉。
+     （標籤面板改成內嵌後已不靠這支 —— 它開合不重畫；留給日後掛在表頭的清單浮層。）
+     浮層開著時必須把錨點換成新建的那一顆，否則：
+       · closer 的 `anchor.contains(e.target)` 對不上 → 點按鈕會「先關再開」，看起來沒反應
+       · 關閉時 markAnchorOpen 作用在已移除的節點 → 新按鈕永遠亮著
+     典型觸發：在標籤浮層裡連點多個標籤篩選（每點一次就 rerenderMain 一次）。 */
+  reanchorHeadButtons() {
+    const swap = (cur, key) => {
+      if (!cur || !this._main) return cur;
+      const el = this._main.querySelector('.gn-head-btn[data-gnk="' + key + '"]');
+      if (!el) return cur;
+      el.addClass('has-active-menu');
+      return el;
+    };
+    if (this._listAnchor) this._listAnchor = swap(this._listAnchor, this._listAnchor.getAttr('data-gnk'));
   }
 
   /* 只重繪右欄並保住捲動位置（釘選、排序、切換內文預覽等「只影響卡片牆」的小操作）。
@@ -3924,8 +4226,11 @@ class GalleryView extends ItemView {
 
     /* 換頁/重畫 → 丟掉還沒開工的縮圖任務。
        使用者已經捲走了，繼續做只會排擠新畫面該做的那幾張
-       （正在解碼中的 1–2 張無法中斷，讓它做完，反正結果會進快取）。 */
+       （正在解碼中的 1–2 張無法中斷，讓它做完，反正結果會進快取）。
+       og 圖抓取與 PDF 解析同理（兩者的等待者會拿到 null，自然什麼都不做）。 */
     if (this.plugin.thumbs) this.plugin.thumbs.dropPending();
+    if (this.plugin.ogGate) this.plugin.ogGate.dropPending();
+    if (this.plugin.pdfGate) this.plugin.pdfGate.dropPending();
 
     // 多選狀態：換頁重置
     this.selected.clear();
@@ -3970,7 +4275,7 @@ class GalleryView extends ItemView {
     const isMobileUI = document.body.classList.contains('is-mobile');
     // 編輯風索引卡：欄寬有下限（GN_EDITORIAL_MIN_COL）——縮圖 94px + 內距，
     // 再窄下去標題與日期會擠在一起（2026-07-20 使用者定為目前寬度 150）。
-    const isEditorial = this.plugin.state.imageCardLayout === 'editorial';
+    const isEditorial = this._layout === 'editorial';
     const edMin = isEditorial ? GN_EDITORIAL_MIN_COL : 0;
     const minCol = isMobileUI ? 120 : Math.max(edMin, this.plugin.state.cardWidth || 120);
     // 手機欄數：一般版面吃「⋯ 更多」的 1/2/3 欄設定；
@@ -4015,6 +4320,35 @@ class GalleryView extends ItemView {
     else img.addEventListener('load', run, { once: true });
   }
 
+  /* 這面牆實際採用的圖片卡版面（2026-08-10）。
+     全域預設在「⋯ 更多」設定；每個資料夾可以在牆的表頭覆寫（state.folderLayouts）。
+
+     ⚠️ **往上找最近有指定的祖先**：`inbox/ig/designtips` 沒設就沿用 `inbox/ig` 的，
+        否則那底下二十幾個子資料夾要一個一個設。
+     ⚠️ 搜尋牆與標籤模式**沒有「這個資料夾」**的概念 → 一律用全域。
+     ⚠️ 這支會走迴圈，但被 cardKind()／estimateCardHeight() 在每張卡上呼叫 →
+        renderInner/rerenderMain 開頭算一次存進 this._layout，熱路徑只讀快取。 */
+  effectiveLayout() {
+    const st = this.plugin.state;
+    const g = GN_LAYOUTS.includes(st.imageCardLayout) ? st.imageCardLayout : 'overlay';
+    if (this._searchOn || st.leftMode === 'tag') return g;
+    const map = st.folderLayouts || {};
+    let path = this.path || '';
+    for (;;) {
+      // 驗證過才採用：舊資料可能留著已移除的版面名（例如 2026-08-10 下架的 library）
+      if (GN_LAYOUTS.includes(map[path])) return map[path];
+      if (!path) return g;                       // 已經問到根目錄（key 是空字串）
+      const i = path.lastIndexOf('/');
+      path = i < 0 ? '' : path.slice(0, i);
+    }
+  }
+
+  // 這個資料夾自己有沒有指定（不含繼承）——決定表頭按鈕要不要亮
+  ownLayout() {
+    if (this._searchOn || this.plugin.state.leftMode === 'tag') return null;
+    return (this.plugin.state.folderLayouts || {})[this.path || ''] || null;
+  }
+
   /* 卡片依序浮現用的批次序號（2026-08-10）。
      同一個**同步批次**內建立的卡片共用一個起點：0,1,2…；批次結束（microtask）自動歸零。
      這樣不管是整面重畫（換資料夾／標籤／排序／搜尋）、捲到底補下一批（renderInChunks），
@@ -4035,7 +4369,7 @@ class GalleryView extends ItemView {
     const o = opts || {};
     const cardColors = this.plugin.state.cardColors || {};
     const card = grid.createDiv('gn-card');
-    // 依序浮現（見 nextCardSeq）。減少動態效果時整個跳過，卡片直接就位。
+    // 依序浮現（見 nextCardSeq）。減少動態效果、或左右欄正在開合時整個跳過，卡片直接就位。
     if (this.motionOk()) {
       card.addClass('gn-card-in');
       card.style.setProperty('--gn-i', String(this.nextCardSeq()));
@@ -4075,7 +4409,7 @@ class GalleryView extends ItemView {
     const body = card.createDiv('gn-body');
     // 編輯風索引卡（imageCardLayout='editorial'）：右上角「大日數 ＋ 小月年」日期塊。
     // 只在該模式建立（切換設定會 refreshViews 整頁重畫，不必常駐佔 DOM）。
-    if (this.plugin.state.imageCardLayout === 'editorial') {
+    if (this._layout === 'editorial') {
       const d0 = new Date(it.ctime);
       const dbox = body.createDiv('gn-datebox');
       dbox.createSpan({ cls: 'gn-datebox-day', text: String(d0.getDate()) });
@@ -4108,7 +4442,7 @@ class GalleryView extends ItemView {
       this.autoTintCard(card, img, it.file.path + ':' + it.file.stat.mtime);   // 自動卡片底色（設定可開關）
       // 圖片卡預設不顯示內文（2026-07-18 移除 hover 內文，省讀檔）；
       // 但「編輯風索引卡」要有內文預覽（2026-07-20）→ 該模式下補建，走既有延遲載入管線（捲到才 cachedRead）。
-      if (isMd && !skipPreview && this.plugin.state.imageCardLayout === 'editorial') {
+      if (isMd && !skipPreview && this._layout === 'editorial') {
         const prev = body.createDiv('gn-preview');
         card._prevEl = prev; card._prevFile = it.file;
       }
@@ -4127,7 +4461,10 @@ class GalleryView extends ItemView {
          但那張圖是隨機的、跟 canvas 的內容無關，同一面牆上每張 canvas 卡長得都不一樣。
          改成一律灰底 + CANVAS 字樣，跟 base 一致、也一眼看得出檔案類型。
          PDF 保留渲染第一頁——那確實代表該檔案的內容。 */
-      if (it.ext === 'pdf' && window.pdfjsLib) { card._pdfFile = it.file; card._pdfPh = ph; }   // 捲到才渲染
+      /* 捲到才渲染。這裡**不查** window.pdfjsLib：pdf.js 是 Obsidian 開過 PDF 之後
+         才注入的，建卡當下查的話，本次工作階段還沒開過 PDF 的使用者會讓整批卡片
+         永遠不排縮圖（直到整面牆重畫）。檢查移到 loadPdfThumb（進視野時）。 */
+      if (it.ext === 'pdf') { card._pdfFile = it.file; card._pdfPh = ph; }
     } else {
       // md 無封面 → 顯示內文預覽；同時試抓外部連結 og:image，抓到則以圖代文
       if (!skipPreview) {
@@ -4313,7 +4650,7 @@ class GalleryView extends ItemView {
   }
 
   cardKind(it) {
-    const layout = this.plugin.state.imageCardLayout || 'overlay';
+    const layout = this._layout || 'overlay';
     if (!it.src) return layout + ':text';
     // 長寬比已知與未知要分開：未知的用 4:3 猜，算式基準本身就不可靠，
     // 不該把它的誤差混進「已知長寬比」那一類的開銷常數裡
@@ -4328,7 +4665,7 @@ class GalleryView extends ItemView {
             stacked        ：.gn-body 在圖片下方（relative）→ 約 +62px
             editorial      ：另有日期塊與內文預覽 → 約 +96px
           （見 gallery.css:540 / 1423 兩組規則） */
-    const layout = this.plugin.state.imageCardLayout;
+    const layout = this._layout;
     if (it.src) {
       const d = (this.plugin._dimIndex || {})[this.dimKeyOf(it)];
       // 長寬比未知（第一次看到這張圖）→ 用 4:3 當中性預設，載入後會校正
@@ -4350,25 +4687,111 @@ class GalleryView extends ItemView {
     const flatten = !filesOverride && folder && this.plugin.state.flattenFolders;
 
     const headText = headOverride || (folder && folder.path && folder.path !== '/' ? folder.path : this.app.vault.getName());
-    const useBarTitle = this._barTitle && !document.body.classList.contains('is-mobile');
-    const head = useBarTitle ? this._barTitle : container.createDiv('gn-main-head');
-    if (useBarTitle) head.empty();
+    /* 牆內表頭（2026-08-10 改）：左邊**只顯示當下資料夾名**（原本是整串可點的麵包屑，
+       層級深時很長；上下層改用左欄的樹導覽），右邊放「這面牆」專屬的控制項。 */
+    const head = container.createDiv('gn-main-head');
+    const isMobileUI = document.body.classList.contains('is-mobile');
     if (!headOverride && folder) {
-      // 麵包屑（2026-07-18）：vault 名 + 各層資料夾皆可點擊跳轉；斜線灰色、間隔加寬
-      const crumbs = head.createDiv('gn-bar-crumbs');
-      const segs = folder.path && folder.path !== '/' ? folder.path.split('/') : [];
-      const rootEl = crumbs.createSpan({ cls: 'gn-crumb2' + (segs.length ? '' : ' gn-crumb2-cur'), text: this.app.vault.getName() });
-      rootEl.onclick = () => this.navigate('');
-      let acc = '';
-      segs.forEach((seg, i) => {
-        crumbs.createSpan({ cls: 'gn-crumb2-sep', text: '/' });
-        acc = acc ? acc + '/' + seg : seg;
-        const p = acc;
-        const el = crumbs.createSpan({ cls: 'gn-crumb2' + (i === segs.length - 1 ? ' gn-crumb2-cur' : ''), text: seg });
-        el.onclick = () => this.navigate(p);
-      });
+      const name = folder.path && folder.path !== '/'
+        ? folder.path.split('/').pop()
+        : this.app.vault.getName();
+      head.createSpan({ cls: 'gn-bar-title-text', text: name });
     } else {
       head.createSpan({ cls: 'gn-bar-title-text', text: headText });
+    }
+
+    /* 右上角：標籤 / 版面 / 攤平（2026-08-10 從工具列移來，2026-08-11 手機也沿用）。
+       三者只作用於「目前這面牆」，放在牆的表頭比放在全域工具列更貼近作用範圍。
+       只在資料夾檢視出現 —— 搜尋牆與標籤模式下它們都沒有作用（理由見工具列那段）。
+       手機沿用同一套之後，「⋯ 更多」裡的標籤膠囊與攤平列就是重複入口，已一併移除。
+       ⚠️ 手機的表頭標題本來是置中的（2026-07-20 指定）。有按鈕時要改成左靠，
+          否則標題只會在「扣掉按鈕之後的剩餘空間」裡置中 → 看起來偏左、像沒對齊。
+          用 state class 而不是 :has()（上架規範禁用，見 07-31）。 */
+    if (!headOverride && folder && this.plugin.state.leftMode !== 'tag') {
+      head.addClass('gn-head-has-acts');
+      const acts = head.createDiv('gn-head-acts');
+      const nTags = this.folderTags().length;
+      // 亮起的條件是「面板展開中」**或**「正在篩選」—— 面板收起來時仍看得出有套篩選
+      const filtering = !!(this._tagFilter && this._tagFilter.size);
+      const tagsBtn = this.mkBarBtn(acts, 'tags',
+        nTags ? t('Tags in this folder') + ' · ' + nTags : t('Tags in this folder'),
+        { on: filtering || !!this._tagOpen, disabled: !nTags, cls: 'gn-head-btn', key: 'tags' });
+      if (nTags) tagsBtn.onclick = (e) => {
+        e.stopPropagation();
+        this._tagOpen = !this._tagOpen;
+        // 只切 class，不重畫 —— 卡片會被 CSS 的高度補間自然推下去
+        const bar = this._main && this._main.querySelector('.gn-tagbar');
+        if (bar) bar.toggleClass('gn-tagbar-open', !!this._tagOpen);
+        tagsBtn.toggleClass('is-active', !!this._tagOpen || !!(this._tagFilter && this._tagFilter.size));
+      };
+
+      /* 這個資料夾的圖片卡版面（2026-08-10）。全域預設在「⋯ 更多」，這裡是**單一資料夾的覆寫**。
+         · 圖示 = 目前**實際生效**的版面（含從祖先繼承來的）
+         · 只有「這個資料夾自己有指定」時才亮起 —— 繼承來的不亮，
+           否則設了 inbox/ig 之後底下每個子資料夾都亮，看不出是誰設的
+         · 選單第一項是「跟隨全域」（清掉覆寫）—— 沒有這個三態的話，
+           點過一次就永久脫離全域預設，之後改全域對它無效（設定繼承的經典陷阱） */
+      const own = this.ownLayout();
+      const eff = this._layout || 'overlay';
+      const LAYOUTS_H = [['overlay', 'image', 'Photo'], ['stacked', 'frame', 'Museum'], ['editorial', 'type', 'Editor']];
+      const effIcon = (LAYOUTS_H.find((x) => x[0] === eff) || LAYOUTS_H[0])[1];
+      const effName = (LAYOUTS_H.find((x) => x[0] === eff) || LAYOUTS_H[0])[2];
+      const layoutBtn = this.mkBarBtn(acts, effIcon,
+        t('Image card layout') + ' · ' + t(effName),
+        { on: !!own, cls: 'gn-head-btn', key: 'layout' });
+      layoutBtn.onclick = (e) => {
+        e.stopPropagation();
+        const key = this.path || '';
+        const rows = [{
+          icon: 'rotate-ccw',
+          label: t('Follow global'),
+          checked: !own,
+          onClick: () => {
+            const map = Object.assign({}, this.plugin.state.folderLayouts || {});
+            delete map[key];
+            this.plugin.state.folderLayouts = map;
+            this.plugin.saveState();
+            this.render();
+          },
+        }];
+        for (const [k, icon, label] of LAYOUTS_H) {
+          rows.push({
+            icon, label: t(label), checked: own === k,
+            onClick: () => {
+              const map = Object.assign({}, this.plugin.state.folderLayouts || {});
+              map[key] = k;
+              this.plugin.state.folderLayouts = map;
+              this.plugin.saveState();
+              this.render();   // 版面會改卡片結構與欄寬下限 → 整頁重畫
+            },
+          });
+        }
+        this.openListPopover(layoutBtn, rows);
+      };
+
+      const flatBtn = this.mkBarBtn(acts, 'layers',
+        t('Flatten: include all subfolders'),
+        { on: !!this.plugin.state.flattenFolders, cls: 'gn-head-btn', key: 'flatten' });
+      flatBtn.onclick = () => {
+        this.plugin.state.flattenFolders = !this.plugin.state.flattenFolders;
+        this.plugin.saveState();
+        this.render();
+      };
+
+      /* 內嵌標籤面板：表頭下方、卡片上方。展開時把卡片往下推（見 .gn-tagbar 的說明）。
+         ⚠️ 一律建立（只要有標籤），開合只切 class —— 這樣按鈕的 onclick 不必重畫，
+            也就沒有「重畫後錨點失效」的問題。 */
+      if (nTags) {
+        const bar = container.createDiv('gn-tagbar');
+        bar.toggleClass('gn-tagbar-open', !!this._tagOpen);
+        const inner = bar.createDiv('gn-tagbar-inner');
+        this.fillTagChips(inner, this.folderTags());
+        if (this._tagFilter && this._tagFilter.size) {
+          const clear = inner.createDiv('gn-tagbar-clear');
+          clear.setText(t('Clear'));
+          clear.onclick = () => { this._tagFilter = new Set(); this.rerenderMain(); };
+        }
+      }
     }
     // 狀態膠囊（攤平／標籤篩選）獨立成一列，放在卡片牆頂端、不再塞進工具列標題列（2026-07-20）：
     //   多選標籤時字串會很長（#a #b #c ✕），塞在工具列會把麵包屑擠爆＝破格。
@@ -4511,361 +4934,7 @@ class GalleryView extends ItemView {
   // 右欄：某則筆記的關係牆。沿用卡片牆的呈現，分「連結」與「反向連結」兩區
 }
 
-/* ===== 行事曆（Mini Calendar，讀 Google ICS，唯讀）===== */
-
-const CAL_VIEW_TYPE = 'gallery-navigator-calendar';
-const CAL_WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-const CAL_WEEKDAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const CAL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const CAL_DOT_COLORS = ['#ef5da8', '#8a5cf6', '#5ac8c8', '#f2913d', '#3a86ff', '#43b581', '#e0518f', '#e9b949'];
-
-const calStartOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-const calAddDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
-const calSameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-const calPad2 = (n) => String(n).padStart(2, '0');
-const calHHMM = (d) => calPad2(d.getHours()) + ':' + calPad2(d.getMinutes());
-
-function calUnfold(text) { return String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n[ \t]/g, ''); }
-function calUnescape(s) { return String(s).replace(/\\n/gi, '\n').replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\'); }
-function calParseDate(val) {
-  if (!val) return null;
-  const m = val.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);
-  if (!m) return null;
-  const y = +m[1], mo = +m[2] - 1, d = +m[3], hh = +(m[4] || 0), mi = +(m[5] || 0), ss = +(m[6] || 0);
-  const date = m[7] ? new Date(Date.UTC(y, mo, d, hh, mi, ss)) : new Date(y, mo, d, hh, mi, ss);
-  return { date, allDay: !m[4] };
-}
-function calParseICS(text) {
-  const lines = calUnfold(text).split('\n');
-  const events = []; let cur = null;
-  for (const line of lines) {
-    if (line === 'BEGIN:VEVENT') { cur = {}; continue; }
-    if (line === 'END:VEVENT') { if (cur && cur.start) events.push(cur); cur = null; continue; }
-    if (!cur) continue;
-    const idx = line.indexOf(':'); if (idx < 0) continue;
-    let key = line.slice(0, idx); const val = line.slice(idx + 1);
-    const semi = key.indexOf(';'); if (semi >= 0) key = key.slice(0, semi);
-    if (key === 'SUMMARY') cur.summary = calUnescape(val);
-    else if (key === 'LOCATION') cur.location = calUnescape(val);
-    else if (key === 'DTSTART') cur.start = calParseDate(val);
-    else if (key === 'DTEND') cur.end = calParseDate(val);
-    else if (key === 'RRULE') cur.rrule = val;
-    else if (key === 'EXDATE') { cur.exdates = cur.exdates || []; for (const part of val.split(',')) { const p = calParseDate(part); if (p) cur.exdates.push(p.date.getTime()); } }
-  }
-  return events;
-}
-function calParseRRule(s) { const out = {}; for (const p of String(s).split(';')) { const kv = p.split('='); if (kv[0]) out[kv[0]] = kv[1]; } return out; }
-function calExpand(ev, color, calName, winStart, winEnd) {
-  const occ = []; if (!ev.start || !ev.start.date) return occ;
-  const durMs = (ev.end && ev.end.date) ? Math.max(0, ev.end.date - ev.start.date) : (ev.start.allDay ? 86400000 : 3600000);
-  const exset = new Set(ev.exdates || []);
-  const push = (sd) => {
-    if (exset.has(sd.getTime())) return;
-    const end = new Date(sd.getTime() + durMs);
-    if (end < winStart || sd > winEnd) return;
-    occ.push({ start: sd, end, allDay: ev.start.allDay, summary: ev.summary || t('(untitled)'), location: ev.location || '', color, calName });
-  };
-  if (!ev.rrule) { push(new Date(ev.start.date)); return occ; }
-  const rule = calParseRRule(ev.rrule);
-  const freq = rule.FREQ, interval = Math.max(1, +(rule.INTERVAL || 1));
-  const count = rule.COUNT ? +rule.COUNT : null;
-  const until = rule.UNTIL ? (calParseDate(rule.UNTIL) || {}).date : null;
-  const byday = rule.BYDAY ? rule.BYDAY.split(',').map((x) => x.replace(/^[+-]?\d+/, '')) : null;
-  const DOW = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
-  let cursor = new Date(ev.start.date), n = 0;
-  for (let i = 0; i < 2000; i++) {
-    if (count != null && n >= count) break;
-    if (until && cursor > until) break;
-    if (cursor > winEnd) break;
-    if (freq === 'WEEKLY' && byday && byday.length) {
-      const weekStart = calAddDays(cursor, -cursor.getDay());
-      for (const bd of byday) {
-        const target = calAddDays(weekStart, DOW[bd] != null ? DOW[bd] : 0);
-        target.setHours(cursor.getHours(), cursor.getMinutes(), cursor.getSeconds(), 0);
-        if (target >= ev.start.date && (!until || target <= until)) push(new Date(target));
-      }
-    } else { push(new Date(cursor)); }
-    n++;
-    if (freq === 'DAILY') cursor = calAddDays(cursor, interval);
-    else if (freq === 'WEEKLY') cursor = calAddDays(cursor, 7 * interval);
-    else if (freq === 'MONTHLY') { const c = new Date(cursor); c.setMonth(c.getMonth() + interval); cursor = c; }
-    else if (freq === 'YEARLY') { const c = new Date(cursor); c.setFullYear(c.getFullYear() + interval); cursor = c; }
-    else break;
-  }
-  return occ;
-}
-
-class CalendarView extends ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.plugin = plugin;
-    const now = new Date();
-    this.viewYear = now.getFullYear(); this.viewMonth = now.getMonth();
-    this.selected = calStartOfDay(now);
-  }
-  getViewType() { return CAL_VIEW_TYPE; }
-  getDisplayText() { return 'Mini Calendar'; }
-  getIcon() { return 'calendar'; }
-  async onOpen() { this.render(); this.loadFeeds(); }
-
-  loadFeeds() { this.plugin.loadCalFeeds(); }   // 抓取集中在 plugin（與迷你月曆共用快取）
-  occurrences(winStart, winEnd) { return this.plugin.calOccurrences(winStart, winEnd); }
-  gotoMonth(delta) {
-    let m = this.viewMonth + delta, y = this.viewYear;
-    while (m < 0) { m += 12; y--; } while (m > 11) { m -= 12; y++; }
-    this.viewMonth = m; this.viewYear = y; this.render();
-  }
-  gotoToday() { const now = new Date(); this.viewYear = now.getFullYear(); this.viewMonth = now.getMonth(); this.selected = calStartOfDay(now); this.render(); }
-
-  render() {
-    const root = this.contentEl; root.empty(); root.addClass('mc-root');
-    const today = calStartOfDay(new Date());
-    const first = new Date(this.viewYear, this.viewMonth, 1);
-    const gridStart = calAddDays(first, -first.getDay());
-    const gridEnd = calAddDays(gridStart, 41);
-    const agendaDays = this.plugin.state.agendaDays || 14;
-    const winStart = calStartOfDay(this.selected < gridStart ? this.selected : gridStart);
-    const winEnd = calAddDays(this.selected, agendaDays) > gridEnd ? calAddDays(this.selected, agendaDays) : gridEnd;
-    const occ = this.occurrences(winStart, calAddDays(winEnd, 1));
-
-    const dotsByDay = new Map();
-    for (const o of occ) {
-      const k = o.start.getFullYear() + '-' + o.start.getMonth() + '-' + o.start.getDate();
-      if (!dotsByDay.has(k)) dotsByDay.set(k, []);
-      const arr = dotsByDay.get(k);
-      if (arr.length < 3 && !arr.includes(o.color)) arr.push(o.color);
-    }
-
-    const head = root.createDiv('mc-head');
-    const title = head.createDiv('mc-title');
-    title.createSpan('mc-month').setText(t(CAL_MONTHS[this.viewMonth]));
-    title.createSpan('mc-year').setText(' ' + this.viewYear);
-    head.createDiv('mc-head-spacer');
-    // 控制鈕收進毛玻璃膠囊（與懸浮工具列同語言）
-    const pill = head.createDiv('mc-toolpill');
-    const prev = pill.createDiv('mc-iconbtn'); setIcon(prev, 'chevron-left'); prev.setAttr('title', t('Previous month')); prev.onclick = () => this.gotoMonth(-1);
-    const todayBtn = pill.createDiv('mc-iconbtn mc-today-btn'); todayBtn.setText(t('Today')); todayBtn.setAttr('title', t('Go to today')); todayBtn.onclick = () => this.gotoToday();
-    const next = pill.createDiv('mc-iconbtn'); setIcon(next, 'chevron-right'); next.setAttr('title', t('Next month')); next.onclick = () => this.gotoMonth(1);
-    const refresh = pill.createDiv('mc-iconbtn'); setIcon(refresh, 'refresh-cw'); refresh.setAttr('title', t('Refresh')); refresh.onclick = () => this.loadFeeds();
-
-    const wk = root.createDiv('mc-weekdays');
-    for (const w of CAL_WEEKDAYS) wk.createSpan('mc-weekday').setText(t(w));
-
-    // 有每日筆記的日子（用快取索引，不每次全掃）
-    const noteDays = this.plugin.buildCalNoteIndex().noteDays;
-
-    const grid = root.createDiv('mc-grid');
-    for (let i = 0; i < 42; i++) {
-      const day = calAddDays(gridStart, i);
-      const cell = grid.createDiv('mc-cell');
-      if (day.getMonth() !== this.viewMonth) cell.addClass('mc-other');
-      if (calSameDay(day, today)) cell.addClass('mc-today');
-      if (calSameDay(day, this.selected)) cell.addClass('mc-selected');
-      if (noteDays.has(day.getFullYear() + '-' + calPad2(day.getMonth() + 1) + '-' + calPad2(day.getDate()))) cell.addClass('mc-hasnote');
-      cell.createSpan('mc-num').setText(String(day.getDate()));
-      const dots = dotsByDay.get(day.getFullYear() + '-' + day.getMonth() + '-' + day.getDate());
-      if (dots && dots.length) { const w = cell.createDiv('mc-dots'); for (const c of dots) { const dd = w.createSpan('mc-dot'); dd.style.background = c; } }
-      cell.onclick = () => { this.selected = calStartOfDay(day); this.render(); };
-    }
-
-    const sheet = root.createDiv('mc-sheet');
-    sheet.createDiv('mc-handle');
-    const list = sheet.createDiv('mc-agenda');
-    this.renderDayNotes(list, this.selected);   // 當日筆記（不依賴 ICS）
-    if (this.plugin.calLoading) { list.createDiv('mc-hint').setText(t('Loading…')); return; }
-    if (!(this.plugin.state.calFeeds || []).some((f) => f.url && f.url.trim())) {
-      list.createDiv('mc-hint').setText(t('No calendars yet. Paste your Google Calendar ICS URL in Settings → Gallery Navigator.'));
-      return;
-    }
-    if (this.plugin.calError) list.createDiv('mc-hint mc-err').setText(this.plugin.calError);
-    buildDayTimeline(list, this.selected, occ);
-  }
-
-  // 當日筆記：①檔名以該日日期開頭的每日筆記 ②當天建立(ctime)的筆記
-  renderDayNotes(container, day) {
-    const dateStr = day.getFullYear() + '-' + calPad2(day.getMonth() + 1) + '-' + calPad2(day.getDate());
-    const idx = this.plugin.buildCalNoteIndex();   // O(1) 查表，不每次全掃
-    const dated = (idx.datedByDay.get(dateStr) || []).slice().sort((a, b) => a.basename.localeCompare(b.basename));
-    const datedSet = new Set(dated.map((f) => f.path));
-    const created = (idx.createdByDay.get(dateStr) || []).filter((f) => !datedSet.has(f.path))
-      .sort((a, b) => a.stat.ctime - b.stat.ctime);
-
-    const sec = container.createDiv('mc-notes');
-    const noteRow = (f, timeLabel) => {
-      const row = sec.createDiv('mc-note');
-      setIcon(row.createSpan('mc-note-icon'), 'file-text');
-      row.createSpan('mc-note-name').setText(f.basename);
-      if (timeLabel) row.createSpan('mc-note-time').setText(timeLabel);
-      // 點行事曆「當天筆記」→ 正常開啟（觸發畫廊同步定位，2026-07-20 使用者要求）。
-      // 之前用 openNoteNoSync 刻意不同步，現改回會同步。
-      row.onclick = () => this.app.workspace.openLinkText(f.path, '', false);
-    };
-    const groupHead = (text, extraClass) => sec.createDiv('mc-notes-head' + (extraClass ? ' ' + extraClass : '')).createSpan('mc-notes-title').setText(text);
-
-    // ① 當日筆記（日期命名）
-    groupHead(t('Daily notes'));
-    if (dated.length) { for (const f of dated) noteRow(f); }
-    else {
-      const add = sec.createDiv('mc-notes-add');
-      setIcon(add.createSpan('mc-note-icon'), 'plus');
-      add.createSpan().setText(t('Create daily note'));
-      add.onclick = () => this.createDailyNote(day);
-    }
-
-    // ② 當天建立（依 ctime）
-    if (created.length) {
-      groupHead(t('Created that day ({{n}})', { n: created.length }), 'mc-notes-head2');
-      for (const f of created) noteRow(f, calHHMM(new Date(f.stat.ctime)));
-    }
-  }
-
-  // 從日曆開筆記：只跳過「這個特定路徑」的同步（避免牽動畫廊跨資料夾重畫），
-  // 不用無差別旗標——否則旗標殘留會被之後「從日記點的連結」誤消耗，害連結不定位（2026-07-20 修）。
-  openNoteNoSync(path) {
-    this.plugin._skipSyncPath = path;
-    window.setTimeout(() => { if (this.plugin._skipSyncPath === path) this.plugin._skipSyncPath = null; }, 1500);   // 安全網：沒觸發就自動清
-    this.app.workspace.openLinkText(path, '', false);
-  }
-
-  async createDailyNote(day) {
-    const dateStr = day.getFullYear() + '-' + calPad2(day.getMonth() + 1) + '-' + calPad2(day.getDate());
-    const wd = t(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day.getDay()]);
-    // 每日筆記資料夾：讀 Obsidian 核心「每日筆記」外掛設定的 folder（跟模板同一套來源）。
-    // （2026-07-20 修：原本寫死中文「每日筆記」→ 別人沒有這個資料夾會建到 vault 根目錄。）
-    let folder = '';
-    try {
-      const dn = this.app.internalPlugins.getPluginById('daily-notes');
-      const df = ((dn && dn.instance && dn.instance.options && dn.instance.options.folder) || '').trim();
-      if (df && this.app.vault.getAbstractFileByPath(df)) folder = df.replace(/\/?$/, '/');
-    } catch (e) { /* 內部 API 變動 → 退回根目錄 */ }
-    let path = folder + dateStr + ' ' + wd + '.md';
-    let f = this.app.vault.getAbstractFileByPath(path);
-    try {
-      if (!f) f = await this.app.vault.create(path, await this.dailyTemplateContent(dateStr, wd));
-      this.openNoteNoSync(f.path);
-      this.render();
-    } catch (e) { new Notice(t('Failed to create: {{msg}}', { msg: e && e.message ? e.message : e })); }
-  }
-
-  // 每日筆記模板：讀「設定 → 行事曆 → 每日筆記模板」指定的筆記，代入變數。
-  // 支援 {{title}}（檔名）、{{date}}（YYYY-MM-DD）、{{time}}（HH:mm）、{{weekday}}（週X）。
-  // 未設定 → 自動沿用 Obsidian 核心「每日筆記」外掛設定的模板（零設定開箱即用）。
-  // 兩者都沒有 → 空白；設了但找不到檔 → 提示並建空白（不擋建立流程）。
-  async dailyTemplateContent(dateStr, wd) {
-    let p = (this.plugin.state.calDailyTemplate || '').trim();
-    if (!p) {
-      try {
-        const dn = this.app.internalPlugins.getPluginById('daily-notes');
-        p = ((dn && dn.instance && dn.instance.options && dn.instance.options.template) || '').trim();
-      } catch (e) { /* 內部 API 變動時安靜退回空白 */ }
-    }
-    if (!p) return '';
-    if (!/\.md$/i.test(p)) p += '.md';   // 核心設定存的路徑不帶副檔名（如 Template/每日筆記）
-    const tf = this.app.vault.getAbstractFileByPath(p);
-    if (!(tf instanceof TFile)) {
-      new Notice(t('Daily note template not found: {{path}} (created a blank note)', { path: p }));
-      return '';
-    }
-    const now = new Date();
-    return (await this.app.vault.cachedRead(tf))
-      .replace(/\{\{\s*title\s*\}\}/gi, dateStr + ' ' + wd)
-      .replace(/\{\{\s*date\s*\}\}/gi, dateStr)
-      .replace(/\{\{\s*time\s*\}\}/gi, calPad2(now.getHours()) + ':' + calPad2(now.getMinutes()))
-      .replace(/\{\{\s*weekday\s*\}\}/gi, (isZh() ? '週' : '') + wd);
-  }
-}
-
-// 單日時間軸（共用：完整檢視 + 迷你月曆 hover 浮層）
-// 左側小時刻度，事件依起訖時間定位成方塊（重疊自動並排）
-function buildDayTimeline(container, day, occ) {
-    const HOUR_H = 50;                       // 每小時高度(px)
-    const PXMIN = HOUR_H / 60;
-    const dayStart = calStartOfDay(day), dayEnd = calAddDays(dayStart, 1);
-    const ds = dayStart.getTime(), de = dayEnd.getTime();
-    const today = calStartOfDay(new Date());
-
-    // 選取日標題
-    const dh = container.createDiv('mc-dayhead');
-    dh.createSpan('mc-dayname').setText(t(CAL_WEEKDAYS_LONG[day.getDay()]));
-    dh.createSpan('mc-daynum').setText(t('{{m}}/{{d}}', { m: day.getMonth() + 1, d: day.getDate() }));
-
-    const dayItems = occ.filter((o) => o.start.getTime() < de && o.end.getTime() > ds);
-    const allDay = dayItems.filter((o) => o.allDay);
-    const timed = dayItems.filter((o) => !o.allDay).map((o) => {
-      const s = Math.max(o.start.getTime(), ds), e = Math.min(o.end.getTime(), de);
-      return { o, startMin: (s - ds) / 60000, endMin: Math.max((e - ds) / 60000, (s - ds) / 60000 + 15) };
-    });
-
-    // 全天事件：頂部藥丸
-    if (allDay.length) {
-      const wrap = container.createDiv('mc-allday');
-      for (const o of allDay) {
-        const p = wrap.createDiv('mc-allday-pill');
-        p.style.setProperty('--mc-c', o.color);
-        p.setText(o.summary);
-      }
-    }
-    if (!timed.length) {
-      if (!allDay.length) container.createDiv('mc-hint').setText(t('No timed events this day.'));
-      return;
-    }
-
-    // 顯示範圍：涵蓋所有事件的整點
-    let startHour = 24, endHour = 0;
-    for (const t of timed) { startHour = Math.min(startHour, Math.floor(t.startMin / 60)); endHour = Math.max(endHour, Math.ceil(t.endMin / 60)); }
-    startHour = Math.max(0, startHour); endHour = Math.min(24, Math.max(endHour, startHour + 1));
-
-    // 重疊分欄（lane）
-    timed.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
-    let cluster = [], curEnd = -1;
-    const clusters = [];
-    for (const t of timed) {
-      if (cluster.length && t.startMin >= curEnd) { clusters.push(cluster); cluster = []; curEnd = -1; }
-      cluster.push(t); curEnd = Math.max(curEnd, t.endMin);
-    }
-    if (cluster.length) clusters.push(cluster);
-    for (const cl of clusters) {
-      const laneEnds = [];
-      for (const t of cl) {
-        let placed = false;
-        for (let i = 0; i < laneEnds.length; i++) { if (t.startMin >= laneEnds[i]) { t.lane = i; laneEnds[i] = t.endMin; placed = true; break; } }
-        if (!placed) { t.lane = laneEnds.length; laneEnds.push(t.endMin); }
-      }
-      for (const t of cl) t.lanes = laneEnds.length;
-    }
-
-    const tl = container.createDiv('mc-timeline');
-    tl.style.height = ((endHour - startHour) * HOUR_H) + 'px';
-    // 小時線 + 標籤
-    for (let h = startHour; h <= endHour; h++) {
-      const y = (h - startHour) * HOUR_H;
-      const line = tl.createDiv('mc-hourline'); line.style.top = y + 'px';
-      const lbl = tl.createDiv('mc-hourlabel'); lbl.style.top = y + 'px'; lbl.setText(calPad2(h % 24) + ':00');
-    }
-    // 現在時間線（僅選取日=今天時）
-    if (calSameDay(day, today)) {
-      const now = new Date();
-      const nowMin = now.getHours() * 60 + now.getMinutes();
-      if (nowMin >= startHour * 60 && nowMin <= endHour * 60) {
-        const nl = tl.createDiv('mc-nowline'); nl.style.top = ((nowMin - startHour * 60) * PXMIN) + 'px';
-      }
-    }
-    // 事件方塊
-    const area = tl.createDiv('mc-events');
-    for (const t of timed) {
-      const b = area.createDiv('mc-block');
-      b.style.setProperty('--mc-c', t.o.color);
-      b.style.top = ((t.startMin - startHour * 60) * PXMIN) + 'px';
-      b.style.height = Math.max(20, (t.endMin - t.startMin) * PXMIN - 2) + 'px';
-      b.style.left = (t.lane / t.lanes * 100) + '%';
-      b.style.width = 'calc(' + (100 / t.lanes) + '% - 3px)';
-      b.createDiv('mc-btime').setText(calHHMM(t.o.start) + (t.o.end - t.o.start >= 60000 ? '–' + calHHMM(t.o.end) : ''));
-      b.createDiv('mc-btitle').setText(t.o.summary);
-      if (t.o.location && (t.endMin - t.startMin) * PXMIN > 44) b.createDiv('mc-bsub').setText(t.o.location);
-    }
-}
-
-class CalendarSettingTab extends PluginSettingTab {
+class GallerySettingTab extends PluginSettingTab {
   constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
 
   /* 小工具：一個功能分組的標題（左對齊、正常字色的 H2） */
@@ -4891,23 +4960,15 @@ class CalendarSettingTab extends PluginSettingTab {
         d.addOption('en', 'English');
         d.addOption('zh-TW', '繁體中文');
         d.setValue(st.lang || '');
-        d.onChange((v) => { st.lang = v; setLang(v); save(); this.display(); this.plugin.refreshViews(); this.plugin.refreshCalViews(); });
+        d.onChange((v) => { st.lang = v; setLang(v); save(); this.display(); this.plugin.refreshViews(); });
       });
 
     /* ══ 1. 卡片牆（核心，永遠啟用） ══ */
     this.group(containerEl, t('Card wall'));
     // 手機欄數設定已移入工具列「⋯ 更多」面板（2026-07-19）
 
-    new Setting(containerEl)
-      .setName(t('Image card layout'))
-      .setDesc(t('How cards with a cover image show their title and date.'))
-      .addDropdown((d) => {
-        d.addOption('overlay', t('Overlay text on image (current)'));
-        d.addOption('stacked', t('Image on top, text below (classic)'));
-        d.addOption('editorial', t('Editorial index card (thumbnail + big date)'));
-        d.setValue(['stacked', 'editorial'].includes(st.imageCardLayout) ? st.imageCardLayout : 'overlay');
-        d.onChange((v) => { st.imageCardLayout = v; save(); this.plugin.refreshViews(); });
-      });
+    // 圖片卡版面已移入工具列「⋯ 更多」面板（2026-08-10）：
+    // 它是「看的時候會想換」的東西，不是「設定一次就忘」的偏好，放在手邊比較合理。
 
     new Setting(containerEl)
       .setName(t('Auto card color from cover image'))
@@ -4945,8 +5006,9 @@ class CalendarSettingTab extends PluginSettingTab {
     this.group(containerEl, t('Image peek'), t('Canvas has no built-in image viewer, so this fills that gap: double-click an image or press Space. Matches the look of the lightbox Obsidian shows in notes. Notes themselves are left to Obsidian.'));
     new Setting(containerEl)
       .setName(t('Enable image peek (Canvas)'))
+      // 即時生效（handler 每次都讀這個開關，模組本身一律啟動）→ 不再提示重載
       .addToggle((tg) => tg.setValue(st.enablePeek !== false)
-        .onChange((v) => { st.enablePeek = v; save(); reloadHint(); this.display(); }));
+        .onChange((v) => { st.enablePeek = v; save(); this.display(); }));
     if (st.enablePeek !== false && this.plugin.renderPeekSettings) {
       this.plugin.renderPeekSettings(containerEl, this.plugin);
     }
@@ -4971,44 +5033,6 @@ class CalendarSettingTab extends PluginSettingTab {
     if (st.enableCleanLink !== false && this.plugin.renderCleanLinkSettings) {
       this.plugin.renderCleanLinkSettings(containerEl, this.plugin);
     }
-
-    /* ══ 4. 行事曆 ══ */
-    this.group(containerEl, t('Calendar'),
-      t('Paste the secret iCal URL of your Google Calendar (Calendar settings → Integrate calendar → URL ending in .ics). Multiple calendars supported, one color each.'));
-    new Setting(containerEl).setName(t('Agenda days')).setDesc(t('How many days ahead the agenda lists events'))
-      .addText((tx) => tx.setValue(String(st.agendaDays || 14))
-        .onChange((v) => { st.agendaDays = Math.max(1, +v || 14); save(); }));
-
-    new Setting(containerEl).setName(t('Daily note template'))
-      .setDesc(t('Applied when creating a daily note from the calendar. Supports {{title}}, {{date}}, {{time}}, {{weekday}}. Leave empty to use the template from the core Daily notes plugin.'))
-      .addText((tx) => {
-        tx.setPlaceholder(t('e.g. Templates/Daily.md')).setValue(st.calDailyTemplate || '')
-          .onChange((v) => { st.calDailyTemplate = v.trim(); save(); });
-        tx.inputEl.style.width = '240px';
-      })
-      .addExtraButton((b) => b.setIcon('search').setTooltip(t('Pick a template note from the vault'))
-        .onClick(() => new FileSuggest(this.app, (f) => {
-          st.calDailyTemplate = f.path; save(); this.display();
-        }, t('Pick a daily note template…')).open()));
-
-    const feeds = st.calFeeds || (st.calFeeds = []);
-    feeds.forEach((feed, idx) => {
-      new Setting(containerEl).setName(t('Calendar {{n}}', { n: idx + 1 }))
-        .addText((tx) => tx.setPlaceholder(t('Name')).setValue(feed.name || '')
-          .onChange((v) => { feed.name = v; save(); }))
-        .addText((tx) => {
-          tx.setPlaceholder(t('ICS URL (.ics)')).setValue(feed.url || '').onChange((v) => { feed.url = v; save(); });
-          tx.inputEl.style.width = '240px';
-        })
-        .addColorPicker((c) => c.setValue(feed.color || CAL_DOT_COLORS[idx % CAL_DOT_COLORS.length])
-          .onChange((v) => { feed.color = v; save(); }))
-        .addExtraButton((b) => b.setIcon('trash').setTooltip(t('Remove'))
-          .onClick(() => { feeds.splice(idx, 1); save(); this.display(); }));
-    });
-    new Setting(containerEl).addButton((b) => b.setButtonText(t('+ Add calendar')).setCta()
-      .onClick(() => { feeds.push({ name: '', url: '', color: CAL_DOT_COLORS[feeds.length % CAL_DOT_COLORS.length] }); save(); this.display(); }));
-    new Setting(containerEl).addButton((b) => b.setButtonText(t('Reload calendars'))
-      .onClick(() => { this.plugin.loadCalFeeds(); new Notice(t('Reloading…')); }));
   }
 }
 
@@ -5585,27 +5609,20 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], favorites: [], pinnedCards: [], calFeeds: [], agendaDays: 14, calDailyTemplate: '', lang: '', openUnfocused: true, imageCardLayout: 'stacked', autoCardColor: false }, await this.loadData());
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], folderLayouts: {}, favorites: [], pinnedCards: [], lang: '', openUnfocused: true, imageCardLayout: 'stacked', autoCardColor: false }, await this.loadData());
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
 
     // 註冊外掛專屬圖示（必須在 registerView / addRibbonIcon 之前）
     addIcon(GN_ICON_ID, GN_ICON_SVG);
 
     this.registerView(VIEW_TYPE, (leaf) => new GalleryView(leaf, this));
-    this.registerView(CAL_VIEW_TYPE, (leaf) => new CalendarView(leaf, this));
 
     this.addRibbonIcon(GN_ICON_ID, 'Gallery Navigator', () => this.activateView());
-    this.addRibbonIcon('calendar', 'Mini Calendar', () => this.activateCalendar());
 
     this.addCommand({
       id: 'open-gallery-navigator',
       name: t('Open Gallery Navigator'),
       callback: () => this.activateView(),
-    });
-    this.addCommand({
-      id: 'open-mini-calendar',
-      name: t('Open Mini Calendar'),
-      callback: () => this.activateCalendar(),
     });
     // 懸浮搜尋：可在 設定→快捷鍵 綁快捷鍵；手機可加到工具列快捷按鈕
     this.addCommand({
@@ -5613,7 +5630,7 @@ class GalleryPlugin extends Plugin {
       name: t('Search (popup)'),
       callback: () => new GnSearchModal(this.app, this).open(),
     });
-    this.addSettingTab(new CalendarSettingTab(this.app, this));
+    this.addSettingTab(new GallerySettingTab(this.app, this));
 
     /* ===== 搜尋索引 =====
        設計：不持久化。索引 4MB，但存成 JSON 會膨脹到 5~10MB，
@@ -5656,13 +5673,9 @@ class GalleryPlugin extends Plugin {
       },
     });
 
-    // 行事曆事件快取（完整檢視 + 迷你月曆共用）
-    this.calRaw = []; this.calLoading = false; this.calError = '';
-    this.loadCalFeeds();
-
     // 連結預覽持久快取索引（筆記路徑 → og:image 下載到 og-cache/ 的檔名）
     this._ogIndex = {};
-    this.loadOgIndex();
+    this._ogLoaded = this.loadOgIndex();   // 存起來：閒置清掃一定要等它完成才能動手
 
     // 圖片長寬比索引（資源路徑 → [w, h]）：讓卡片在圖片載入前就把高度佔好
     this._dimIndex = {};
@@ -5672,15 +5685,20 @@ class GalleryPlugin extends Plugin {
     this.thumbs = new ThumbCache(this);
     this.thumbs.load();
 
+    /* og 圖抓取與 PDF 解析的併發閘（見檔案上方 TaskGate）。
+       手機記憶體與頻寬都更緊，各降一級。 */
+    const isMobileUI = document.body.classList.contains('is-mobile');
+    this.ogGate = new TaskGate(isMobileUI ? 2 : 3);    // 網路 I/O 為主
+    this.pdfGate = new TaskGate(isMobileUI ? 1 : 2);   // readBinary + pdfjs 解碼，最吃記憶體
+
     // 長寬比預取：開資料夾時在背景把整批的長寬比補齊，總高度才能一次算準（見 dims.js）
     this.dimPrefetch = new DimPrefetcher(this);
 
-    // 檔案增刪/改名時，若 View 開著就重畫；同時讓日曆筆記索引失效
+    // 檔案增刪/改名時，若 View 開著就重畫
     // 檔案結構變了 → 資料夾檔案數快取失效（只有增刪改名會影響，內容修改不會）
     // 筆記內容變動 → 只清那一筆封面快取（見 itemFromFile 上方說明）
     this.registerEvent(this.app.metadataCache.on('changed', (f) => invalidateCoverCache(f && f.path)));
     const onVaultChange = () => {
-      this._calNoteDirty = true;
       invalidateFolderCounts();
       invalidateCoverCache();      // 結構變動：封面可能指向被改名/刪除的檔案 → 整份清掉
       this.refreshViews();
@@ -5689,8 +5707,29 @@ class GalleryPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.registerEvent(this.app.vault.on('create', onVaultChange));
     });
-    this.registerEvent(this.app.vault.on('delete', onVaultChange));
-    this.registerEvent(this.app.vault.on('rename', onVaultChange));
+    /* 刪除／改名時同步回收 og 圖與兩份索引。
+       以前兩份索引都以路徑為 key、卻沒人在檔案消失時清掉 → 圖檔與索引項永久成為孤兒。 */
+    this.registerEvent(this.app.vault.on('delete', (f) => { this.forgetCachedFor(f && f.path); onVaultChange(); }));
+    this.registerEvent(this.app.vault.on('rename', (f, oldPath) => { this.renameCachedFor(f && f.path, oldPath); onVaultChange(); }));
+
+    /* 啟動後排一次閒置清掃（只做一次，不常駐）：
+       og-cache 是整個外掛唯一「只會一直長大」的快取，thumb-cache 的 prune 以前也只有
+       設定頁手動觸發。vault 在 iCloud 上時，幾千個沒人用的小檔會一直吃同步額度。
+       ⚠️ 一定要等索引載入完成才掃，否則 keep 集合是空的 → 會把圖全刪光。 */
+    this.app.workspace.onLayoutReady(() => {
+      let alive = true;
+      this.register(() => { alive = false; });
+      const idle = window.requestIdleCallback ? window.requestIdleCallback.bind(window) : ((fn) => setTimeout(fn, 3000));
+      idle(async () => {
+        if (!alive) return;
+        try {
+          await this._ogLoaded;
+          if (!alive) return;
+          await this.pruneOgCache();
+          if (alive && this.thumbs) await this.thumbs.prune();
+        } catch (e) {}
+      });
+    });
 
     // （2026-07-31 移除）imgSrcOf / buildImageMenu / IMG_AREAS 與手機長按選單：
     //   圖片選單改走 setupImageFileMenu() 的 file-menu，桌機右鍵與手機長按都由
@@ -5861,6 +5900,12 @@ class GalleryPlugin extends Plugin {
     const LB = 'lightbox';
     const build = (lb) => {
       if (this.state.enableLightboxActions === false) return;
+      /* ⚠️ 排除**本外掛自己的 Peek 覆層**（2026-08-11）。它為了對齊外觀也掛著 .lightbox
+         （peek.ts 的 `image-peek-overlay lightbox`），同樣是 body 的直接子節點，
+         內部的 .qp-stage 又掛著 .lightbox-media → 下面兩道檢查全都會通過。
+         不排除的話，每開一次 Canvas 預覽就會多注一條膠囊到自己身上，
+         跟它自己的動作列與頁碼疊在一起。 */
+      if (lb.classList.contains('image-peek-overlay')) return;
       if (lb.querySelector('.gn-lb-actions')) return;          // 已經加過
       const media = lb.querySelector('.lightbox-media');
       if (!media) return;                                      // 結構不認得 → 放棄
@@ -5997,7 +6042,14 @@ class GalleryPlugin extends Plugin {
     clearTimeout(this._refreshT);
     this._refreshT = setTimeout(() => {
       this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
-        if (leaf.view instanceof GalleryView && !leaf.view.drag) leaf.view.render();
+        const view = leaf.view;
+        if (!(view instanceof GalleryView) || view.drag) return;
+        /* 畫廊收在側欄、或所在分頁沒被選到時（display:none → clientWidth 0），
+           重建工具列＋左樹＋首批卡片的 DOM 成本是白付的：Masonry 會因為量不到寬度
+           提早 return，排版根本沒做。ig-sync 一次下載 50 張圖就是 50 批白工。
+           改成記個旗標，等它真的被顯示出來（onResize）再畫。 */
+        if (view.contentEl && view.contentEl.clientWidth > 0) view.render();
+        else view._needsRender = true;
       });
     }, 150);
   }
@@ -6079,22 +6131,132 @@ class GalleryPlugin extends Plugin {
   // 連結預覽快取：資料夾與索引檔（放外掛資料夾，不污染 vault 筆記）
   ogCacheDir() { return this.manifest.dir + '/og-cache'; }
   async loadOgIndex() {
+    /* _ogIndexOk：索引「確實反映磁碟現況」才為 true。
+       ⚠️ 這個旗標是 pruneOgCache 的安全鎖：讀檔或 JSON.parse 失敗時（檔案被截斷、
+          iCloud 衝突副本、新舊 session 交錯寫入），索引會是空的**但不是真的沒有圖**，
+          此時若照樣清掃就會把整個 og-cache 刪光。 */
+    this._ogIndexOk = false;
     try {
       const a = this.app.vault.adapter;
       const p = this.ogCacheDir() + '/index.json';
       if (await a.exists(p)) this._ogIndex = JSON.parse(await a.read(p)) || {};
+      this._ogIndexOk = true;   // 乾淨解析，或檔案確實還不存在（全新安裝）
     } catch (e) { this._ogIndex = {}; }
   }
   saveOgIndex() {
+    this._ogDirty = 1;
     clearTimeout(this._ogSaveT);
-    this._ogSaveT = setTimeout(async () => {
-      try {
-        const a = this.app.vault.adapter;
-        const dir = this.ogCacheDir();
-        if (!(await a.exists(dir))) await a.mkdir(dir);
-        await a.write(dir + '/index.json', JSON.stringify(this._ogIndex));
-      } catch (e) {}
-    }, 800);
+    this._ogSaveT = setTimeout(() => { this._writeOgIndex(); }, 800);
+  }
+
+  async _writeOgIndex() {
+    this._ogDirty = 0;
+    try {
+      const a = this.app.vault.adapter;
+      const dir = this.ogCacheDir();
+      if (!(await a.exists(dir))) await a.mkdir(dir);
+      await a.write(dir + '/index.json', JSON.stringify(this._ogIndex));
+    } catch (e) {}
+  }
+
+  // 還有沒寫出去的 og 索引就立刻寫（onunload 用，比照 flushDimIndex）
+  async flushOgIndex() {
+    if (this._ogSaveT) { clearTimeout(this._ogSaveT); this._ogSaveT = 0; }
+    if (this._ogDirty) await this._writeOgIndex();
+  }
+
+  /* ⚠️ 刪除／改名一律要做「前綴比對」，不能只比對單一路徑字串。
+     Obsidian 的 vault delete/rename 對**資料夾**只發資料夾本身那一次事件，
+     底下的每則筆記不會各發一次。只比對單一路徑的話，搬一個資料夾就等於：
+     底下所有筆記的索引 key 全部停留在舊路徑 → 讀不到 → 用新路徑重抓一張新圖，
+     而舊記錄還留在索引裡（所以舊圖檔一直被 keep 保護，prune 也清不掉）
+     → 索引與圖檔雙雙只增不減，正好抵銷清掃機制的意義。
+     這支判斷「path 自己，或 path 底下的任何子路徑」。 */
+  _pathsUnder(obj, base, prefix) {
+    if (!obj) return [];
+    const self = prefix + base;
+    const under = prefix + base + '/';
+    return Object.keys(obj).filter((k) => k === self || k.startsWith(under));
+  }
+
+  /** 檔案／資料夾被刪 → 連同 og 圖檔、og 索引、長寬比索引一起回收（vault delete 事件） */
+  async forgetCachedFor(path) {
+    if (!path) return;
+    const a = this.app.vault.adapter;
+    const og = this._ogIndex;
+    const ogKeys = this._pathsUnder(og, path, '');
+    if (ogKeys.length) {
+      const files = [];
+      for (const k of ogKeys) {
+        if (og[k] && og[k].file) files.push(og[k].file);
+        delete og[k];
+      }
+      this.saveOgIndex();
+      for (const fname of files) {
+        try {
+          const p = this.ogCacheDir() + '/' + fname;
+          if (await a.exists(p)) await a.remove(p);
+        } catch (e) {}
+      }
+    }
+    // 長寬比索引：vault 圖片的 key 是路徑本身，og 圖的是 'og:<筆記路徑>'
+    const dim = this._dimIndex;
+    if (dim) {
+      const keys = this._pathsUnder(dim, path, '').concat(this._pathsUnder(dim, path, 'og:'));
+      for (const k of keys) delete dim[k];
+      if (keys.length) this.saveDimIndex();
+    }
+  }
+
+  /** 改名／搬移 → 索引的 key 跟著搬（不重抓、也不留孤兒；圖檔名不動，靠索引指向） */
+  renameCachedFor(newPath, oldPath) {
+    if (!newPath || !oldPath || newPath === oldPath) return;
+    // 舊 key 換頭：'A/x.md' 在 A→B 時變成 'B/x.md'（前綴長度固定，直接切）
+    const swap = (obj, prefix) => {
+      const keys = this._pathsUnder(obj, oldPath, prefix);
+      for (const k of keys) {
+        const tail = k.slice(prefix.length + oldPath.length);   // '' 或 '/子路徑'
+        obj[prefix + newPath + tail] = obj[k];
+        delete obj[k];
+      }
+      return keys.length;
+    };
+    if (this._ogIndex && swap(this._ogIndex, '')) this.saveOgIndex();
+    const dim = this._dimIndex;
+    if (dim && (swap(dim, '') + swap(dim, 'og:'))) this.saveDimIndex();
+  }
+
+  /* og-cache 裡沒有任何索引項引用的圖檔＝孤兒，清掉。
+     這支會刪檔，所以四道防線一個都不能少：
+       ① 索引必須「確實載入成功」（_ogIndexOk），不能只是「載入完了」——
+          解析失敗時索引是空的，照掃會把整個資料夾刪光。
+       ② 有任務在飛就整輪跳過：正在下載的圖還沒寫進索引，會被誤判成孤兒。
+       ③ keep 在 list() **之後**才蒐集，縮小「快照後才落地的新圖」這個競態窗。
+       ④ 保險絲：索引一張圖都沒有、資料夾卻有一堆檔案 → 一定是哪裡不對，不動手。 */
+  async pruneOgCache() {
+    if (!this._ogIndexOk) return 0;                                    // ①
+    if (this.ogGate && (this.ogGate.busy || this.ogGate.queue.length)) return 0;   // ②
+    try {
+      const a = this.app.vault.adapter;
+      const dir = this.ogCacheDir();
+      if (!(await a.exists(dir))) return 0;
+      const list = await a.list(dir);
+      const files = (list.files || []).filter((f) => {
+        const name = f.split('/').pop();
+        return name !== 'index.json' && name !== 'dims.json';          // 索引檔本身
+      });
+      const keep = new Set();                                          // ③
+      for (const rec of Object.values(this._ogIndex || {})) {
+        if (rec && rec.file) keep.add(rec.file);
+      }
+      if (!keep.size && files.length > 2) return 0;                    // ④
+      let removed = 0;
+      for (const f of files) {
+        if (keep.has(f.split('/').pop())) continue;
+        try { await a.remove(f); removed++; } catch (e) {}
+      }
+      return removed;
+    } catch (e) { return 0; }
   }
 
   async onunload() {
@@ -6102,6 +6264,10 @@ class GalleryPlugin extends Plugin {
     clearTimeout(this._saveT);
     if (this.search) this.search.disposeTimers();   // modify 去抖的待觸發計時器
     await this.flushDimIndex();                     // 長寬比索引改成閒置才寫 → 這裡要補刷
+    /* og 圖與縮圖：圖片檔已落地、索引卻還卡在去抖窗（800ms／1500ms）裡就被停用／更新的話，
+       下次啟動索引對不上 → 重抓重做、舊檔成孤兒。兩者都要補刷。 */
+    await this.flushOgIndex();
+    if (this.thumbs) { try { await this.thumbs.flush(); } catch (e) {} }
     await this.saveData(this.state);
   }
 
@@ -6111,21 +6277,6 @@ class GalleryPlugin extends Plugin {
     if (!leaf) {
       leaf = workspace.getLeftLeaf(false);
       await leaf.setViewState({ type: VIEW_TYPE, active: true });
-    }
-    workspace.revealLeaf(leaf);
-  }
-
-  async activateCalendar() {
-    const { workspace } = this.app;
-    // 確保 dock 在右側邊欄：移除不在右欄的既有日曆分頁（浮動視窗 / 主區）
-    for (const l of workspace.getLeavesOfType(CAL_VIEW_TYPE)) {
-      const inRight = typeof l.getRoot === 'function' && l.getRoot() === workspace.rightSplit;
-      if (!inRight) l.detach();
-    }
-    let leaf = workspace.getLeavesOfType(CAL_VIEW_TYPE)[0];
-    if (!leaf) {
-      leaf = workspace.getRightLeaf(false);
-      await leaf.setViewState({ type: CAL_VIEW_TYPE, active: true });
     }
     workspace.revealLeaf(leaf);
   }
@@ -6167,63 +6318,6 @@ class GalleryPlugin extends Plugin {
       v.render();
     }
   }
-
-  // 只重畫日曆檢視（不重新抓）
-  refreshCalViews() {
-    this.app.workspace.getLeavesOfType(CAL_VIEW_TYPE).forEach((leaf) => {
-      if (leaf.view instanceof CalendarView) leaf.view.render();
-    });
-  }
-
-  // 抓所有 ICS → 解析成事件快取（完整檢視 + 迷你月曆共用）
-  async loadCalFeeds() {
-    if (this._calLoadingLock) return;
-    this._calLoadingLock = true;
-    const feeds = (this.state.calFeeds || []).filter((f) => f.url && f.url.trim());
-    this.calLoading = true; this.calError = ''; this.refreshCalUI();
-    const raw = [];
-    for (let i = 0; i < feeds.length; i++) {
-      const f = feeds[i], color = f.color || CAL_DOT_COLORS[i % CAL_DOT_COLORS.length];
-      try {
-        const res = await requestUrl({ url: f.url.trim(), method: 'GET', throw: false });
-        if (res.status >= 200 && res.status < 300 && res.text) {
-          for (const ev of calParseICS(res.text)) raw.push({ ev, color, calName: f.name || '' });
-        } else { this.calError = t('ICS responded with status {{status}}', { status: res.status }); }
-      } catch (e) { this.calError = t('Fetch failed: {{msg}}', { msg: e && e.message ? e.message : e }); }
-    }
-    this.calRaw = raw; this.calLoading = false;
-    this._calLoadingLock = false;
-    this.refreshCalUI();
-  }
-
-  calOccurrences(winStart, winEnd) {
-    const out = [];
-    for (const r of (this.calRaw || [])) for (const o of calExpand(r.ev, r.color, r.calName, winStart, winEnd)) out.push(o);
-    out.sort((a, b) => a.start - b.start);
-    return out;
-  }
-
-  // 日曆筆記索引（快取；vault 增刪改名才重建）：
-  //  noteDays: 有日期命名筆記的日期集合；datedByDay: 日期→檔; createdByDay: 建立日→檔
-  buildCalNoteIndex() {
-    if (this._calNoteIndex && !this._calNoteDirty) return this._calNoteIndex;
-    const noteDays = new Set(), datedByDay = new Map(), createdByDay = new Map();
-    const push = (map, key, f) => { if (!map.has(key)) map.set(key, []); map.get(key).push(f); };
-    for (const f of this.app.vault.getMarkdownFiles()) {
-      const m = f.basename.match(/^(\d{4}-\d{2}-\d{2})/);
-      if (m) { noteDays.add(m[1]); push(datedByDay, m[1], f); }
-      const d = new Date(f.stat.ctime);
-      push(createdByDay, d.getFullYear() + '-' + calPad2(d.getMonth() + 1) + '-' + calPad2(d.getDate()), f);
-    }
-    this._calNoteDirty = false;
-    this._calNoteIndex = { noteDays, datedByDay, createdByDay };
-    return this._calNoteIndex;
-  }
-
-  // 資料變動 → 更新完整日曆檢視
-  refreshCalUI() {
-    this.refreshCalViews();
-  }
 };
 
-module.exports = { GalleryPlugin, CalendarSettingTab, VIEW_TYPE, CAL_VIEW_TYPE };
+module.exports = { GalleryPlugin, GallerySettingTab, VIEW_TYPE };

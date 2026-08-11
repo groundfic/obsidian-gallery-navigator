@@ -1,7 +1,7 @@
 {
   "name": "gallery-navigator",
   "version": "0.2.0",
-  "description": "Visual vault navigator: folder/tag tree + cover card wall, with built-in image peek and link cards",
+  "description": "Visual vault navigator: folder/tag tree with a cover-image card wall, full-text search (including PDFs), image quick-look, and link preview cards.",
   "main": "main.js",
   "scripts": {
     "dev": "npm run build:css && esbuild src/main.js --bundle --external:obsidian --external:@codemirror/* --format=cjs --outfile=main.js --target=es2020 --watch",

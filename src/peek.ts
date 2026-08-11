@@ -11,7 +11,6 @@ import {
 	Setting,
 	setIcon,
 } from "obsidian";
-import { PinterestPanel } from "./peek-pinterest";
 import { t } from "./i18n.js";
 
 interface QuickPeekSettings {
@@ -25,8 +24,6 @@ interface QuickPeekSettings {
 	mocPath: string;
 	/** 側欄顯示幾張相關縮圖 */
 	relatedCount: number;
-	/** 標題列顯示「找相似」按鈕（Pinterest 以圖搜圖，點了才連線） */
-	pinterestSearch: boolean;
 }
 
 const DEFAULT_SETTINGS: QuickPeekSettings = {
@@ -37,7 +34,6 @@ const DEFAULT_SETTINGS: QuickPeekSettings = {
 	excludeSelectors: '[class*="lcp-"]',
 	mocPath: "",
 	relatedCount: 6,
-	pinterestSearch: false,   // 逆向私有 API → 預設關閉（上架政策），設定可開
 };
 
 interface ResolvedImage {
@@ -128,15 +124,6 @@ interface AppWithDesktopInternals extends App {
 	showInFolder?: (path: string) => void;
 }
 
-type ShareMenuInstance = {
-	popup: (opts: { window: unknown; x: number; y: number }) => void;
-};
-type ShareMenuCtor = new (opts: { filePaths: string[] }) => ShareMenuInstance;
-interface ElectronRemoteLike {
-	ShareMenu?: ShareMenuCtor;
-	getCurrentWindow: () => unknown;
-	require?: (module: string) => { ShareMenu?: ShareMenuCtor } | undefined;
-}
 
 const MIME_BY_EXT: Record<string, string> = {
 	png: "image/png",
@@ -223,6 +210,15 @@ export class PeekModule {
 		time: 0,
 	};
 
+	/** 模組總開關。start() 註冊的 handler 全部先問過這裡：
+	 *  以前只查 settings.dblclickToOpen，所以關掉 enablePeek 而沒重載時，
+	 *  雙擊／Space 預覽照常運作，跟設定頁顯示的狀態互相矛盾。
+	 *  改成每次事件都讀 state → 開關即時生效不必重載；日後就算有人把切換改成
+	 *  「stop() → new PeekModule().start()」，殘留的舊 handler 也不會再作用。 */
+	private get enabled(): boolean {
+		return this.plugin.state?.enablePeek !== false;
+	}
+
 	async start() {
 		this.loadSettings();
 
@@ -263,6 +259,7 @@ export class PeekModule {
 			id: "peek-image",
 			name: "Preview hovered or selected image",
 			callback: () => {
+				if (!this.enabled) return;
 				const img = this.hoveredImg ?? this.focusedCanvasImg();
 				if (img) this.open(img);
 			},
@@ -276,6 +273,7 @@ export class PeekModule {
 	// ---------- 事件 ----------
 
 	private onDblClick = (evt: MouseEvent) => {
+		if (!this.enabled) return;
 		if (!this.settings.dblclickToOpen || this.overlay) return;
 		if (evt.defaultPrevented || evt.button !== 0) return;
 		// 保留 Obsidian 原生的修飾鍵行為
@@ -291,6 +289,7 @@ export class PeekModule {
 
 	private onPointerUp = (evt: PointerEvent) => {
 		if (evt.pointerType === "mouse") return;
+		if (!this.enabled) return;
 		if (!this.settings.dblclickToOpen || this.overlay) return;
 
 		const img = this.previewableImg(evt.target);
@@ -339,6 +338,7 @@ export class PeekModule {
 		if (this.overlay) {
 			return;
 		}
+		if (!this.enabled) return;
 
 		if (!this.settings.spaceToOpen || evt.code !== "Space") return;
 		if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
@@ -530,7 +530,6 @@ class PeekOverlay {
 	private stageEl: HTMLElement;
 	private imgEl: HTMLImageElement;
 	private titleEl: HTMLElement;
-	private counterEl: HTMLElement;
 	private actionsEl: HTMLElement;
 	private sidebarEl: HTMLElement;
 	private relatedEl: HTMLElement;
@@ -539,6 +538,11 @@ class PeekOverlay {
 	private tx = 0;
 	private ty = 0;
 	private closing = false;
+	/** 已銷毀旗標＋關閉動畫的 destroy timer：避免動畫途中 unload 造成雙重 destroy */
+	private destroyed = false;
+	private closeT = 0;
+	/** 面板縮放拖曳中，掛在 document 上的監聽清理函式（destroy 時要收） */
+	private endResizeListeners: (() => void) | null = null;
 
 	/** 多點觸控狀態 */
 	private pointers = new Map<number, { x: number; y: number }>();
@@ -553,11 +557,9 @@ class PeekOverlay {
 
 	private keyScope: Scope;
 	private currentInfo: ResolvedImage | null = null;
-	/** 第二層：Pinterest 找相似（未開啟時為 null） */
-	private pinPanel: PinterestPanel | null = null;
 
 	constructor(
-		private plugin: QuickPeekPlugin,
+		private plugin: PeekModule,
 		private list: HTMLImageElement[],
 		private index: number
 	) {
@@ -619,18 +621,23 @@ class PeekOverlay {
 
 		this.titleEl = header.createDiv({ cls: "qp-title lightbox-titlebar-text" });
 
-		// 手機的動作列是「底部膠囊」，必須掛在面板上、不能掛在標題列底下：
-		// 標題列在手機是 absolute，會變成子元素的 containing block，
-		// 膠囊的 bottom 定位就會相對那條 42px 的標題列，等於被吸到畫面頂端去。
-		this.actionsEl = Platform.isMobile
-			? this.panelEl.createDiv({ cls: "qp-actions" })
-			: header.createDiv({ cls: "qp-actions" });
+		/* 動作列一律掛在面板上、做成底部膠囊 —— 兩個平台同一條路徑（2026-08-11）。
+		   ⚠️ 不能掛在標題列底下，兩個平台各有各的理由：
+		     • lightbox 模式（桌機 Canvas）：標題列是原生的 .lightbox-titlebar ——
+		       它 pointer-events: none，而且在 DOM 上排在舞台**之前** → 同一個堆疊
+		       脈絡下會被 .lightbox-media 蓋住。按鈕等於藏在圖片後面又點不到。
+		       （2026-08-11 之前是靠 gallery.js 注入的膠囊誤打誤撞頂著，
+		         那條注入其實是 bug，排除自己的覆層後才暴露出來。）
+		     • 手機：標題列是 absolute，會變成子元素的 containing block，
+		       膠囊的 bottom 會相對那條 42px 的標題列 → 被吸到畫面頂端去。
+		   掛 gn-lb-actions 是為了直接吃 gallery.css 那組膠囊樣式，
+		   與注入原生 lightbox 的那顆共用同一份定位／底色，不再各寫一份。 */
+		this.actionsEl = this.panelEl.createDiv({ cls: "qp-actions gn-lb-actions" });
 
 		// 舞台
 		this.stageEl = leftEl.createDiv({ cls: "qp-stage lightbox-media" });
 		const wrapEl = this.stageEl.createDiv({ cls: "media-wrapper" });
 		this.imgEl = wrapEl.createEl("img", { cls: "qp-img" });
-		this.counterEl = leftEl.createDiv({ cls: "qp-counter" });
 
 		// 右側欄：相關圖片
 		this.sidebarEl = mainEl.createDiv({ cls: "qp-sidebar" });
@@ -664,9 +671,6 @@ class PeekOverlay {
 		// 載入相關圖片（同 MOC 群組）。非同步，不阻塞主圖顯示
 		void this.loadRelated(info);
 		this.titleEl.setText(info.title);
-		this.counterEl.setText(
-			this.list.length > 1 ? `${this.index + 1} / ${this.list.length}` : ""
-		);
 		this.buildActions(info);
 
 		if (animateFromSource) {
@@ -674,35 +678,14 @@ class PeekOverlay {
 		}
 	}
 
+	/* 膠囊內容要與 gallery.js 注入原生 lightbox 的那顆**完全一致**（2026-08-11）：
+	   同一個外觀出現在筆記與 Canvas 兩個地方，按鈕數卻不一樣會讓人以為壞了。
+	   目前是「複製 + 在 Finder 顯示」兩顆。
+	   ⚠️ 刻意不放「以預設 App 開啟」：lightbox 本身就是預覽器，再開一次系統預覽程式
+	      是重複。獨立版 Image Peek 也是基於同一理由，膠囊裡沒有這顆。 */
 	private buildActions(info: ResolvedImage) {
 		this.actionsEl.empty();
 		if (!this.plugin.settings.showActions) return;
-
-		// 找相似（Pinterest 以圖搜圖）：第二層面板，點了才連線——不預先打 API
-		if (this.plugin.settings.pinterestSearch) {
-			const similarBtn = this.actionsEl.createDiv({
-				cls: "qp-btn",
-				attr: { "aria-label": "Find similar images" },
-			});
-			setIcon(similarBtn, "search");
-			similarBtn.addEventListener("click", () => this.openPinterest(info));
-		}
-
-		// 分享（macOS 桌面用系統分享選單；行動端用系統分享面板）
-		const canShareDesktop =
-			Platform.isDesktop && Platform.isMacOS && !!info.vaultPath;
-		const canShareMobile =
-			Platform.isMobile && typeof navigator.share === "function";
-		if (canShareDesktop || canShareMobile) {
-			const shareBtn = this.actionsEl.createDiv({
-				cls: "qp-btn",
-				attr: { "aria-label": "Share" },
-			});
-			setIcon(shareBtn, "share");
-			shareBtn.addEventListener("click", () => {
-				void this.shareImage(info, shareBtn);
-			});
-		}
 
 		// 複製圖片（所有圖片皆可，含外部圖片）
 		const copyBtn = this.actionsEl.createDiv({
@@ -719,15 +702,6 @@ class PeekOverlay {
 		if (!vaultPath || !Platform.isDesktop) return;
 
 		const app = this.plugin.app as AppWithDesktopInternals;
-		const openBtn = this.actionsEl.createDiv({
-			cls: "qp-btn",
-			attr: { "aria-label": "Open in default app" },
-		});
-		setIcon(openBtn, "external-link");
-		openBtn.addEventListener("click", () => {
-			app.openWithDefaultApp?.(vaultPath);
-		});
-
 		const revealBtn = this.actionsEl.createDiv({
 			cls: "qp-btn",
 			attr: {
@@ -738,94 +712,6 @@ class PeekOverlay {
 		revealBtn.addEventListener("click", () => {
 			app.showInFolder?.(vaultPath);
 		});
-	}
-
-	/** 開第二層：Pinterest 找相似。重複點擊不會疊出第二個面板 */
-	private openPinterest(info: ResolvedImage) {
-		if (this.pinPanel) return;
-		const app = this.plugin.app;
-		const panel = new PinterestPanel(app, info.src, info.title, () =>
-			// 共用取圖路徑：vault 圖讀 binary、外部圖走 requestUrl（避開 CORS）
-			fetchImageBlob(app, info.src, info.vaultPath)
-		);
-		panel.onClosed = () => {
-			this.pinPanel = null;
-		};
-		this.pinPanel = panel;
-	}
-
-	/** 叫出系統分享：macOS 桌面 → Apple 分享選單；行動端 → 系統分享面板。
-	 *  （桌機用 window.require('electron') 取 ShareMenu；已 gate + try/catch + 手機安全，
-	 *   此寫法在獨立版 Image Peek 已通過上架審查，故保留。） */
-	private async shareImage(info: ResolvedImage, anchor: HTMLElement) {
-		// --- macOS 桌面：Electron 原生 ShareMenu ---
-		if (Platform.isDesktop) {
-			try {
-				if (!Platform.isMacOS || !info.vaultPath)
-					throw new Error(t("System share is not supported on this platform"));
-				const w = window as Window & {
-					require?: (module: string) => unknown;
-				};
-				const electron = w.require?.("electron") as
-					| { remote?: ElectronRemoteLike }
-					| undefined;
-				const remote =
-					electron?.remote ??
-					(w.require?.("@electron/remote") as
-						| ElectronRemoteLike
-						| undefined);
-				const ShareMenu =
-					remote?.ShareMenu ?? remote?.require?.("electron")?.ShareMenu;
-				const adapter = this.plugin.app.vault.adapter;
-				const basePath =
-					adapter instanceof FileSystemAdapter
-						? adapter.getBasePath()
-						: null;
-				if (!ShareMenu || !basePath || !remote)
-					throw new Error(t("Could not open the system share sheet"));
-
-				const absPath = `${basePath}/${info.vaultPath}`;
-				const menu = new ShareMenu({ filePaths: [absPath] });
-				const rect = anchor.getBoundingClientRect();
-				menu.popup({
-					window: remote.getCurrentWindow(),
-					x: Math.round(rect.left),
-					y: Math.round(rect.bottom + 4),
-				});
-			} catch (e) {
-				console.error("Image Peek share failed", e);
-				new Notice("System sharing is not supported on this platform");
-			}
-			return;
-		}
-
-		// --- 行動端：Web Share API（帶圖片檔） ---
-		try {
-			const blob = await fetchImageBlob(
-				this.plugin.app,
-				this.imgEl.src,
-				info.vaultPath
-			);
-			const type = blob.type || "image/png";
-			const ext = (type.split("/")[1] ?? "png").replace("jpeg", "jpg");
-			const name = /\.[a-z0-9]+$/i.test(info.title)
-				? info.title
-				: `${info.title || "image"}.${ext}`;
-			const file = new File([blob], name, { type });
-
-			const shareData: ShareData = { files: [file], title: info.title };
-			if (navigator.canShare?.(shareData)) {
-				await navigator.share(shareData);
-			} else if (typeof navigator.share === "function") {
-				await navigator.share({ title: info.title, text: info.title });
-			} else {
-				throw new Error(t("Web Share is not supported"));
-			}
-		} catch (e) {
-			if (e instanceof Error && e.name === "AbortError") return; // 使用者自己取消分享
-			console.error("Image Peek share failed", e);
-			new Notice("Could not share this image");
-		}
 	}
 
 	/** 複製圖片到剪貼簿（一律轉成 PNG，剪貼簿 API 只收 PNG） */
@@ -1026,14 +912,15 @@ class PeekOverlay {
 			});
 		}
 
-		window.setTimeout(() => this.destroy(), reduceMotion ? 0 : 210);
+		// timer 存起來：關閉動畫還在跑時就 unload 的話，destroy 要能把它取消
+		this.closeT = window.setTimeout(() => this.destroy(), reduceMotion ? 0 : 210);
 	}
 
 	destroy() {
-		// 第二層若還開著，一起收掉（避免預覽關閉後留下孤兒層與它的 keyScope）
-		this.pinPanel?.close();
-		this.pinPanel = null;
-
+		if (this.destroyed) return;   // close() 的延遲 destroy 與 unload 可能同時打進來
+		this.destroyed = true;
+		if (this.closeT) { window.clearTimeout(this.closeT); this.closeT = 0; }
+		this.endResizeListeners?.();  // 拖曳中被關掉時，掛在 document 的 resize 監聽要一起收
 		this.plugin.app.keymap.popScope(this.keyScope);
 		this.rootEl.remove();
 		this.onClosed?.();
@@ -1093,44 +980,6 @@ class PeekOverlay {
 			height: `${rect.height}px`,
 		});
 		return rect;
-	}
-
-	/** 桌機：拖標題列移動整個視窗 */
-	private bindHeaderDrag(header: HTMLElement) {
-		header.addClass("qp-draggable");
-		header.addEventListener("pointerdown", (evt: PointerEvent) => {
-			if (evt.button !== 0) return;
-			// 點在按鈕上是要按按鈕，不是要拖視窗
-			if ((evt.target as HTMLElement).closest(".qp-btn")) return;
-			evt.preventDefault();
-
-			const rect = this.lockPanelGeometry();
-			const startX = evt.clientX;
-			const startY = evt.clientY;
-			const { left: L, top: T, width: W, height: H } = rect;
-
-			activeDocument.body.style.cursor = "grabbing";
-
-			const onMove = (e: PointerEvent) => {
-				// 夾在視窗內，避免把面板拖到抓不回來
-				const left = Math.max(
-					0,
-					Math.min(L + (e.clientX - startX), window.innerWidth - W)
-				);
-				const top = Math.max(
-					0,
-					Math.min(T + (e.clientY - startY), window.innerHeight - H)
-				);
-				this.panelEl.setCssStyles({ left: `${left}px`, top: `${top}px` });
-			};
-			const onUp = () => {
-				activeDocument.body.style.cursor = "";
-				activeDocument.removeEventListener("pointermove", onMove);
-				activeDocument.removeEventListener("pointerup", onUp);
-			};
-			activeDocument.addEventListener("pointermove", onMove);
-			activeDocument.addEventListener("pointerup", onUp);
-		});
 	}
 
 	/** 桌機：四邊 + 四角的拖曳把手 */
@@ -1215,13 +1064,21 @@ class PeekOverlay {
 			});
 		};
 
+		/* pointercancel 一定要一起收：iOS 手勢被系統接管（捲動接手、通知橫幅）時只發
+		   pointercancel、不發 pointerup。少了它，監聽會殘留到下一次任意 pointerup 為止，
+		   期間 body 的 cursor 也卡在 resize 樣式。
+		   同時把清理函式存起來，讓拖曳中被 Esc／unload 關掉時 destroy() 能一併收乾淨。 */
 		const onUp = () => {
 			activeDocument.body.style.cursor = "";
 			activeDocument.removeEventListener("pointermove", onMove);
 			activeDocument.removeEventListener("pointerup", onUp);
+			activeDocument.removeEventListener("pointercancel", onUp);
+			if (this.endResizeListeners === onUp) this.endResizeListeners = null;
 		};
+		this.endResizeListeners = onUp;
 		activeDocument.addEventListener("pointermove", onMove);
 		activeDocument.addEventListener("pointerup", onUp);
+		activeDocument.addEventListener("pointercancel", onUp);
 	}
 
 	/** 手機且未放大時，單指拖曳是「下滑關閉」而不是平移 */
@@ -1414,18 +1271,13 @@ export function renderPeekSettings(containerEl: HTMLElement, plugin: any) {
 
 	new Setting(containerEl)
 		.setName(t('Show action buttons'))
-		.setDesc(t('Share / copy / open-in-system buttons in the preview window'))
+		.setDesc(t('Copy / open-in-system buttons in the preview window'))
 		.addToggle((t: any) => t.setValue(s.showActions !== false).onChange((v: boolean) => { s.showActions = v; save(); }));
 
 	new Setting(containerEl)
 		.setName(t('Background blur'))
 		.setDesc(t('Turn off on low-end devices for better performance'))
 		.addToggle((t: any) => t.setValue(s.backdropBlur !== false).onChange((v: boolean) => { s.backdropBlur = v; save(); }));
-
-	new Setting(containerEl)
-		.setName(t('Pinterest visual search'))
-		.setDesc(t('Show a visual search button in the preview window'))
-		.addToggle((t: any) => t.setValue(s.pinterestSearch !== false).onChange((v: boolean) => { s.pinterestSearch = v; save(); }));
 
 	new Setting(containerEl)
 		.setName(t('Excluded images (CSS selectors)'))

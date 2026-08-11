@@ -222,27 +222,57 @@ function canonicalFromHtml(html) {
   return '';
 }
 
+/* 逾時保護：requestUrl 本身沒有 timeout，站台不回應時這個 promise 會一直掛著
+   （右鍵「展開全部」會同時卡住數個）。與 linkcard 的 12s race 同一個做法。 */
+const SHORT_TIMEOUT = 12 * 1000;
+/* 失敗記錄的有效期。失敗時把 raw → raw 存進快取並記時間：
+   命中且值 === raw 就代表「這條剛剛試過、失敗了」，15 分鐘內不再連網。 */
+const SHORT_FAIL_TTL = 15 * 60 * 1000;
+const shortFailTs = new Map();
+
+function withTimeout(promise, ms) {
+  let tm;
+  const timer = new Promise((_, rej) => { tm = setTimeout(() => rej(new Error('timeout')), ms); });
+  // ⚠️ 一定要 clearTimeout：否則每展開一條短連結就留一個 12 秒的 timer 壓住閉包，
+  //    右鍵「展開全部」一次幾十條就是幾十個（比照 linkcard 的同名函式）。
+  return Promise.race([promise, timer]).finally(() => clearTimeout(tm));
+}
+
 /** 展開單一短連結。失敗（離線、被擋、解析不出）一律原樣回傳，不吵不報錯。 */
 async function resolveShortUrl(raw, opt) {
   if (!isMetaShortUrl(raw)) return raw;
-  if (shortCache.has(raw)) return shortCache.get(raw);
+  if (shortCache.has(raw)) {
+    const hit = shortCache.get(raw);
+    if (hit !== raw) return hit;                       // 成功展開過
+    // 已知失敗：時效內直接回傳，過期則清掉重試
+    if (Date.now() - (shortFailTs.get(raw) || 0) < SHORT_FAIL_TTL) return raw;
+    shortCache.delete(raw);
+    shortFailTs.delete(raw);
+  }
+
+  const markFail = () => {
+    shortCache.set(raw, raw);
+    shortFailTs.set(raw, Date.now());
+    return raw;
+  };
 
   try {
-    const res = await requestUrl({
+    const res = await withTimeout(requestUrl({
       url: raw,
       headers: { 'User-Agent': SHORT_UA, 'Accept': 'text/html,application/xhtml+xml' },
       throw: false,
-    });
-    if (!res || res.status >= 400) return raw;
+    }), SHORT_TIMEOUT);
+    if (!res || res.status >= 400) return markFail();
 
     let out = canonicalFromHtml(res.text || '');
-    if (!out || !META_POST_RE.test(out)) return raw;
+    if (!out || !META_POST_RE.test(out)) return markFail();
 
     out = cleanUrl(out, opt);   // 展開後的正式網址本身也可能帶參數
     shortCache.set(raw, out);
+    shortFailTs.delete(raw);
     return out;
   } catch (e) {
-    return raw;
+    return markFail();
   }
 }
 
@@ -369,16 +399,23 @@ class CleanLinkModule {
     const sel = editor.getSelection();
     let added = false;
 
-    /* 全文只讀一次、只掃一次。
-       以前 cleanText(editor.getValue()) 與 findShortUrls(editor.getValue()) 各跑一輪，
-       而 buildMenu 是右鍵選單的同步路徑——幾千行的筆記按右鍵會明顯卡一下。
-       兩者都用惰性求值：只有真的需要那個選單項時才算。 */
+    /* 全文只讀一次、只掃一次，而且**先短路**。
+       buildMenu 是右鍵選單的同步路徑，幾千行的筆記按右鍵會明顯卡一下。
+       以前雖然包成惰性求值，但下面兩個呼叫點是無條件執行的 → 等於每次右鍵都跑
+       兩輪全文 regex，惰性只省掉重複的 getValue()。
+       現在先用最便宜的 indexOf/includes 過濾掉「根本沒有連結」的筆記（多數情況）。 */
     let _all = null;
     const allText = () => (_all === null ? (_all = editor.getValue()) : _all);
     let _whole = null;
     const wholeClean = () => (_whole === null ? (_whole = cleanText(allText(), opt)) : _whole);
     let _shorts = null;
-    const allShorts = () => (_shorts === null ? (_shorts = findShortUrls(allText())) : _shorts);
+    const allShorts = () => {
+      if (_shorts !== null) return _shorts;
+      // 沒有 /share/ 就不可能有 Meta 短連結，省掉一輪 URL_RE 全文掃描
+      return (_shorts = allText().includes('/share/') ? findShortUrls(allText()) : []);
+    };
+    // 整篇連一個 http 都沒有 → 底下兩段全部免談（選取／游標路徑成本本來就有界，不受影響）
+    const hasLink = allText().indexOf('http') >= 0;
 
     if (sel) {
       const r = cleanText(sel, opt);
@@ -404,17 +441,19 @@ class CleanLinkModule {
     }
 
     // 整篇：只在「還有別的地方可淨化」時才出現，避免跟上面那項重複
-    const whole = wholeClean();
-    if (whole.count && (!added || whole.count > 1)) {
-      menu.addItem((i) => i.setTitle(t('Clean all links in this note ({{n}})', { n: whole.count }))
-        .setIcon('eraser')
-        .onClick(() => this.cleanWholeNote(editor)));
+    if (hasLink) {
+      const whole = wholeClean();
+      if (whole.count && (!added || whole.count > 1)) {
+        menu.addItem((i) => i.setTitle(t('Clean all links in this note ({{n}})', { n: whole.count }))
+          .setIcon('eraser')
+          .onClick(() => this.cleanWholeNote(editor)));
+      }
     }
 
     /* ── 短連結 ──
        Threads/IG 的 /share/ 連結把追蹤碼放在路徑裡，砍 query 完全無效，
        只能連網問出正式網址，所以獨立成一項並標明「需連線」。 */
-    if (this.expandEnabled()) {
+    if (hasLink && this.expandEnabled()) {
       const scope = sel || editor.getLine(editor.getCursor().line) || '';
       const here = findShortUrls(scope);
       if (here.length) {

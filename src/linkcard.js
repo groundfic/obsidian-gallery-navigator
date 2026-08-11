@@ -20,6 +20,15 @@ try {
 
 const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const BOT_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
+/* 第三段退路：部分站台只對「連結展開類 bot」提供 og 標籤，對其他 UA 一律回 403。
+   實測 Etsy：Desktop 403、Googlebot 429、facebookexternalhit 403、Slackbot 200 且 og 齊全。
+   （補齊 sec-ch-ua / Sec-Fetch-* 等完整瀏覽器 headers 結果相同，可見差異來自站方對
+     連結預覽用途的白名單，而非 header 內容。）
+   選 Slackbot 是因為它的用途就是「展開連結預覽」，與本外掛做的事情一致。 */
+const PREVIEW_BOT_UA = 'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)';
+/* 語言偏好跟著使用者的環境走，不寫死開發者的地區設定
+   （寫死會讓非中文使用者拿到中文的 og 內容，也是一種輕微指紋） */
+const ACCEPT_LANG = ((typeof navigator !== 'undefined' && navigator.language) || 'en') + ',en;q=0.8';
 const META_TTL = 7 * 24 * 60 * 60 * 1000;
 /* 抓取失敗的指數退避（2026-08-05）。
    原本一律 15 分鐘：含死連結的筆記/Canvas 每次開啟都會重打網路（每個死連結最多兩輪
@@ -401,14 +410,14 @@ async function fetchGenericMeta(url) {
   const hostname = hostOf(url);
   let best = null;
 
-  for (const ua of [DESKTOP_UA, BOT_UA]) {
+  for (const ua of [DESKTOP_UA, BOT_UA, PREVIEW_BOT_UA]) {
     try {
       const res = await requestUrl({
         url,
         headers: {
           'User-Agent': ua,
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'zh-TW,zh;q=0.9,ja;q=0.8,en;q=0.7',
+          'Accept-Language': ACCEPT_LANG,
         },
         throw: false,
       });
@@ -427,9 +436,10 @@ async function fetchGenericMeta(url) {
           hostname,
         };
       }
-      /* 只有「第一輪連標題都抓不到」才發第二輪 UA。
+      /* 只有「這一輪連標題都抓不到」才往下一段 UA。
          以前是「標題和圖片都要有」才收工 → 大量只有標題沒有 og:image 的站
-         每次都被打兩輪請求（各自最長 12 秒，還各佔一個並發名額）。 */
+         每次都被打兩輪請求（各自最長 12 秒，還各佔一個並發名額）。
+         擋下請求的站台其挑戰頁 <title> 剛好就是 hostname，所以會自然掉到第三段。 */
       if (best.title !== hostname) break;
     } catch (e) {
       console.warn('[LCP] fetch failed:', e.message);
@@ -574,7 +584,8 @@ function getCachedMeta(url) {
       連帶佔住並發名額。這裡用 Promise.race 讓「等待」有上限
       （底層請求無法真的中止，但我們不再等它）。 */
 
-const inflight = new Map();      // url → 進行中的 promise
+const inflight = new Map();      // url → 進行中的 meta promise
+const imgInflight = new Map();   // url → 進行中的圖片下載 promise（同畫面同 URL 不重抓）
 const MAX_CONCURRENT = 4;
 const NET_TIMEOUT = 12000;
 let running = 0;
@@ -687,7 +698,8 @@ async function fetchImageBytes(imageUrl, pageUrl) {
     let referer = '';
     try { referer = new URL(pageUrl).origin + '/'; } catch {}
 
-    const res = await requestUrl({
+    // 套既有的 12s race：requestUrl 不吃 AbortController，慢站會讓 promise 一直掛著
+    const res = await withTimeout(requestUrl({
       url: imageUrl,
       headers: {
         'User-Agent': DESKTOP_UA,
@@ -695,7 +707,7 @@ async function fetchImageBytes(imageUrl, pageUrl) {
         'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
       },
       throw: false,
-    });
+    }));
     if (!res || res.status !== 200 || !res.arrayBuffer) return null;
 
     const mime = (res.headers?.['content-type'] || res.headers?.['Content-Type'] || 'image/jpeg').split(';')[0];
@@ -807,6 +819,14 @@ function isDarkTint(tint) {
 /** 取得可顯示的圖片來源：本地快取 → 防盜連 CDN 直接下載 → 直連探測 → 失敗下載補救
  *  尺寸量測結果存進快取（meta.dims），Canvas 重掛載卡片時不必重新解碼圖片 */
 async function resolveImage(pageUrl, meta) {
+  /* 圖片下載的失敗負快取（2026-08-12）。
+     meta.image 指向過期的 IG/FB CDN 簽章網址時（快取裡的 IG 貼文正是此類），
+     下載會 403；以前完全不記錄，於是 7 天 meta TTL 內每次開檔都把整批重發一輪。
+     欄位名 imgFail 刻意避開既有的 img / imageData / dims / tint / poor
+     （meta 會整份序列化進 linkcard-cache.json）。 */
+  if (meta.imgFail && Date.now() - meta.imgFail < failTtl(1) && !hasLocalImage(meta)) {
+    return { src: '', dims: null };
+  }
   // 已有本地圖（新版＝檔案；舊版＝base64，順手遷移成檔案）
   if (hasLocalImage(meta)) {
     if (meta.imageData && !meta.img) {
@@ -822,20 +842,43 @@ async function resolveImage(pageUrl, meta) {
   }
   if (!meta.image) return { src: '', dims: null };
 
-  // 下載回來 → 存成檔案 → 用檔案的 app:// 網址顯示
-  const download = async () => {
-    const got = await fetchImageBytes(meta.image, pageUrl);
-    if (!got) return null;
-    const fname = await persistImageBytes(pageUrl, got.bytes, got.ext);
-    if (fname) meta.img = fname;
-    /* 寫檔失敗（罕見）→ 這一次仍用 data URI 顯示，不寫進快取。
-       只有這條退路才會走到 base64，正常路徑全程都是位元組。 */
-    const src = fname
-      ? imgResource(fname)
-      : 'data:' + got.mime + ';base64,' + arrayBufferToBase64(got.bytes);
-    meta.dims = await loadImageDims(src);
-    state.save();
-    return { src, dims: meta.dims };
+  /* 下載回來 → 存成檔案 → 用檔案的 app:// 網址顯示。
+     ⚠️ 兩個保護沿用既有機制、不另起爐灶：
+       • acquireSlot/releaseSlot：跟 meta 抓取共用同一組 4 併發名額。
+         以前 meta 被限流、但 meta 陸續回來之後的圖片下載可以同時發射數十個。
+       • imgInflight：同一張圖同時被多張卡片要時共用一次下載（比照 meta 的 inflight）。 */
+  const download = () => {
+    const key = cacheKeyOf(pageUrl);
+    const dup = imgInflight.get(key);
+    if (dup) return dup;
+    const job = (async () => {
+      await acquireSlot();
+      let got;
+      try {
+        got = await fetchImageBytes(meta.image, pageUrl);
+      } finally {
+        releaseSlot();
+      }
+      if (!got) {
+        // 記下失敗時間，短期內不再重發（成功時會 delete）
+        meta.imgFail = Date.now();
+        state.save();
+        return null;
+      }
+      delete meta.imgFail;
+      const fname = await persistImageBytes(pageUrl, got.bytes, got.ext);
+      if (fname) meta.img = fname;
+      /* 寫檔失敗（罕見）→ 這一次仍用 data URI 顯示，不寫進快取。
+         只有這條退路才會走到 base64，正常路徑全程都是位元組。 */
+      const src = fname
+        ? imgResource(fname)
+        : 'data:' + got.mime + ';base64,' + arrayBufferToBase64(got.bytes);
+      meta.dims = await loadImageDims(src);
+      state.save();
+      return { src, dims: meta.dims };
+    })().finally(() => imgInflight.delete(key));
+    imgInflight.set(key, job);
+    return job;
   };
 
   if (needsImageProxy(meta.image) || isMetaUrl(pageUrl)) {
@@ -1232,8 +1275,24 @@ async function renderCard(wrap, url, meta, opts = {}) {
 
 /* 拖曳選取期間的穩定機制：
    選取進行中只移除被蓋到的卡片、不把離開選取的行變回卡片，
-   避免卡片高度差造成版面跳動、選取亂飄；放開後才重新結算 */
+   避免卡片高度差造成版面跳動、選取亂飄；放開後才重新結算。
+
+   ⚠️ iOS 點擊被吃掉（2026-08-11，從獨立版 Link Card Preview v1.8.0 移植）：
+   舊版是「按下就算拖曳、放開一律重新結算」，所以每次點擊、甚至每次捲動都會
+   觸發一輪全量重算。桌機沒事是因為 CM6 在 mousedown 就把游標定好了，重算發生在
+   mouseup、順序在後面；但 iOS 的合成 mousedown / click 是 touchend **之後**才送出的，
+   等於把一次 view update 插進「手指放開 → 點擊送達」的空窗 → 那一下被吃掉，
+   使用者得點兩三次才有反應（WikiLink、Base 卡片同理，它們也靠合成 click 觸發）。
+   改成三道閘門，任何一道不成立就不 dispatch：
+     1. 位移超過門檻才算拖曳 —— 單純點一下根本不進入拖曳狀態
+     2. 真的因為拖曳而移除過卡片才需要補回 —— 純捲動不會動到選取，也就不必重算
+     3. dispatch 一律延到下一個 task —— 永不落在 touchend → click 的空窗中間 */
+const DRAG_THRESHOLD = 4;   // px；手指按住本來就會微晃，低於此距離視為單純點擊
+let lcpPointerDown = false;
 let lcpDragging = false;
+let lcpStripped = false;    // 本次手勢真的移除過卡片 → 放開後才需要重新結算
+let lcpStartX = 0;
+let lcpStartY = 0;
 let RefreshAnno = null;
 
 function buildLivePreviewExtension() {
@@ -1291,7 +1350,10 @@ function buildLivePreviewExtension() {
 
       // 單擊＝開啟連結（卡片的主動作）
       // ⌘/Ctrl＋單擊＝選取編輯（次要動作的鍵盤捷徑）
-      container.addEventListener('mousedown', (e) => {
+      // ⚠️ 掛在 inner 不是 container：container 是區塊 widget、佔滿整行寬，
+      //    但卡片只有 420px → 掛 container 會讓卡片右側的空白也能點（2026-08-11 修）。
+      //    inner 的 max-width 就是卡片寬度，點擊範圍因此等於看得見的卡片。
+      inner.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('.lcp-open-btn')) return;
         e.preventDefault();
@@ -1357,6 +1419,50 @@ function buildLivePreviewExtension() {
     return { lines, decos: decosFrom(lines, state) };
   }
 
+  /* docChanged 的增量重掃（2026-08-12）。
+     選取／游標路徑早就優化成 O(候選行) 了，但文件變動仍走全份 scanLines：
+     3000 行的筆記每按一個鍵就是 3000 次 trim+regex（widget 的 eq 保護只擋住 DOM 重建，
+     CPU 照燒）。
+     做法：只有「被這次編輯碰到的行」重跑 URL_LINE，其餘舊候選行用 changes.mapPos
+     平移座標就好——那些行的文字沒變，判定結果自然也不會變。 */
+  function rescanIncremental(value, tr) {
+    const state = tr.state;
+    // 純 Source Mode 不渲染（與 scanLines 同一個前置條件）
+    if (editorLivePreviewField) {
+      const lp = state.field(editorLivePreviewField, false);
+      if (lp === false) return [];
+    }
+    const doc = state.doc;
+    const ranges = [];
+    tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+      ranges.push([doc.lineAt(fromB).number, doc.lineAt(toB).number]);
+    });
+
+    const out = [];
+    const seen = new Set();   // 已處理的行號：避免同一行被排進兩次（重疊的 block 裝飾會讓 CM6 報錯）
+
+    // 1. 受影響的行：重跑 regex
+    for (const [a, b] of ranges) {
+      for (let i = a; i <= b; i++) {
+        if (seen.has(i)) continue;
+        seen.add(i);
+        const line = doc.line(i);
+        const m = line.text.trim().match(URL_LINE);
+        if (m) out.push({ from: line.from, to: line.to, url: m[1] });
+      }
+    }
+    // 2. 其餘舊候選行：只換算新座標
+    for (const ln of value.lines) {
+      const line = doc.lineAt(tr.changes.mapPos(ln.from, 1));
+      if (seen.has(line.number)) continue;
+      seen.add(line.number);
+      out.push({ from: line.from, to: line.to, url: ln.url });
+    }
+
+    out.sort((x, y) => x.from - y.from);
+    return out;
+  }
+
   /* 移除與目前選取重疊的卡片（不新增任何卡片） */
   function stripSelected(decos, state) {
     return decos.update({
@@ -1375,13 +1481,23 @@ function buildLivePreviewExtension() {
   const field = StateField.define({
     create: buildValue,
     update(value, tr) {
-      // 文件真的變了（或外部要求刷新）→ 才重掃候選行
-      if (tr.annotation(RefreshAnno) || tr.docChanged) {
-        return buildValue(tr.state);
+      // 外部要求刷新（設定變更等）→ 全量重建
+      if (tr.annotation(RefreshAnno)) return buildValue(tr.state);
+      // 文件變動 → 只重掃被改到的那幾行，其餘平移座標
+      if (tr.docChanged) {
+        const lines = rescanIncremental(value, tr);
+        return { lines, decos: decosFrom(lines, tr.state) };
       }
       if (tr.selection) {
+        /* 指標還按著、而且已經拉出非空選取 → 視同拖曳中。
+           補的是「滑鼠按下後迅速拖出編輯器」的漏網：那之後 CM 自己接管選取更新，
+           editor 收不到 mousemove，門檻永遠達不到，版面就會在拖曳中跳動 */
+        if (lcpPointerDown && !lcpDragging && !tr.state.selection.main.empty) lcpDragging = true;
         // 拖曳中：只還原被選到的，不變回卡片 → 版面穩定
-        if (lcpDragging) return { lines: value.lines, decos: stripSelected(value.decos, tr.state) };
+        if (lcpDragging) {
+          lcpStripped = true;   // 有移除過 → 放開時才需要重新結算
+          return { lines: value.lines, decos: stripSelected(value.decos, tr.state) };
+        }
         // 一般游標移動：候選行沒變，只重算「這一刻哪些行要讓位給游標」
         return { lines: value.lines, decos: decosFrom(value.lines, tr.state) };
       }
@@ -1390,10 +1506,36 @@ function buildLivePreviewExtension() {
     provide: (f) => EditorView.decorations.from(f, (v) => v.decos),
   });
 
-  // 在編輯器內按下滑鼠／觸控即進入「拖曳中」狀態（放開由 plugin 的全域監聽處理）
+  /* 在編輯器內按下滑鼠／觸控只記起點，**位移超過門檻**才進入「拖曳中」
+     （放開由 plugin 的全域監聽處理）。單純點一下永遠不會進入拖曳狀態，
+     放開時也就不會 dispatch —— 這是 iOS 點擊被吃掉的主因 */
+  const beginPointer = (x, y) => {
+    lcpPointerDown = true;
+    lcpDragging = false;
+    lcpStripped = false;
+    lcpStartX = x;
+    lcpStartY = y;
+  };
+  const movePointer = (x, y) => {
+    if (!lcpPointerDown || lcpDragging) return;   // 已經是拖曳就不用再比，滑鼠移動時這裡會很頻繁
+    if (Math.abs(x - lcpStartX) > DRAG_THRESHOLD || Math.abs(y - lcpStartY) > DRAG_THRESHOLD) {
+      lcpDragging = true;
+    }
+  };
+
   const dragWatch = EditorView.domEventHandlers({
-    mousedown: () => { lcpDragging = true; return false; },
-    touchstart: () => { lcpDragging = true; return false; },
+    mousedown: (e) => { beginPointer(e.clientX, e.clientY); return false; },
+    mousemove: (e) => { movePointer(e.clientX, e.clientY); return false; },
+    touchstart: (e) => {
+      const p = e.touches && e.touches[0];
+      if (p) beginPointer(p.clientX, p.clientY);
+      return false;
+    },
+    touchmove: (e) => {
+      const p = e.touches && e.touches[0];
+      if (p) movePointer(p.clientX, p.clientY);
+      return false;
+    },
   });
 
   return [field, dragWatch];
@@ -1519,20 +1661,31 @@ class LinkCardModule {
       // 放開滑鼠／手指才結束「拖曳中」狀態並重新結算卡片
       // （掛在 document 上：拖到編輯器外放開也要能收尾）
       const endDrag = () => {
-        if (!lcpDragging) return;
+        if (!lcpPointerDown) return;
+        // 兩道閘門都成立才重算：真的拖曳過（位移夠大）、而且真的因此移除過卡片。
+        // 單純點擊與純捲動都會走到這裡，但兩者都不該 dispatch（見上方 iOS 說明）
+        const needsRefresh = lcpDragging && lcpStripped;
+        lcpPointerDown = false;
         lcpDragging = false;
-        if (!RefreshAnno) return;
-        this.app.workspace.iterateAllLeaves((leaf) => {
-          const v = leaf.view;
-          if (v instanceof MarkdownView && v.editor?.cm) {
-            try {
-              v.editor.cm.dispatch({ annotations: RefreshAnno.of(true) });
-            } catch (e) {}
-          }
-        });
+        lcpStripped = false;
+        if (!needsRefresh || !RefreshAnno) return;
+        // 延到下一個 task：保證這輪 CM 更新永遠不會插進 touchend → 合成 click 的空窗
+        window.setTimeout(() => {
+          this.app.workspace.iterateAllLeaves((leaf) => {
+            const v = leaf.view;
+            if (v instanceof MarkdownView && v.editor?.cm) {
+              try {
+                v.editor.cm.dispatch({ annotations: RefreshAnno.of(true) });
+              } catch (e) {}
+            }
+          });
+        }, 0);
       };
       this.plugin.registerDomEvent(document, 'mouseup', endDrag);
       this.plugin.registerDomEvent(document, 'touchend', endDrag);
+      // iOS 手勢被系統接管時（捲動接手、通知橫幅、邊緣滑動）只發 touchcancel、不發 touchend。
+      // 少了這行，lcpDragging 會卡在 true，之後每次選取變動都只移除卡片、不重建
+      this.plugin.registerDomEvent(document, 'touchcancel', endDrag);
     }
 
     // Canvas：把 link node 的內嵌網頁換成 lcp 卡片
@@ -1546,11 +1699,24 @@ class LinkCardModule {
 
       const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!activeView) return;
+      /* handler 掛在 document，所以「背景開著筆記」時，在設定頁輸入框／改名對話框／
+         搜尋列貼上 Meta 連結也會打到這裡，把貼文內文插進背後那份筆記的游標處。
+         貼上的目標必須真的在這個 MarkdownView 裡面才處理。
+         注意：不可改用 evt.defaultPrevented 擋——cleanlink 的淨化貼上會 preventDefault，
+         但本功能仍應照常運作（兩者是刻意疊加的設計）。 */
+      if (!activeView.containerEl.contains(evt.target)) return;
 
       const editor = activeView.editor;
       setTimeout(async () => {
         try {
-          const meta = await fetchMeta(text);
+          /* 短連結先等展開，再對「正式網址」抓 meta。
+             直接拿 /share/ 網址去抓的話，同一則貼文會被 cleanlink（淨化貼上）與這裡
+             各抓一次，而且快取 key 落在短連結上，等於白佔一筆——之後用正式網址開時
+             還得再存一筆。resolveShortUrl 有記憶體快取，cleanlink 剛展開過就直接命中。 */
+          const url = isMetaShortUrl(text)
+            ? await resolveShortUrl(text, this.plugin.cleanlink?.opt)
+            : text;
+          const meta = await fetchMeta(url);
           if (!meta.description) return;
           const cursor = editor.getCursor();
           const insertPos = { line: cursor.line, ch: editor.getLine(cursor.line).length };
@@ -1589,6 +1755,17 @@ class LinkCardModule {
 
     this.plugin.registerEvent(this.app.workspace.on('layout-change', syncCanvasObservers));
     this.plugin.registerEvent(this.app.workspace.on('active-leaf-change', syncCanvasObservers));
+
+    /* 卸載時一次清光所有還活著的 Canvas observer。
+       以前是每次 attachToCanvas 都 plugin.register(cleanup)：cleanup 本身冪等、功能沒問題，
+       但 register 清單會隨著開關 Canvas 的次數一路變長，每個閉包還持有 view 參照。
+       改成在這裡註冊一顆，遍歷 _canvasObservers 即可（cleanup 會自行從 Map 移除）。 */
+    this.plugin.register(() => {
+      for (const cleanup of Array.from(this._canvasObservers.values())) {
+        try { cleanup(); } catch (e) {}
+      }
+    });
+
     syncCanvasObservers();
   }
 
@@ -1638,10 +1815,9 @@ class LinkCardModule {
       view.__lcpAttached = false;
       this._canvasObservers.delete(view);
     };
-    // 集中追蹤所有作用中的 Canvas observer，供 layout-change 時回收殭屍項
+    /* 集中追蹤所有作用中的 Canvas observer：供 layout-change 時回收殭屍項，
+       卸載時也由 setupCanvasPatch 註冊的那一顆統一清掉（不在這裡逐次 plugin.register）。 */
     this._canvasObservers.set(view, cleanup);
-    // 插件卸載時一併清理（LinkCardModule 非 Component，要用 plugin.register）
-    this.plugin.register(cleanup);
     processAll();
   }
 
@@ -1733,7 +1909,10 @@ class LinkCardModule {
 
 /* 設定區塊：由 main.js 的統一設定頁呼叫 */
 function renderLinkCardSettings(containerEl, plugin) {
-  const lc = plugin.state.linkcard || {};
+  /* 總開關為關時 LinkCardModule.start() 不會跑，state.linkcard 也就沒被初始化。
+     以前寫成 `|| {}`，子開關會被寫進一個沒人接住的暫時物件 → saveState 存不到，重載即遺失。
+     這裡直接把預設值就地掛回 state，之後的 onChange 才寫得進真正的設定。 */
+  const lc = plugin.state.linkcard || (plugin.state.linkcard = Object.assign({}, DEFAULT_SETTINGS));
   new Setting(containerEl)
     .setName(t('Insert post text when pasting Threads / Instagram links'))
     .setDesc(t('When off, only the bare link is kept'))
@@ -1752,4 +1931,6 @@ function renderLinkCardSettings(containerEl, plugin) {
       }));
 }
 
-module.exports = { LinkCardModule, renderLinkCardSettings };
+/* downscaleBytes 也給 gallery.js 的 og-cache 用（同一套縮圖邏輯只維護一份）。
+   它是純函式，不碰本模組的 state，可以安全外借。 */
+module.exports = { LinkCardModule, renderLinkCardSettings, downscaleBytes };

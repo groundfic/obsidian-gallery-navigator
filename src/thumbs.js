@@ -36,10 +36,22 @@ const SKIP_UNDER_BYTES = 200 * 1024; // 小於此大小的圖不處理（省下�
 const SKIP_EXT = /\.(gif|svg)$/i;    // GIF 會失去動畫、SVG 是向量，都不轉
 const IS_IMG = /\.(png|jpe?g|webp|bmp|avif)$/i;
 
-function hash32(s) {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
+/* 縮圖檔名用的 hash。
+   ⚠️ 原本是單一 32-bit djb2，數千張圖的規模下生日碰撞約千分之一量級 ——
+      撞到就是兩個不同路徑共用同一個檔名，互相覆蓋、卡片顯示錯圖（很難查的那種 bug）。
+      改成 cyrb53 風格的雙 32-bit 串接（等效 64-bit），碰撞機率降到可忽略。
+   換 hash 不會讓既有縮圖失效：索引存的是實際檔名（見 urlFor），不是每次重算，
+   只有之後新產生的縮圖採用新命名。 */
+function hash64(s) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
 }
 
 class ThumbCache {
@@ -52,6 +64,7 @@ class ThumbCache {
     this.busy = 0;
     this.failed = new Set();  // 失敗過的路徑：本次工作階段不再重試，免得無限重排
     this._saveT = 0;
+    this._dirty = 0;          // 有未落地的索引變更（flush 用）
     // 手機記憶體更緊，一次只做一張；桌機 2 張仍遠低於「全部一起解碼」
     this.concurrency = document.body.classList.contains('is-mobile') ? 1 : 2;
   }
@@ -69,14 +82,27 @@ class ThumbCache {
   }
 
   save() {
+    this._dirty = 1;
     clearTimeout(this._saveT);
-    this._saveT = setTimeout(async () => {
-      try {
-        const a = this.app.vault.adapter;
-        if (!(await a.exists(this.dir()))) await a.mkdir(this.dir());
-        await a.write(this.indexPath(), JSON.stringify(this.index));
-      } catch (e) {}
-    }, 1500);
+    this._saveT = setTimeout(() => { this._write(); }, 1500);
+  }
+
+  async _write() {
+    this._dirty = 0;
+    try {
+      const a = this.app.vault.adapter;
+      if (!(await a.exists(this.dir()))) await a.mkdir(this.dir());
+      await a.write(this.indexPath(), JSON.stringify(this.index));
+    } catch (e) {}
+  }
+
+  /* 未落地的索引立刻寫出（onunload 用，比照 gallery 的 flushDimIndex）。
+     縮圖檔已經寫進 thumb-cache/、索引卻還卡在 1500ms 去抖窗裡就被停用／更新的話，
+     下次啟動索引對不上 → 整批重做，舊檔全成孤兒；更新外掛時新舊 session 的
+     延遲寫入還可能交錯，最壞會用舊資料蓋掉新索引。 */
+  async flush() {
+    if (this._saveT) { clearTimeout(this._saveT); this._saveT = 0; }
+    if (this._dirty) await this._write();
   }
 
   /* 這張圖不值得（或不能）做縮圖 → 呼叫端直接用原圖 */
@@ -217,7 +243,7 @@ class ThumbCache {
       if (!outBlob) throw new Error('toBlob failed');
 
       const bytes = await outBlob.arrayBuffer();
-      const fname = hash32(file.path) + '.jpg';
+      const fname = hash64(file.path) + '.jpg';
       if (!(await a.exists(this.dir()))) await a.mkdir(this.dir());
       await a.writeBinary(this.dir() + '/' + fname, bytes);
 
