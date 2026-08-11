@@ -67,6 +67,16 @@ This plugin makes network requests only for the features below. Nothing is colle
 
 All caches (link previews, PDF thumbnails) are stored locally in the plugin folder.
 
+## What the plugin accesses
+
+| Capability | Why it is needed |
+|---|---|
+| **Listing vault files** (`getFiles`, `getMarkdownFiles`) | The card wall and the folder/tag tree are built from the file list — the plugin has to know which files exist in order to show them. Nothing is sent anywhere; the list stays in memory. |
+| **Reading files** (`cachedRead`) | To resolve a note's cover image, render the text excerpt on a card, and build the search index. |
+| **Writing files** (`create`, `modify`, `rename`, `delete`) | Only in response to an explicit action: creating a note, renaming, moving, batch delete, and the "convert Canvas image to note" command. |
+| **Clipboard** | Only for the copy actions you invoke — copy image, copy wiki-links for the selected cards, and cleaning a pasted URL. |
+| **`localStorage`** | Read-only, and only Obsidian's own `language` key, to follow the interface language. The plugin's own settings are stored through Obsidian's plugin data API (`data.json`) — it never writes to `localStorage`. |
+
 ## Install
 
 Until this plugin is available in the community store, install manually:

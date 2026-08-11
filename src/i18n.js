@@ -7,7 +7,14 @@
    - 設定頁可手動覆寫（''=自動 / 'en' / 'zh-TW'），由 setLang() 注入。
    - 目前只維護 zh-TW 字典；要加語言＝加一個字典 + LANGS 一個 entry。 */
 
-/* localStorage 只在模組載入時讀一次：t() 在卡片/選單建構路徑被大量呼叫，
+/* ⚠️ 這裡的 localStorage 是**唯讀**，而且讀的是 Obsidian 自己的介面語言設定
+      （key 'language' 由 Obsidian 寫入，不是本外掛的資料）。
+
+   本外掛自己的設定一律走官方的 plugin data API（loadData/saveData → data.json），
+   包含使用者在設定頁選的語言覆寫（state.lang）。這裡只是在「自動」模式下
+   偵測該跟隨哪一種語言，never writes：整份程式碼沒有任何 localStorage.setItem。
+
+   只在模組載入時讀一次：t() 會在卡片與選單的建構路徑上被大量呼叫，
    每次都同步讀 localStorage 太貴；改語言本來就需要重載外掛（或走 setLang）。 */
 const OBSIDIAN_LANG = (() => {
   try { return window.localStorage.getItem('language') || 'en'; } catch (e) { return 'en'; }
