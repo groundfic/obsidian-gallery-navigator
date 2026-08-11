@@ -30,10 +30,8 @@
   overflow: hidden;
 }
 /* 細捲軸（macOS overlay 風）：平常「隱形」，捲動中（JS 掛 .gn-scrolling）才浮現 */
-.gn-tree-scroll::-webkit-scrollbar, .gn-main::-webkit-scrollbar,
-.gn-pin-right::-webkit-scrollbar { width: 9px; height: 9px; }
-.gn-tree-scroll::-webkit-scrollbar-thumb, .gn-main::-webkit-scrollbar-thumb,
-.gn-pin-right::-webkit-scrollbar-thumb {
+.gn-tree-scroll::-webkit-scrollbar, .gn-main::-webkit-scrollbar { width: 9px; height: 9px; }
+.gn-tree-scroll::-webkit-scrollbar-thumb, .gn-main::-webkit-scrollbar-thumb {
   background: transparent;                 /* 預設隱形 */
   border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
   transition: background .25s;
@@ -54,25 +52,9 @@
   display: flex; align-items: stretch;
   width: 100%; margin: 0; padding: 0;
 }
-.gn-bar-group {
-  display: flex; align-items: center; gap: 2px;
-  background: transparent; border: none; box-shadow: none; padding: 0;
-}
-.gn-bar-group:empty { display: none; }
-/* 左段（資料夾工具）：寬度由 JS 對齊左欄；底色由 root 的雙欄色塊統一畫，這裡透明 */
-.gn-bar-group:first-child {
-  padding: 6px 8px 6px 10px;
-}
-/* 右段（卡片工具）：填滿右側、靠右 */
-.gn-bar-group:last-child {
-  flex: 1; justify-content: flex-end;
-  padding: 6px 8px;
-}
-
-/* 手機：工具列另有自己的樣式（底部列 + 漸層），左右段不上色 */
-/* display:contents ＝ 讓 barL/barR 兩組「消失成透明」，所有按鈕變成 .gn-bar 的直接子元素，
-   才能靠 .gn-bar 的 justify-content 把每顆按鈕均分（否則只會均分兩個 group、按鈕仍擠在兩角）。 */
-.is-mobile .gn-bar-group { display: contents; background: transparent; border-right: none; padding: 0; }
+/* （2026-08-11 移除）.gn-bar-group 的 5 條規則。手機的 barL/barR 兩段已拿掉，
+   按鈕直接掛在 .gn-bar 上（順序由 JS 的 BAR_ORDER 統一決定）；桌機從 08-10 起
+   走原生膠囊 .nav-buttons-container，也沒用到這個 class。 */
 /* 工具列按鈕（2026-08-10 桌機改吃原生）
    桌機的 .gn-btn 同時掛著 .clickable-icon.nav-action-button（見 mkBarBtn），
    尺寸／圓角／hover／:active 縮放／圖示線寬／aria-disabled 淡化全部由 app.css 與主題提供。
@@ -94,7 +76,7 @@
 
 /* 手機：完全維持 2026-07-19 的原況（使用者確認手機不動），原生 class 不會掛上來 */
 .is-mobile .gn-btn {
-  width: 44px; height: 44px;   /* Apple HIG 觸控標準 44pt（2026-07-19 36→44） */
+  width: var(--gn-bar-btn, 44px); height: var(--gn-bar-btn, 44px);   /* Apple HIG 觸控標準 44pt（2026-07-19 36→44） */
   border-radius: 10px;
   background: transparent;
   border: none;
@@ -164,12 +146,56 @@ body:not(.is-mobile) .gn-split {
   padding: 8px 10px 8px 6px;
 }
 /* 可拖曳分隔桿：平常只露細線，hover 變主題色 */
+/* ═══ 左欄收合／展開的動畫（2026-08-10）═══
+   ⚠️ 要動的是**兩樣東西**，不同步就會露餡：
+     ① .gn-tree 的寬度
+     ② --gn-treew —— 雙欄底色與那條交界線的位置（畫在 .gn-split 的漸層裡）
+   ②「自訂屬性」預設不可補間（瀏覽器把它當字串），必須先用 @property 註冊成 <length>
+      才會被當數值動畫。沒註冊的話左欄會滑、但交界線瞬間跳到終點。
+   ⚠️ transition 只在動畫期間掛（.gn-tree-animating，由 toggleTree 加、renderInner 定時拆）。
+      常駐的話**拖曳分隔線會慢半拍** —— 每幀寫入的寬度都被補間，手感直接壞掉。
+   不支援 @property 的引擎：左欄照樣滑動，只有交界線會跳，不影響功能。 */
+@property --gn-treew {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 232px;
+}
+.gn-tree-animating { transition: --gn-treew .19s cubic-bezier(.2,.7,.2,1); }
+.gn-tree-animating .gn-tree { transition: flex-basis .19s cubic-bezier(.2,.7,.2,1); }
+.gn-tree-animating .gn-tree-scroll { overflow: hidden; }   /* 收合中不要冒出捲軸 */
+
 .gn-split-handle { flex: 0 0 9px; align-self: stretch; cursor: col-resize; position: relative; }
+/* 收合狀態：這條變成「左邊界的展開感應區」而不是拖曳把手（2026-08-10）。
+   ⚠️ 加寬到 14px —— 9px 在畫面最邊緣很難命中，而且此時它是唯一的展開入口之一。
+   ⚠️ 游標改成 pointer：左欄不存在，拖曳沒有任何回饋，用 col-resize 會給錯誤暗示。 */
+.gn-split-handle-collapsed { flex-basis: 14px; cursor: pointer; }
 .gn-split-handle::before {
   content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
   transform: translateX(-50%); background: transparent; transition: background .15s;
 }
-.gn-split-handle:hover::before, .gn-split-handle:active::before { background: var(--interactive-accent); width: 3px; }
+/* 顏色：**灰色，不用主題色**（2026-08-11 改）。
+   原本用 accent 是為了對齊原生 —— Obsidian 自己的 `--divider-color-hover`
+   就定義成 `var(--interactive-accent)`。但這條線貫穿整個視窗高度，
+   用強調色會變成畫面上最搶眼的東西，而它只是一個拖曳把手。
+   改用 `--background-modifier-border-hover`（原生的「hover 狀態邊框」灰，
+   預設是 --color-base-35）：仍會隨主題明暗自動切換，但不搶焦點。 */
+.gn-split-handle:hover::before,
+.gn-split-handle:active::before {
+  /* ⚠️ **兩層**：不透明底色 + 線色疊上去。
+     只寫單一 background 有機率會透 —— 主題對這些顏色變數的定義不一致，
+     有的帶 alpha（Velocity 的 --interactive-accent 就是 rgba(…, .875)）。
+     3px 的細長線一旦半透明，底下的雙欄底色會透上來，整條霧霧的、像沒對齊。
+     與其賭變數有沒有 alpha，不如自己鋪一層不透明底把它合成起來：
+       background-color → 不透明底（--background-primary 一定是實色）
+       background-image → 純色漸層，永遠畫在底色之上
+     這樣不管線色帶不帶 alpha，看到的都是實心的一條。 */
+  background-color: var(--background-primary);
+  background-image: linear-gradient(
+    var(--background-modifier-border-hover, var(--background-modifier-border)),
+    var(--background-modifier-border-hover, var(--background-modifier-border)));
+  width: 3px;
+  border-radius: 2px;
+}
 /* 分隔線上的收合小圓鈕（hover 分隔線 / 側欄時浮出） */
 .gn-split-toggle {
   position: absolute; top: 44px; left: 50%; transform: translateX(-50%);
@@ -183,7 +209,16 @@ body:not(.is-mobile) .gn-split {
   opacity: 0; transition: opacity .12s, background .12s, color .12s;
 }
 .gn-split-toggle svg { width: 13px; height: 13px; }
-.gn-split-toggle:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+/* ⚠️ hover 也要**兩層**。這顆鈕正好疊在分隔線上（z-index: 6），
+   而 Velocity 的 --background-modifier-hover 是 --trans-faint-* 這種半透明值
+   → 只寫 background: var(--background-modifier-hover) 的話，
+     底下那條 accent 分隔線會直接從按鈕裡透出來，看起來像沒填滿。
+   底色鋪不透明的 --background-primary，hover 的色調用 background-image 疊上去。 */
+.gn-split-toggle:hover {
+  color: var(--text-normal);
+  background-color: var(--background-primary);
+  background-image: linear-gradient(var(--background-modifier-hover), var(--background-modifier-hover));
+}
 .gn-tree:hover ~ .gn-split-handle .gn-split-toggle,
 .gn-split-handle:hover .gn-split-toggle { opacity: 1; }
 .is-mobile .gn-split-toggle { display: none; }
@@ -236,7 +271,14 @@ body:not(.is-mobile) .gn-split {
 /* 搜尋欄：長在**膠囊內**，寬度＝退場那幾顆按鈕的實測寬（JS 寫成 inline width），
    所以膠囊總寬前後一致、不會抽動。底色交給膠囊，這裡只放圖示與輸入框。 */
 .gn-bar-search {
-  flex: none; min-width: 0;
+  flex: none;
+  /* ⚠️ 一定要有最低寬度。寬度是**實測退場那幾顆按鈕**得來的（見 morphBarOut），
+     而按鈕尺寸來自主題：Velocity 是 44px 寬，五顆約 220px 夠打字；
+     但 Obsidian 預設主題的 .clickable-icon 只有 ~28px，五顆才 140px —— 打兩個字就滿了。
+     min-width 會蓋過 inline 的 width，所以窄主題下自動撐開。
+     max-width 則避免在超寬按鈕的主題下把工具列吃掉。 */
+  min-width: 200px;
+  max-width: 420px;
   display: flex; align-items: center; gap: 6px;
   height: 32px;                            /* 與 .nav-action-button 同高，膠囊不會被撐開 */
   padding: 0 8px 0 10px;
@@ -308,23 +350,29 @@ body:not(.is-mobile) .gn-bar-merged .nav-header.gn-cluster-open > .nav-buttons-c
   overflow: hidden; text-overflow: ellipsis;
 }
 /* 麵包屑（2026-07-18）：各層可點；斜線灰、間隔寬 */
-.gn-bar-crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
-.gn-crumb2 {
-  cursor: pointer; white-space: nowrap;
-  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
-  color: var(--text-muted);
-  transition: color .12s;
-}
-.gn-crumb2:hover { color: var(--text-normal); }   /* 純變色，無膠囊底（2026-07-18 簡化） */
-.gn-crumb2-cur { color: var(--text-normal); }
-.gn-crumb2-sep { color: var(--text-faint); margin: 0 8px; font-weight: 400; flex: none; }
+/* （2026-08-10 移除）.gn-bar-crumbs / .gn-crumb2*：麵包屑改成只顯示當下資料夾名，
+   整串可點的路徑鏈已下架，上下層改用左欄的資料夾樹。 */
 
+/* 牆內表頭（2026-08-10）：左邊是**當下資料夾名**，右邊是這面牆專屬的控制項（標籤／攤平）。
+   ⚠️ 改成 flex 之後 text-overflow 要移到裡面的 .gn-bar-title-text —— 省略號只作用在
+      「真正裝文字的那個盒子」，掛在 flex 容器上不會生效。 */
 .gn-main-head {
+  display: flex; align-items: center; gap: 8px;
   font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
   color: var(--text-normal);
-  margin: 2px 4px 14px;
+  /* 上 0（工具列下方本來就有留白）、左右 4、下 12＝表頭底緣到卡片頂緣的距離。
+     ⚠️ 2026-08-10 合併：這裡原本有三條同特異度 (0,1,0) 的 .gn-main-head 疊著靠順序決勝，
+        第一條的 margin-bottom: 14px 從頭到尾沒生效過。手機那條（.is-mobile）保留在下方。 */
+  margin: 0 4px 12px;
+  min-height: 32px;   /* 與 .nav-action-button 同高：沒有按鈕時（搜尋牆）標題不會忽高忽低 */
+}
+.gn-main-head > .gn-bar-title-text {
+  flex: 1; min-width: 0;
+  font-size: inherit;   /* 蓋掉 .gn-bar-title-text 的 13px：表頭要用 15px */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 右上角控制項：緊貼右緣，與標題同一行 */
+.gn-head-acts { flex: none; display: flex; align-items: center; gap: 2px; }
 
 
 /* 巢狀資料夾樹：每列 caret + 縮圖 + 名稱 + 數量，縮排依 --gn-depth */
@@ -508,7 +556,13 @@ body:not(.is-mobile) .gn-tnode:not(.gn-thaskids):hover > .gn-tslot > .gn-tthumb 
 .gn-grid { position: relative; }
 .gn-card {
   position: absolute;
-  border-radius: 10px; overflow: hidden; cursor: pointer;
+  /* 圓角：由「⋯ 更多」的滑桿控制（2026-08-11）。
+     ⚠️ 用 var(fallback) 當預設值、不另外寫 `.gn-root { --gn-card-radius: 10px }` ——
+        使用者沒調過時變數就是**真的未定義**，fallback 會生效，等於維持原本的 10px。
+        （這是 fallback 的正確用法；變數「有定義但值不合用」時 fallback 不會救你。）
+     卡片本體、滿版圖、檔型封面三者必須吃同一個值：圖是貼齊卡片邊緣的，
+     兩邊圓角不一致時，角落會露出一圈底色。 */
+  border-radius: var(--gn-card-radius, 10px); overflow: hidden; cursor: pointer;
   /* 卡片＝主底色混 4% 白（2026-07-18 使用者指定「混亮色」）：
      亮色主題＝白卡浮在 ribbon 灰底上（elevated）；深色主題＝比底亮一階的深灰卡 */
   background: color-mix(in srgb, #fff 4%, var(--background-primary));
@@ -528,7 +582,7 @@ body:not(.is-mobile) .gn-card:hover {
   z-index: 2;
 }
 .gn-card.gn-card-dragging { opacity: .4; }
-/* 目前開啟的筆記卡 / 多選中的卡片：外框與選取色都畫在偽元素上。
+/* 目前開啟的筆記卡（淡色塊）/ 多選中的卡片（外框＋選取色）：全部畫在偽元素上。
    ⚠️ 2026-08-09 修正：**不能用 .gn-card 的 outline**。圖片卡的 .gn-body 是
       position:relative + z-index:1 + background:inherit（hover 上滑蓋住圖片下緣用的），
       它會畫在父層 outline 的上面 → 外框跑到文字區的那半段被不透明底色整段蓋掉，
@@ -541,8 +595,28 @@ body:not(.is-mobile) .gn-card:hover {
   content: ''; position: absolute; inset: 0; border-radius: inherit;
   pointer-events: none; z-index: 2;
 }
-.gn-card-active::before { box-shadow: inset 0 0 0 2px var(--interactive-accent); }
-.gn-card-selected::before { box-shadow: inset 0 0 0 3px var(--interactive-accent); }
+/* 目前開啟的筆記卡（同步定位的「目標卡」）：**淡色塊，不畫外框線**（2026-08-11 改）。
+   原本是 1px accent 細框，與多選的 2px 框只差一個像素，並排時分不出來；
+   改成淡色填充後，兩種狀態變成「面 vs 線」的差異，一眼就能區分。
+   ⚠️ 色塊填充要用 --interactive-accent，**不要**用上面細框那套 color-mix 混實色的寫法：
+      混實色是為了讓 1px 線不透出底色（Velocity 把 --interactive-accent 定成 rgba(…,.875)，
+      細線會灰濛濛）。色塊本來就該半透明、讓卡片內容透出來，直接用它才對。 */
+.gn-card-active::before {
+  background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+}
+/* ⚠️ 細線用 color-mix 把 accent 混到**不透明底色**上，得到一個保證實心的顏色。
+   直接用 var(--interactive-accent) 會透（Velocity 定義成 rgba(…, .875)），
+   1px 的框透出卡片底色會灰濛濛。box-shadow 沒辦法像 background 那樣鋪兩層，
+   所以改用 color-mix 先把顏色合成好。 */
+.gn-card-selected::before {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-accent, var(--interactive-accent)) 100%, var(--background-primary));
+}
+/* 同時是「目前開啟」又「被多選」時，兩層淡色會疊成 8%+14%＝22%、明顯偏濁。
+   多選的 14% 已經足夠表達，這裡把 active 那層關掉（外框仍由 selected 畫）。
+   ⚠️ 兩者的 ::before 是**同一個偽元素**，所以只能用 background 覆蓋、不能只靠順序。 */
+.gn-card-active.gn-card-selected::before {
+  background: none;
+}
 .gn-card-active { box-shadow: 0 4px 12px rgba(0,0,0,.1); }
 .gn-card-selected { box-shadow: 0 6px 16px rgba(0,0,0,.18); }
 .gn-card-selected::after {
@@ -582,7 +656,7 @@ body:not(.is-mobile) .gn-card:hover {
 .gn-card.gn-has-img { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
 .gn-card.gn-has-img > img {
   order: 1; width: 100%; margin: 0;
-  border-radius: 10px;                        /* 四角圓角；上緣剛好貼合卡片的 10px 外框 */
+  border-radius: var(--gn-card-radius, 10px);   /* 必須與卡片外框同值，見 .gn-card */
 }
 /* 文字區塊：hover 時整塊往上滑（把標題推上去、蓋住圖片下緣），內文從下方滑進來。
    卡片高度由 JS 鎖住 → 版面完全不動，只有卡片內部在滑。 */
@@ -631,7 +705,7 @@ body:not(.is-mobile) .gn-card:hover {
   order: 1;
   width: 100%; margin: 0;
   aspect-ratio: auto;              /* 取消原 4/3，改用下面的 min-height 對齊圖片卡 */
-  border-radius: 10px;
+  border-radius: var(--gn-card-radius, 10px);   /* 同上，與卡片外框同值 */
 }
 body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; }   /* 桌機 16:9，同圖片卡 */
 .is-mobile .gn-card.gn-has-img .gn-fileicon { min-height: 100cqw; }               /* 手機 1:1，同圖片卡 */
@@ -666,9 +740,22 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 .gn-card-colored .gn-preview,
 .gn-card-colored .gn-date { color: color-mix(in srgb, var(--gn-card-fg) 72%, transparent); }
 
-/* 釘選角標（feature 4） */
+/* 釘選角標（feature 4）
+   位置：**三種版型統一在右上角**（2026-08-11）。原本只有 editorial 是右上（2026-08-04 改的，
+   因為那個版型左上角放標題），Photo／Museum 還留在左上 —— 同一顆角標在不同版型跑到不同角落，
+   切版型時會找不到。統一成右上：三種版型的右上角都是空的（Photo 的文字區在底部、
+   Museum 在圖下方、Editor 的標題已讓出 padding-right）。
+
+   ⚠️ `var(--gn-ed, 1)`：--gn-ed 是 editorial 的整體尺寸倍率，**只定義在 .gn-imgcard-editorial**，
+      另外兩種版型是真的沒有這個變數 → fallback 1 會生效，calc 算出 10px。
+      （這是 fallback 的正確用法：變數「未定義」才啟用。若變數有定義但值不合用，
+        fallback 不會救你 —— 見 08-10 那次 --ribbon-background: transparent 的坑。）
+      這樣寫的好處是不必為 editorial 另寫一條覆寫，日後調整倍率三種版型會一起跟上。 */
 .gn-card-pin {
-  position: absolute; top: 6px; left: 6px; z-index: 4;
+  position: absolute;
+  top: calc(10px * var(--gn-ed, 1));
+  right: calc(10px * var(--gn-ed, 1));
+  z-index: 4;
   width: 26px; height: 26px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%; cursor: pointer;   /* 圓形角標 */
@@ -722,106 +809,6 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
    但主題的 input 選擇器特異度更高 → 有些吃到、有些被蓋掉，兩套混在一起最難看。
    交出去之後，這個輸入框就跟該主題其他輸入框長得一樣。 */
 .gn-input { width: 100%; }
-
-/* Pinterest 找相似：結果視窗（左原圖 / 右結果） */
-.gn-pin-modal { width: min(1040px, 94vw); }
-/* 標題：小一點、低調，並與下方的原圖／結果拉開距離 */
-.gn-pin-title {
-  margin: 0 0 26px !important;
-  font-size: 13px !important; font-weight: 600; letter-spacing: .04em;
-  color: var(--text-muted);
-}
-/* 手機：標題置中，並把視窗頂端多餘的留白收掉（Obsidian 手機版 modal 上方 padding 很厚） */
-.is-mobile .gn-pin-title {
-  text-align: center;
-  margin: 0 0 18px !important;
-  font-size: 12px !important;
-}
-.is-mobile .gn-pin-modal { padding-top: 10px; }
-.is-mobile .gn-pin-modal .modal-content { padding-top: 0; margin-top: 0; }
-.gn-pin-body { display: flex; gap: 26px; align-items: flex-start; }   /* 原圖與結果區拉開 */
-.gn-pin-orig { flex: 0 0 186px; position: sticky; top: 0; }           /* 原圖小一點 */
-.gn-pin-orig-img {
-  width: 100%; height: auto; display: block; border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(0,0,0,.25);
-}
-.gn-pin-orig-name { margin-top: 8px; font-size: 12px; color: var(--text-muted); word-break: break-word; }
-/* 可拖曳分隔桿 */
-.gn-pin-splitter { flex: 0 0 10px; align-self: stretch; cursor: col-resize; position: relative; }
-.gn-pin-splitter::before {
-  content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
-  transform: translateX(-50%); background: var(--background-modifier-border); border-radius: 2px;
-  transition: background .15s;
-}
-.gn-pin-splitter:hover::before, .gn-pin-splitter:active::before { background: var(--interactive-accent); width: 3px; }
-/* 右：結果捲動區。padding-right 讓捲軸離開圖片（不然滑桿會貼在卡片邊上） */
-.gn-pin-right { flex: 1; min-width: 0; max-height: 72vh; overflow-y: auto; padding-right: 14px; }
-.gn-pin-status { color: var(--text-muted); font-size: 12px; margin: 0 0 8px; }
-/* 主題關鍵字 chips */
-.gn-pin-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.gn-pin-chips:empty { display: none; }
-.gn-pin-chip {
-  font-size: 11px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary); color: var(--text-muted);
-}
-.gn-pin-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
-/* JS 瀑布流：結果由 MasonryLayout 絕對定位 */
-.gn-pin-grid { position: relative; }
-/* 無限捲動：載入指示 + 底部哨兵 */
-.gn-pin-more { padding: 4px 0; }
-.gn-pin-loading { text-align: center; font-size: 12px; color: var(--text-faint); padding: 8px 0; }
-.gn-pin-loading:empty { display: none; }
-.gn-pin-sentinel { height: 1px; }
-.gn-pin-cell {
-  position: relative;
-  border-radius: 10px; overflow: hidden; cursor: pointer; background: var(--background-secondary);
-}
-.gn-pin-cell img { width: 100%; height: auto; display: block; }
-
-/* hover 動作列：預覽 / 下載 */
-.gn-pin-actions {
-  position: absolute; inset: 0; display: flex; gap: 14px;
-  align-items: center; justify-content: center;
-  opacity: 0; transition: opacity .15s;
-  background: rgba(0,0,0,.62);              /* hover 時整格壓黑，讓按鈕更跳 */
-}
-.gn-pin-cell:hover .gn-pin-actions,
-.gn-pin-cell-active .gn-pin-actions { opacity: 1; }   /* 手機點格顯示 */
-/* 用 !important 蓋過佈景主題的 modal button 樣式（否則按鈕會被撐滿、變透明） */
-.gn-pin-act {
-  flex: 0 0 auto !important;
-  width: 42px !important; height: 42px !important; min-width: 0 !important;
-  padding: 0 !important; margin: 0 !important; cursor: pointer;
-  display: flex !important; align-items: center; justify-content: center;
-  border: none !important; border-radius: 50% !important;
-  background: #fff !important; color: #111 !important;   /* 一律白底、深色圖示，任何主題都看得到 */
-  box-shadow: 0 2px 10px rgba(0,0,0,.5) !important;
-  transition: transform .12s, color .12s;
-}
-.gn-pin-act:hover { color: var(--interactive-accent) !important; transform: scale(1.12); }
-.gn-pin-act svg { width: 20px !important; height: 20px !important; color: inherit; }
-
-/* 預覽燈箱 */
-.gn-pin-lightbox {
-  position: fixed; inset: 0; z-index: 9999; cursor: zoom-out;
-  background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center;
-}
-.gn-pin-lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.6); }
-
-.is-mobile .gn-pin-body { flex-direction: column; }
-.is-mobile .gn-pin-splitter { display: none; }
-/* 手機：原圖已移進結果捲動區頂端 → 一般區塊、置中、會跟著捲走。縮小並與結果拉開距離 */
-.is-mobile .gn-pin-orig { position: static; width: 40%; margin: 0 auto 26px; }
-.is-mobile .gn-pin-orig-name { margin-top: 6px; text-align: center; font-size: 11px; }
-
-/* GIF 角標（結果是真正的動圖時才出現） */
-.gn-pin-gif-badge {
-  position: absolute; top: 6px; left: 6px; z-index: 3;
-  padding: 1px 6px; border-radius: 5px;
-  font-size: 9px; font-weight: 700; letter-spacing: .06em;
-  background: rgba(0,0,0,.68); color: #fff; pointer-events: none;
-}
 
 /* 手機 / 窄側欄 */
 /* 手機：方案⑤「並排雙欄一起平移」（2026-07-15）
@@ -888,20 +875,23 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
   left: 0; right: 0; bottom: 0; top: auto;   /* 貼齊畫面底邊；再往下就會戳進抽屜、露出色差 */
   z-index: 5;
   width: 100%; max-width: none; margin: 0;
-  padding: 16px 24px 6px;   /* 給漸層淡入一點上緣空間 */
+  padding: var(--gn-bar-pt) 24px 6px;
   border-radius: 0;
   border: none;
-  /* 工具列底＝漸層淡入到 --gn-mobile-bg（跟 root/tree 同色）：大部分是漸層、只有底部一小截實色，
-     所以「看得到的實色灰」很矮，上方長長地柔和淡入（2026-07-20「矮＋漸層多」）。
-     淡入收在同一個灰 → 不會露白帶。⚠️ 需同時停用 snippet 第 3 段的 background:none 才生效。
-     想更矮/漸層更多 → 把 88% 調大（如 92%）；想實色多一點 → 調小（如 75%）。 */
-  background: linear-gradient(to bottom, transparent 0%, var(--gn-mobile-bg) 88%);
+  /* 實色底（2026-08-11 取消漸層）。原本是 `linear-gradient(transparent → --gn-mobile-bg 88%)`，
+     問題是漸層停點只能相對「工具列總高」，跟按鈕的實際位置無關 —— 按鈕從 16px（總高 66px
+     的 24%）就開始，整片都落在半透明區裡，卡片會從圖示背後透出來。
+     改成實色之後這件事從結構上就不存在，不必再調停點。
+     顏色沿用 --gn-mobile-bg（與 root/tree 同色）→ 交界不會露出色差。
+     ⚠️ 需同時停用 snippet 第 3 段的 background:none 才生效。 */
+  background: var(--gn-mobile-bg);
   -webkit-backdrop-filter: none; backdrop-filter: none;
   box-shadow: none;
-  /* 按鈕均分且整體置中（原本 space-between 會把兩組擠到最左最右、中間空一大塊）。
-     配合上方 .gn-bar-group{display:contents}，每顆按鈕之間等距、頭尾也留等距 → 分散對齊置中。 */
+  /* 按鈕均分且整體置中。按鈕是 .gn-bar 的直接子元素（2026-08-11 拿掉 barL/barR 兩段後
+     不必再靠 display:contents 攤平），每顆之間等距、頭尾也留等距 → 分散對齊置中。 */
   justify-content: space-evenly;
 }
+
 /* 手機底色（2026-07-20 三修）：資料夾區與卡片區「一致」。
    手機是左右滑動（不像桌機兩欄並排），桌機那種「左灰右白」在手機滑動時會看到底色跳一下。
    → root（卡片區的底）與 gn-tree（資料夾區）用**同一個** --gn-mobile-bg，滑過去底色不變。
@@ -912,22 +902,36 @@ body.is-mobile {
   /* 兩行漸進增強：舊引擎不支援 color-mix → 丟棄第二行、退回第一行純色，不會變透明/爆色。 */
   --gn-mobile-bg: var(--background-secondary);
   --gn-mobile-bg: color-mix(in srgb, var(--text-normal) 7%, var(--background-primary));
+
+  /* 底部工具列的高度 ＝ 上緣 + 按鈕 + 下緣。
+     ⚠️ 上緣同時是 .is-mobile .gn-bar 的 padding-top 與這條計算式的一項，所以抽成變數
+        —— 兩處各寫一次的話，改一邊就會讓內容區的底部留白對不上（原本 16px 就是這樣）。
+     想讓按鈕更貼近上緣就調小 --gn-bar-pt，工具列高度與內容留白會自動跟上。 */
+  --gn-bar-pt: 8px;                      /* 上緣（2026-08-11 16→8，使用者要求再少一點） */
+  --gn-bar-btn: 44px;                    /* 按鈕（Apple HIG 觸控 44pt） */
+  --gn-bar-h: calc(var(--gn-bar-pt) + var(--gn-bar-btn) + 6px);
 }
 .is-mobile .gn-root { background: var(--gn-mobile-bg); }
 .is-mobile .gn-tree { background: var(--gn-mobile-bg); }
 .is-mobile .gn-split { height: 100%; }   /* 撐滿 gn-root（工具列改絕對定位、不佔 flex 空間） */
-.is-mobile .gn-bar-group:first-child { border-right: none; margin-right: 0; padding-right: 0; }   /* 手機不畫欄界線 */
-.is-mobile .gn-zoom { display: none; }   /* 手機不需縮放滑桿 */
-.is-mobile .gn-tree-scroll, .is-mobile .gn-main { padding-top: 2px; padding-bottom: calc(70px + env(safe-area-inset-bottom)); }   /* 讓內容捲到絕對定位工具列上方，不被擋住 */
-.gn-main-head { margin-top: 0; margin-bottom: 8px; }   /* 右欄標題上方免留白 */
+/* （2026-08-11 移除）.is-mobile .gn-zoom { display:none }。
+   原意是「手機不需要卡片大小滑桿」，但那支滑桿本來就只在桌機 createEl —— 這條規則
+   從寫下來就沒有匹配過任何元素。直到卡片圓角滑桿共用 .gn-zoom 的外觀才「復活」，
+   把一支**該在手機顯示**的滑桿藏起來（只剩標題與數值，看起來像跑版）。
+   ⚠️ 教訓：共用 class 只該承載「外觀」，不要順便夾帶「哪個平台才顯示」的語意。 */
+/* 內容底部留白 ＝ 工具列高 + 安全區。以前寫死 70px 與實際高度（66px）各走各的，
+   工具列一改高就會被擋住或多留一截；改成吃同一個變數。 */
+.is-mobile .gn-tree-scroll, .is-mobile .gn-main { padding-top: 2px; padding-bottom: calc(var(--gn-bar-h) + env(safe-area-inset-bottom)); }
 
 /* 手機：牆內表頭的麵包屑置中 + 放大（2026-07-20 使用者要求）。
    桌機同樣走 .gn-main-head（2026-08-10 麵包屑移回右欄），但只吃上面那組基礎樣式，
    置中與放大是 .is-mobile 專屬，桌機維持左靠 13px。 */
 .is-mobile .gn-main-head { text-align: center; margin-bottom: 12px; }
-.is-mobile .gn-main-head .gn-bar-crumbs { justify-content: center; flex-wrap: wrap; }
-.is-mobile .gn-crumb2 { font-size: 17px; }
-.is-mobile .gn-crumb2-sep { font-size: 17px; margin: 0 6px; }
+/* 有右上角控制項時改左靠（2026-08-11 手機沿用桌機的「名稱在左、按鈕在右」）。
+   ⚠️ 標題是 flex:1，置中的話它只會在「扣掉按鈕後的剩餘空間」裡置中 → 看起來偏左、
+      像沒對齊。class 由 renderNoteWall 在建立 .gn-head-acts 的同一個分支掛上
+      （不用 :has()，上架規範禁用）。搜尋牆／標籤牆沒有按鈕，維持置中。 */
+.is-mobile .gn-main-head.gn-head-has-acts { text-align: left; }
 .is-mobile .gn-bar-title-text { font-size: 17px; }
 
 .is-mobile .gn-tnode { padding-top: 9px; padding-bottom: 9px; }   /* 好點一點 */
@@ -936,154 +940,6 @@ body.is-mobile {
 .is-mobile .gn-tname { font-size: 17px; }                         /* 左欄字再大一點 */
 .is-mobile .gn-tcount { font-size: 12px; }
 .is-mobile .gn-preview { -webkit-line-clamp: 3; font-size: 11px; }
-/* Mini Calendar — 極簡月曆 + agenda */
-.mc-root {
-  padding: 14px 14px 0;
-  height: 100%;
-  display: flex; flex-direction: column;
-  -webkit-font-smoothing: antialiased;
-  font-feature-settings: "tnum";
-}
-
-/* 頂部標題列（2026-07-20 現代化：字距收緊、年份降一階、下方留白加大） */
-.mc-head { display: flex; align-items: center; gap: 8px; margin: 4px 2px 18px; }
-.mc-title { display: flex; align-items: baseline; gap: 6px; }
-.mc-month { font-size: 22px; font-weight: 700; color: var(--text-normal); letter-spacing: -.02em; }
-.mc-year { font-size: 17px; font-weight: 400; color: var(--text-faint); letter-spacing: -.01em; }
-.mc-head-spacer { flex: 1; }
-/* 控制鈕毛玻璃膠囊（與懸浮工具列同語言） */
-/* 工具列與畫廊 .gn-btn 對齊（2026-07-20 統一 UI）：拿掉膠囊容器（底色/邊框/陰影），
-   改扁平；按鈕圓角 10px、圖示 16px，與畫廊工具列一致。 */
-.mc-toolpill {
-  display: flex; align-items: center; gap: 2px;
-  padding: 0; border-radius: 0;
-  background: transparent; border: none; box-shadow: none;
-}
-.mc-iconbtn {
-  min-width: 28px; height: 28px; padding: 0 3px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--text-muted); cursor: pointer; transition: background .12s, color .12s;
-}
-.mc-iconbtn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-.mc-iconbtn svg { width: 16px; height: 16px; }
-.mc-today-btn { font-size: 12px; font-weight: 600; padding: 0 9px; }
-
-/* 星期列（2026-07-20：更小更淡，讓數字成為主角） */
-.mc-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 8px; }
-.mc-weekday { text-align: center; font-size: 10px; font-weight: 600; color: var(--text-faint); letter-spacing: .08em; text-transform: uppercase; }
-
-/* 月曆格（2026-07-20 現代化：圓形日期、扁平無光暈、今天用主題色細環） */
-.mc-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: 1fr; gap: 4px; }
-.mc-cell {
-  position: relative;
-  aspect-ratio: 1 / 1;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  border-radius: 50%;              /* 圓形日期格（Apple/Notion 風），取代 11px 圓角方塊 */
-  cursor: pointer;
-  transition: background .12s, box-shadow .12s;
-}
-.mc-cell:hover { background: var(--background-modifier-hover); }
-.mc-num { font-size: 14px; font-weight: 500; color: var(--text-normal); line-height: 1; }
-.mc-other .mc-num { color: var(--text-faint); }
-/* 今天：主題色細環＋主題色數字（原本是灰環＋800 粗體＝兩種訊號打架） */
-.mc-today { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--interactive-accent) 45%, transparent); }
-.mc-today .mc-num { font-weight: 700; color: var(--interactive-accent); }
-/* 有每日筆記：底線收細（原本 2px 偏重） */
-.mc-hasnote .mc-num { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--interactive-accent) 55%, transparent); }
-.mc-selected.mc-hasnote .mc-num { text-decoration-color: rgba(255,255,255,.8); }
-/* 選取：實心圓，扁平不打光暈 */
-.mc-selected { background: var(--interactive-accent) !important; box-shadow: none !important; }
-.mc-selected .mc-num { color: var(--text-on-accent); font-weight: 600; }
-
-/* 事件圓點 */
-.mc-dots { position: absolute; bottom: 5px; display: flex; gap: 3px; }
-.mc-dot { width: 5px; height: 5px; border-radius: 50%; }
-.mc-selected .mc-dot { box-shadow: 0 0 0 1px rgba(255,255,255,.7); }
-
-/* 下方 agenda（bottom sheet 感） */
-.mc-sheet {
-  flex: 1; min-height: 0;
-  margin: 14px 0 0;
-  padding: 14px 0 8px;
-  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
-  display: flex; flex-direction: column;
-}
-.mc-handle { display: none; }   /* 拿掉 bottom sheet 握把 */
-.mc-agenda { flex: 1; overflow-y: auto; }
-
-.mc-hint { color: var(--text-muted); font-size: 13px; padding: 14px 2px; line-height: 1.6; }
-.mc-err { color: var(--text-error); }
-
-/* 當日筆記 */
-.mc-notes { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 45%, transparent); }
-.mc-notes-head { margin: 0 0 8px; }
-.mc-notes-head2 { margin-top: 14px; }
-.mc-notes-title { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--text-muted); }
-/* 當日筆記列（2026-07-20 現代化）：扁平列表，去掉卡片邊框/底色/浮起陰影，只留 hover 底色。 */
-.mc-note {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px; margin-bottom: 2px; border-radius: 8px; cursor: pointer;
-  background: transparent; border: none;
-  transition: background .12s;
-}
-.mc-note:hover { background: var(--background-modifier-hover); }
-.mc-note-icon { display: flex; flex: none; color: var(--text-muted); }
-.mc-note-icon svg { width: 15px; height: 15px; }
-.mc-note-name { flex: 1; font-size: 13px; color: var(--text-normal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-note-time { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.mc-notes-add {
-  display: flex; align-items: center; gap: 6px;
-  padding: 7px 10px; border-radius: 10px; cursor: pointer; color: var(--text-muted); font-size: 13px;
-  border: 1px dashed color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
-  transition: background .12s, color .12s;
-}
-.mc-notes-add:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-
-.mc-dayhead { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 12px; }
-.mc-dayname { font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--text-normal); }
-.mc-daynum { font-size: 12px; font-weight: 700; color: var(--text-faint); }
-
-/* 全天事件藥丸 */
-.mc-allday { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-/* 去描邊與左側色條（2026-07-20，與時間軸事件方塊同語言）：左右內距對稱。 */
-.mc-allday-pill {
-  position: relative;
-  font-size: 12px; font-weight: 600; color: var(--text-normal);
-  padding: 4px 12px; border-radius: 999px;
-  background: color-mix(in srgb, var(--mc-c) 20%, var(--background-primary));
-  border: none;
-}
-
-/* 時間軸 */
-.mc-timeline { position: relative; margin-left: 2px; }
-.mc-hourline { position: absolute; left: 42px; right: 0; height: 1px; background: color-mix(in srgb, var(--text-normal) 8%, transparent); }
-.mc-hourlabel {
-  position: absolute; left: 0; width: 36px; text-align: right;
-  font-size: 10px; color: var(--text-faint); transform: translateY(-6px);
-  font-variant-numeric: tabular-nums;
-}
-.mc-nowline { position: absolute; left: 42px; right: 0; height: 2px; background: var(--color-red, #e5484d); z-index: 3; }
-.mc-nowline::before { content: ''; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d); }
-
-.mc-events { position: absolute; left: 48px; right: 2px; top: 0; bottom: 0; }
-/* 事件方塊（2026-07-20 現代化）：去陰影與描邊，改「稍濃的色底＋左側色條」＝乾淨色塊。 */
-.mc-block {
-  position: absolute; overflow: hidden;
-  padding: 3px 7px 3px 11px; border-radius: 8px;
-  background: color-mix(in srgb, var(--mc-c) 20%, var(--background-primary));
-  border: none;
-  box-shadow: none;
-}
-/* 左側色條移除（2026-07-20 使用者要求）：靠色底本身辨識行事曆顏色即可。
-   左內距一併收回（原本 11px 是為了讓出色條空間）。 */
-.mc-block { padding-left: 7px; }
-.mc-btime { font-size: 10px; color: var(--text-muted); line-height: 1.2; font-variant-numeric: tabular-nums; }
-.mc-btitle { font-size: 12.5px; font-weight: 600; color: var(--text-normal); line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-bsub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* 手機微調 */
-.is-mobile .mc-month, .is-mobile .mc-year { font-size: 24px; }
-.is-mobile .mc-num { font-size: 15px; }
 
 /* ===================== 交換圖片視窗（2026-07-20）===================== */
 /* 面板底色吃主題 modal 變數（全案規約），換主題不走鐘 */
@@ -1271,25 +1127,9 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
 
 /* 「更多」面板：標籤膠囊區 —— 標籤多時限高 + 捲動（沿用細捲軸樣式）
    上下各一條灰線：明確標出「這是一個被裁切的捲動區」，膠囊切一半時才不會像壞掉 */
-.gn-more-tags {
-  display: flex; flex-wrap: wrap; gap: 5px;
-  max-height: 120px; overflow-y: auto; overscroll-behavior: contain;
-  margin-bottom: 12px;
-  padding: 8px 4px 8px 0;
-  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
-}
-.gn-more-tags::-webkit-scrollbar { width: 9px; }
-.gn-more-tags::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-normal) 20%, transparent);
-  border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
-}
-.gn-more-tags::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-normal) 38%, transparent); background-clip: padding-box;
-}
-.gn-more-tags::-webkit-scrollbar-track { background: transparent; }
-.gn-more-tags .gn-more-chip { align-self: flex-start; }
-.is-mobile .gn-more-tags { max-height: 150px; }
+/* （2026-08-11 移除）.gn-more-tags 的 8 條規則。「⋯ 更多」裡的本夾標籤膠囊已拿掉
+   （手機改用牆內表頭的標籤鈕 + .gn-tagbar），沒有任何 DOM 會命中這個 class 了。
+   ⚠️ .gn-more-chip 要留著 —— fillTagChips() 仍在用（gallery.js:2375）。 */
 
 /* ===== 設定頁：依功能分組，標題用左對齊的 H2（正常字色，不吃主題的彩色 heading） ===== */
 .gn-settings .gn-set-h {
@@ -1371,6 +1211,33 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
 }
 
 
+/* ⚠️⚠️ 新增圖片卡版面前先讀這五點
+   （2026-08-10 加過一個 Library 書櫃版面，連續跑版兩次，最後因為視覺不理想下架；
+     過程中踩到的坑記在這裡，下次不用再踩一遍）：
+
+   ① **一定要把新 class 加進下面每一條的 :not() 鏈**。這區是 overlay（預設）專屬，
+      靠「不是其他版面」界定自己 —— 漏一個，新版面就會同時吃到 overlay 的規則，
+      而這裡的特異度高達 (0,6,2)，新版面自己寫的規則幾乎不可能蓋得過。
+      目前排除：stacked / editorial。
+
+   ② **新版面的規則要先算特異度**。主要對手（都不在本區，容易漏看）：
+        body:not(.is-mobile) .gn-card.gn-has-img > img          (0,3,2)  min-height / object-fit:cover
+        .is-mobile .gn-card.gn-has-img > img                    (0,3,2)  同上
+        body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-body (0,3,2)
+        body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon   (0,4,1)
+      `.gn-root.gn-imgcard-X .gn-card > img` 只有 (0,3,1) → **蓋不過**。
+      要多帶一個結構 class（.gn-has-img 或 :not(.gn-has-img)）把 b 提到 4~5。
+
+   ③ 圖片尺寸**不能用 inset + width:auto**。`<img>` 是置換元素，它的 width:auto 意思是
+      「用圖片的原始寬度」而不是「撐滿 left 與 right 之間」→ right 被忽略、圖片以原尺寸溢出。
+      要明確給 width / height，再交給 object-fit 決定內容怎麼放。
+
+   ④ object-fit: contain 之後**元素框比圖片大**（四周留白）→ 陰影要用 filter: drop-shadow，
+      box-shadow 會畫在那個看不見的框上，看起來像一個跟圖無關的方框。
+
+   ⑤ applyDim() 把圖片長寬比寫成 **inline style**（其他版面靠它預留高度不跳版），
+      只有 !important 蓋得掉。 */
+
 /* ===== 圖片卡版面：兩種可選（2026-07-20 設定 → 卡片牆 → 圖片卡版面）=====
    預設＝「白字疊圖」（本區）；.gn-root 掛 .gn-imgcard-stacked 時整組不生效，
    改用檔案前段（.gn-card.gn-has-img 基礎規則，407 行附近）的「圖上文下」版面。
@@ -1419,7 +1286,10 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
 .gn-root.gn-imgcard-editorial .gn-card,
 .gn-root.gn-imgcard-editorial .gn-card.gn-has-img {
   padding: calc(14px * var(--gn-ed));
-  border-radius: calc(16px * var(--gn-ed));
+  /* 這個版型的圓角本來就比別人大一階（16 : 10 ＝ 1.6×，索引卡的手感）。
+     改吃滑桿的值之後仍維持這個比例：滑桿上限 10（＝現行預設）時這裡算出 16px，
+     與改動前完全一致；滑到 0 時三種版型一起變直角。 */
+  border-radius: calc(var(--gn-card-radius, 10px) * 1.6 * var(--gn-ed));
   background: var(--background-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .05);
 }
@@ -1504,13 +1374,9 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
    縮圖只有 94px，icon+文字並排會太擠 → 文字獨撐、字級略縮以塞進小方塊。 */
 .gn-root.gn-imgcard-editorial .gn-fileicon-ic { display: none; }
 .gn-root.gn-imgcard-editorial .gn-fileicon-label { font-size: 12px; letter-spacing: .1em; }
-/* 釘選角標：2026-08-04 移到**右上角**——左上角現在是標題，圓形角標壓在字上會看不清。
-   右上角是新版面唯一的空白角落。標題同時讓出右側寬度，避免長標題鑽到角標下面。 */
-.gn-root.gn-imgcard-editorial .gn-card-pin {
-  top: calc(10px * var(--gn-ed));
-  right: calc(10px * var(--gn-ed));
-  left: auto;
-}
+/* 釘選角標的**位置**已移到共用規則（三種版型統一右上角，見 .gn-card-pin）。
+   這裡只留這個版型獨有的部分：標題在左上，要讓出右側寬度，長標題才不會鑽到角標下面。
+   （Photo 的文字區在卡片底部、Museum 在圖片下方，都不會跟右上角的角標打架。） */
 .gn-root.gn-imgcard-editorial .gn-card.gn-card-pinned .gn-title { padding-right: calc(30px * var(--gn-ed)); }
 /* 內文預覽：此模式**有圖的卡也要顯示**（覆蓋通用的 .gn-has-img .gn-preview{display:none}；
    JS 端也已在 editorial 模式為圖片卡補建 .gn-preview 並掛延遲載入）。 */
@@ -1617,7 +1483,18 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 @keyframes gn-card-in {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
 }
-.gn-card-in {
+/* ⚠️ **定位好才顯示**，而且這件事與「要不要播進場動畫」**無關**。
+   .gn-card 是 position: absolute，但 left/top（或虛擬牆的 translate）要等到版面引擎
+   跑完才寫 —— 在那之前所有卡片都疊在容器原點，會閃一幀「一疊卡片」。
+   兩個版面引擎（MasonryLayout 與 VirtualWall）寫完座標後掛 .gn-placed。
+
+   ⚠️ 2026-08-10 修正：這個判斷原本掛在 .gn-card-in 上，於是「抑制動畫」
+      （開合左右欄時）連帶把保護也拿掉了 → 卡片又開始閃。
+      定位保護是**修正視覺缺陷**，動畫是**裝飾**，兩者不該綁在同一個 class 上。
+   ⚠️ 用 visibility 不用 display: none —— display 會讓元素量不到 offsetHeight，
+      而虛擬牆的高度校正正是靠量它。 */
+.gn-card:not(.gn-placed) { visibility: hidden; }
+.gn-card-in.gn-placed {
   animation: gn-card-in .22s cubic-bezier(.2,.7,.2,1) backwards;
   animation-delay: calc(var(--gn-i, 0) * 12ms);
 }
@@ -1643,9 +1520,13 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
    ⚠️ 絕對不能常駐：left/top 是版面屬性，每次圖片載入完重排都會補間一次，
       幾百張卡片同時動會掉幀。只在使用者主動拖曳的那幾百毫秒內開啟。 */
 .gn-wall-resizing .gn-card {
+  /* ⚠️ **絕對不能補間 width**（2026-08-10 破圖事故）：
+     MasonryLayout 是讀 el.offsetHeight 來排版，而卡片高度＝欄寬 × 圖片長寬比。
+     width 一旦在補間中，量到的高度就是**中間值**而不是最終值 → 整面牆的高度算錯、
+     卡片之間留下大片空隙，而且 transition 結束後沒有人再重排一次，錯的就定住了。
+     只補間 left/top：位置滑順、寬度瞬間到位，量高度時已經是最終寬。 */
   transition: left .2s cubic-bezier(.2,.7,.2,1),
-              top .2s cubic-bezier(.2,.7,.2,1),
-              width .2s cubic-bezier(.2,.7,.2,1);
+              top .2s cubic-bezier(.2,.7,.2,1);
 }
 
 /* 浮層展開（2026-08-10）：從錨點按鈕那一側「長出來」的感覺。
@@ -1694,9 +1575,13 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 @media (prefers-reduced-motion: reduce) {
   .gn-grid-enter { animation: none; }
   /* 卡片進場與骨架流動：JS 那側由 motionOk() 擋掉，這裡收拾殘留 */
-  .gn-card-in { animation: none; }
+  .gn-card-in, .gn-card-in.gn-placed { animation: none; }
   .gn-card img.gn-img-skeleton { animation: none; }
   .gn-wall-resizing .gn-card { transition: none; }
+  /* 左欄開合：JS 那側由 motionOk() 擋掉（直接 render 不播動畫），這裡收拾殘留 */
+  .gn-tree-animating, .gn-tree-animating .gn-tree { transition: none; }
+  /* .gn-tagbar 的 transition:none 不在這裡 —— 它的主規則寫在本區塊**後面**，
+     而媒體查詢不增加特異度，同為 (0,1,0) 時後定義的贏。改放在主規則之後，見 .gn-tagbar。 */
   /* JS 那側的 staggerPopContent() 由 motionOk() 擋掉（連 class 都不掛），
      這裡收拾容器本身，以及萬一 class 已經在 DOM 上的情況。 */
   .gn-more-pop, .gn-pop-item { animation: none; }
@@ -1764,70 +1649,110 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
 
 .gn-split { position: relative; }
 
-/* ═══ 標籤浮層 .gn-tag-pop（2026-08-10）═══
-   沿革：2026-08-01 是「絕對定位在 .gn-split 上、常駐右欄底部」的面板，
-   左右邊界要靠 syncDockBounds() 實測 .gn-main 的內容框、還要掛 ResizeObserver 跟著
-   分隔線與視窗變化。按鈕集中到合併工具列後改成**從標籤鈕下方展開的浮層**，
-   位置由 openTagPopover() 依按鈕的 getBoundingClientRect() 算一次即可 ——
-   整組 syncDockBounds / _dockRO / --gn-dock-h / .gn-has-dock 底部留白全部不需要了。
-   外觀直接沿用「⋯ 更多」的 .gn-more-pop（同一種浮層語言），這裡只調寬度與內距。 */
-/* 清單式浮層（排序／新建）：取代原生 Menu，與標籤浮層同一種語言。
-   寬度隨內容伸縮（不像 .gn-more-pop 固定 300px），選項字數少時不會空一大半。 */
-.gn-list-pop {
-  width: max-content;
-  min-width: 168px;
-  max-width: min(320px, 88vw);
-  padding: 6px;
-}
-.gn-list-pop .gn-more-row { border-radius: 8px; }
-.gn-list-pop .gn-more-sep { margin: 4px 6px; }
+/* ═══ 內嵌標籤面板 .gn-tagbar（2026-08-10 最終版）═══
+   位置：右欄表頭下方、卡片牆上方。展開時把卡片往下推（不是蓋在上面）。
+   沿革：08-01 右欄底部常駐浮動面板 → 當天改成按鈕下方的浮層 → 最後定案內嵌。
+   內嵌的理由：篩選中這件事一直看得見；而且開合不必重畫，
+   自然沒有浮層版那個「錨點被 rerenderMain 的 empty 清掉」的問題。
 
-.gn-tag-pop {
-  width: 320px;
-  padding: 0;
-  display: flex; flex-direction: column;
-  max-height: 300px;
+   ⚠️ 高度補間 0 ↔ auto：用 **grid-template-rows 0fr ↔ 1fr**，不要用 interpolate-size。
+      2026-08-11 修：原本寫 `interpolate-size: allow-keywords` + `height: 0 ↔ auto`，
+      那是 **Chromium 專屬**特性 —— 桌機是 Electron（Chromium）所以會動，
+      但 **iOS 的 Obsidian 跑在 WKWebView（WebKit）上，完全不支援** → 手機永遠直接跳。
+      當時註解寫「不支援的引擎會直接跳，不影響功能」，實際上那個引擎就是所有 iPhone。
+      grid 的 0fr↔1fr 是 fr 單位之間的補間，三大引擎都支援，也不必像 max-height 猜高度。
+      → 規約：**手機用的動畫，先確認該特性在 WebKit 有沒有支援**，不要只在桌機驗證。
+   ⚠️ .gn-tagbar-inner 必須 `min-height: 0` —— grid item 預設 min-height:auto，
+      不歸零的話 0fr 壓不下去，收合時會留一整塊。
+   ⚠️⚠️ 而且 .gn-tagbar-inner **不能有 padding**（2026-08-11 二修）。
+      `0fr` 展開是 `minmax(auto, 0fr)`，軌道的自動最小值取格線項目的**外框**最小尺寸；
+      `min-height: 0` 只歸零內容框，而全域是 box-sizing: border-box，
+      外框最小值仍然是 padding 本身（2 + 14 ＝ 16px）→ 軌道解析成 16px 不是 0，
+      收合時會露出一條 16px 的晶片。padding 因此改掛在 .gn-tagbar-open 上：
+      收合時整個外層沒有 padding，才真的能收到 0。
+   ⚠️ overflow: hidden 是必要的：收合時裡面的晶片要被裁掉，否則高度 0 也看得到。 */
+.gn-tagbar {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  /* padding 一起補間：只切 grid-template-rows 的話，收合瞬間 padding 會直接消失、
+     內容跳一下 16px。 */
+  transition: grid-template-rows .2s cubic-bezier(.2,.7,.2,1),
+              padding .2s cubic-bezier(.2,.7,.2,1);
 }
-/* 標籤浮層的內距（2026-08-10 加大）：晶片本身有圓角膠囊底，貼太近邊緣時
-   兩層圓角會擠在一起、看起來很侷促。左右 16px、上下留白也一併放寬。 */
-.gn-dock-head {
-  flex: none;
-  display: flex; align-items: center; gap: 8px;
-  padding: 14px 16px 10px;
+.gn-tagbar-open {
+  grid-template-rows: 1fr;
+  padding: 2px 4px 14px;   /* 下方留白＝與卡片牆的距離（收合時為 0，見上方說明） */
 }
-.gn-dock-title {
-  flex: 1; min-width: 0;
-  font-size: 11px; font-weight: 600; letter-spacing: .04em;
-  color: var(--text-faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* ⚠️ 這條必須寫在主規則**之後**（2026-08-11 修）。原本放在上方那個
+   @media (prefers-reduced-motion) 集中區塊裡，但媒體查詢**不增加特異度** ——
+   `.gn-tagbar` 兩邊都是 (0,1,0)，而主規則定義在後面 → 集中區塊那條從來沒生效過。
+   （同區塊的其他選擇器都定義在媒體查詢之前，所以只有這一條中招。） */
+@media (prefers-reduced-motion: reduce) {
+  .gn-tagbar { transition: none; }
 }
-.gn-dock-clear {
-  flex: none; font-size: 11px; color: var(--text-muted); cursor: pointer;
+.gn-tagbar-inner {
+  min-height: 0;      /* grid item 要能被壓到 0（見上方說明） */
+  overflow: hidden;   /* 收合過程中內容跟著被裁 */
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+  /* ⚠️ 這裡不要加 padding —— 會變成軌道的最小高度，收合不掉（見上方說明） */
 }
-.gn-dock-clear:hover { color: var(--interactive-accent); }
-/* .gn-dock-toggle（收合的 v 形鈕）已移除：浮層靠「再點一次按鈕／點外面／Esc」關閉，
-   不需要自己的收合鈕。 */
-.gn-dock-body {
-  flex: 1; min-height: 0;
-  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px;
-  padding: 0 16px 16px;
-  overflow-y: auto;
-}
-.gn-dock-body .gn-more-chip { align-self: flex-start; }
-
-/* 標籤晶片不畫外框（2026-08-10 使用者要求）：底色本身就分得出膠囊形狀，
-   密集排列時再加框會變成一片格線。
-   ⚠️ hover 與選取態的 border-color 要一併失效，否則互動時會突然冒出一條線。
-   ⚠️ padding 補回 1px：拿掉外框等於每邊少 1px，不補的話晶片會整批縮一圈。
-   只作用在標籤浮層 —— 手機「⋯ 更多」面板裡的晶片維持原況（手機不動）。 */
-.gn-tag-pop .gn-more-chip,
-.gn-tag-pop .gn-more-chip:hover,
-.gn-tag-pop .gn-more-chip-on {
+/* 標籤晶片不畫外框：底色本身就分得出膠囊形狀，密集排列時加框會變成一片格線。
+   hover 與選取態的 border-color 一併失效，否則互動時會突然冒出一條線。
+   padding 補 1px，補回拿掉外框少的那一圈。 */
+.gn-tagbar-inner .gn-more-chip,
+.gn-tagbar-inner .gn-more-chip:hover,
+.gn-tagbar-inner .gn-more-chip-on {
   border: none;
   padding: 4px 10px;
 }
+.gn-tagbar-clear {
+  font-size: 11px; color: var(--text-muted); cursor: pointer;
+  padding: 4px 6px; border-radius: 999px;
+}
+.gn-tagbar-clear:hover { color: var(--interactive-accent); }
 
-/* ── 收合態（2026-08-10 起）──
-   以前收合是「同一個元素縮成右下角的圓形懸浮鈕」（.gn-dock-fab / .gn-dock-mini）。
-   按鈕集中到右欄欄頭後，收合＝**整個面板不建立**，右欄角落不再有獨立的浮動控制項。
-   相關的 .gn-dock-collapsed 底部留白也一併移除：沒有面板時 .gn-has-dock 就不會掛上去。 */
+/* ═══ 資料夾自訂圖示的選擇器（2026-08-11）═══
+   對話框結構沿用原生（.modal-title / .modal-button-container，見 InputModal
+   2026-08-01 的說明），這裡只加網格本身。 */
+.gn-iconpick-modal .gn-input { width: 100%; margin-bottom: 8px; }
+.gn-iconpick-hint {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+/* 捲動容器：哨兵是它的子元素、網格的兄弟 —— 放進網格裡會佔掉一格版位 */
+.gn-iconpick-scroll {
+  max-height: 46vh;
+  overflow-y: auto;
+  /* 捲動時只重繪這一塊，不影響對話框其他部分 */
+  contain: content;
+}
+.gn-iconpick-grid {
+  display: grid;
+  /* auto-fill + minmax：視窗寬就多排幾欄，不用 media query 猜 */
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 4px;
+}
+/* 哨兵：進視野就補下一批。要有高度才會被 IntersectionObserver 觀察到 */
+.gn-iconpick-sentinel { height: 1px; }
+.gn-iconpick-cell {
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: var(--cursor, pointer);
+}
+body:not(.is-mobile) .gn-iconpick-cell:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+/* 目前選用的那個：淡色塊，與卡片的「目標卡」同一套語言（面而不是線） */
+.gn-iconpick-cell.gn-iconpick-on {
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  color: var(--text-normal);
+}
+.gn-iconpick-cell svg { width: 18px; height: 18px; }
+/* 手機：格子放大到 44pt 觸控目標 */
+.is-mobile .gn-iconpick-grid { grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); }
+.is-mobile .gn-iconpick-cell svg { width: 22px; height: 22px; }

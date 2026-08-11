@@ -31,7 +31,6 @@ const ZH_TW = {
   // ── 指令 ──
   'Open Gallery Navigator': '開啟 Gallery Navigator',
   'Open in Gallery Navigator': '在 Gallery Navigator 開啟',
-  'Open Mini Calendar': '開啟 Mini Calendar',
   'Search (popup)': '懸浮搜尋',
   'Search: extract all PDF text (Text Extractor)': '搜尋：擷取全部 PDF 內文（text-extractor）',
   'Search: rebuild index': '搜尋：強制重建索引',
@@ -63,26 +62,8 @@ const ZH_TW = {
   'Card wall': '卡片牆',
   'Image peek': '圖片預覽',
   'Link cards': '連結卡片',
-  'Calendar': '行事曆',
   'Enable image peek': '啟用圖片預覽',
   'Enable link cards': '啟用連結卡片',
-  'Agenda days': 'Agenda 天數',
-  'How many days ahead the agenda lists events': '清單往後顯示幾天的行程',
-  'Daily note template': '每日筆記模板',
-  'Applied when creating a daily note from the calendar. Supports {{title}}, {{date}}, {{time}}, {{weekday}}. Leave empty to use the template from the core Daily notes plugin.':
-    '從行事曆建立每日筆記時套用這個模板。支援 {{title}}、{{date}}、{{time}}、{{weekday}}。留空＝自動沿用 Obsidian 核心「每日筆記」設定的模板。',
-  'e.g. Templates/Daily.md': '例：模板/每日筆記.md',
-  'Pick a template note from the vault': '從 vault 選擇模板筆記',
-  'Pick a daily note template…': '選擇每日筆記模板…',
-  'Calendar {{n}}': '行事曆 {{n}}',
-  'Name': '名稱',
-  'ICS URL (.ics)': 'ICS 網址（.ics）',
-  'Remove': '移除',
-  '+ Add calendar': '＋ 新增行事曆',
-  'Reload calendars': '重新載入行事曆',
-  'Reloading…': '重新載入中…',
-  'Paste the secret iCal URL of your Google Calendar (Calendar settings → Integrate calendar → URL ending in .ics). Multiple calendars supported, one color each.':
-    '貼上 Google 行事曆的「iCal 格式密件網址」（行事曆設定 → 整合日曆 → 以 .ics 結尾的私人網址）。可加多個，每個給一個顏色。',
   'Mobile columns': '手機的卡片欄數',
   'Takes effect after reloading the plugin (or restarting Obsidian)': '重新載入外掛（或重啟 Obsidian）後生效',
   'Canvas has no built-in image viewer, so this fills that gap: double-click an image or press Space. Matches the look of the lightbox Obsidian shows in notes. Notes themselves are left to Obsidian.':
@@ -103,11 +84,8 @@ const ZH_TW = {
   'Note': '筆記',
   'Canvas': 'Canvas 白板',
   'Base': 'Base 資料庫',
-  'Daily note template not found: {{path}} (created a blank note)': '找不到每日筆記模板：{{path}}（已建立空白筆記）',
-  'Create daily note': '建立每日筆記',
-  'Daily notes': '當日筆記',
-  'Created that day ({{n}})': '當天建立（{{n}}）',
-  'No calendars yet. Paste your Google Calendar ICS URL in Settings → Gallery Navigator.': '尚未設定行事曆。到「設定 → Gallery Navigator」貼上 Google 行事曆的 ICS 網址。',
+  // 2026-08-11 Mini Calendar 移除後仍共用的一條（原本在「月曆」群組）
+  'Refresh': '重新整理',           // 工具列「⋯ 更多」的重新整理
 
   // ── 排序 ──
   'Newest first': '最新建立', 'Oldest first': '最舊建立', 'Recently modified': '最近修改',
@@ -115,38 +93,11 @@ const ZH_TW = {
   // ── 色票 ──
   'Coral': '珊瑚紅', 'Orange': '橘', 'Yellow': '黃', 'Green': '綠', 'Teal': '湖水藍',
   'Blue': '藍', 'Pink': '粉紫', 'Sand': '米', 'Grey': '灰', 'Black': '黑', 'Red': '紅', 'None': '無',
-  // ── 月曆 ──
-  'Su': '日', 'Mo': '一', 'Tu': '二', 'We': '三', 'Th': '四', 'Fr': '五', 'Sa': '六',
-  'Sun': '日', 'Mon': '一', 'Tue': '二', 'Wed': '三', 'Thu': '四', 'Fri': '五', 'Sat': '六',
-  'Sunday': '星期日', 'Monday': '星期一', 'Tuesday': '星期二', 'Wednesday': '星期三',
-  'Thursday': '星期四', 'Friday': '星期五', 'Saturday': '星期六',
-  'January': '一月', 'February': '二月', 'March': '三月', 'April': '四月', 'May': '五月', 'June': '六月',
-  'July': '七月', 'August': '八月', 'September': '九月', 'October': '十月', 'November': '十一月', 'December': '十二月',
-  '{{m}}/{{d}}': '{{m}}月{{d}}日',
-  '(untitled)': '（無標題）',
-  'Previous month': '上個月', 'Today': '今天', 'Go to today': '回到今天', 'Next month': '下個月', 'Refresh': '重新整理',
-  'Loading…': '載入中…', 'No timed events this day.': '這天沒有時間軸行程。',
-  'ICS responded with status {{status}}': 'ICS 回應狀態 {{status}}', 'Fetch failed: {{msg}}': '抓取失敗：{{msg}}',
   // ── 剪貼簿 ──
   'Copied: {{text}}': '已複製：{{text}}', 'Copy failed': '複製失敗',
-  // ── Pinterest ──
-  'Pinterest visual search': 'Pinterest 找相似',
-  'Could not read this image': '讀不到這張圖的內容',
-  'Searching…': '搜尋中…',
-  'Pinterest responded with status {{status}} (private API — image too large / unsupported format / rate limited)':
-    'Pinterest 回應狀態 {{status}}（這是逆向的私有 API，可能是圖太大／格式不支援／被限流）',
-  'No similar images found': '沒有找到相似的圖',
-  'Similar results · broader as you scroll · hover to preview/download': '相似結果 · 越往下越發散 · hover 可預覽/下載',
-  '— no more results —': '— 沒有更多了 —',
-  'Search failed: {{msg}}': '搜尋失敗：{{msg}}',
-  'skipped {{n}} animated pins without a gif': '已略過 {{n}} 則無法取得 gif 的動態 pin',
-  'Open on Pinterest': '在 Pinterest 開啟',
-  'No downloadable image URL': '沒有可下載的圖片網址',
-  'Downloading…': '下載中…',
-  'Download failed: {{msg}}': '下載失敗：{{msg}}',
   // ── 對話框 / 新建 ──
   'Move to which folder…': '移動到哪個資料夾…', 'vault root': '根目錄',
-  'Pick a to-do note…': '選擇待辦筆記…', 'Untitled': '未命名',
+  'Untitled': '未命名',
   'Failed to create: {{msg}}': '建立失敗：{{msg}}',
   'Also delete {{n}} attachment(s) not referenced by any other note': '連同刪除 {{n}} 個未被其他筆記引用的附件',
   'Moved to trash: {{name}} (+{{n}} attachments)': '已移到垃圾桶：{{name}}（＋{{n}} 個附件）',
@@ -228,12 +179,22 @@ const ZH_TW = {
   'Reveal in system explorer': '在系統中顯示', 'Delete image': '刪除圖片',
   'Failed to load image': '圖片載入失敗', 'Image copied': '已複製圖片',
   'Failed to copy image: {{msg}}': '複製圖片失敗：{{msg}}',
-  // ── Pinterest 開關 ──
+  // ── 圖片卡版面 ──
+  // ── 資料夾自訂圖示（2026-08-11）──
+  'Change icon': '更換圖示',
+  'Choose folder icon': '選擇資料夾圖示',
+  'Search icons…': '搜尋圖示…',
+  'Reset to default': '恢復預設',
+  'No icons found': '找不到符合的圖示',
+  '{{n}} icons': '{{n}} 個圖示',
+  '{{n}} of {{total}}': '{{n}} / {{total}}',
+  'Card corners': '卡片圓角',
   'Image card layout': '圖片卡版面',
-  'How cards with a cover image show their title and date.': '有封面圖的卡片如何呈現標題與日期。',
-  'Overlay text on image (current)': '文字疊在圖片上（現行）',
-  'Image on top, text below (classic)': '圖片在上、文字在下（經典）',
-  'Editorial index card (thumbnail + big date)': '編輯風索引卡（小縮圖＋大日期）',
+  /* 圖片卡版面用場景命名（2026-08-10）。刻意**中英文都用同一個英文名**：
+     它們是三種版型的代號、不是描述，翻成中文反而失去「一看就懂是哪個場景」的效果。
+     舊的描述式 key（Overlay text on image… 等）已移除。 */
+  'Photo': 'Photo', 'Museum': 'Museum', 'Editor': 'Editor',
+  'Follow global': '跟隨全域',
   'Auto card color from cover image': '依封面圖自動決定卡片底色',
   'Tints each card with the dominant color of its cover image. Cards you colored manually are left alone.': '用封面圖的主色染卡片底色。手動上色過的卡片不受影響。',
   'Peek image': '預覽圖片',

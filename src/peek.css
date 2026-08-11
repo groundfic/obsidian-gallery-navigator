@@ -186,8 +186,7 @@
 	gap: 4px;
 }
 
-.image-peek-overlay .qp-btn,
-.ip-pin-layer .qp-btn {
+.image-peek-overlay .qp-btn {
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -199,13 +198,11 @@
 	flex-shrink: 0;
 	transition: background 120ms ease, color 120ms ease;
 }
-.image-peek-overlay .qp-btn:hover,
-.ip-pin-layer .qp-btn:hover {
+.image-peek-overlay .qp-btn:hover {
 	background: var(--background-modifier-hover);
 	color: var(--text-normal);
 }
-.image-peek-overlay .qp-btn svg,
-.ip-pin-layer .qp-btn svg {
+.image-peek-overlay .qp-btn svg {
 	width: 16px;
 	height: 16px;
 }
@@ -243,23 +240,6 @@
 }
 .image-peek-overlay .qp-img.qp-grabbing {
 	cursor: grabbing;
-}
-
-/* 頁碼 */
-.image-peek-overlay .qp-counter {
-	position: absolute;
-	bottom: 10px;
-	left: 50%;
-	transform: translateX(-50%);
-	font-size: var(--font-ui-smaller);
-	color: var(--text-faint);
-	background: color-mix(in srgb, var(--background-primary) 80%, transparent);
-	padding: 2px 10px;
-	border-radius: 99px;
-	pointer-events: none;
-}
-.image-peek-overlay .qp-counter:empty {
-	display: none;
 }
 
 /* 進場前先隱藏，避免閃爍 */
@@ -367,9 +347,8 @@
 	-webkit-backdrop-filter: none;
 	border-bottom: none;
 }
-/* 手機不顯示檔名與頁碼：看圖時不需要 */
-.is-mobile .image-peek-overlay .qp-title,
-.is-mobile .image-peek-overlay .qp-counter {
+/* 手機不顯示檔名：看圖時不需要 */
+.is-mobile .image-peek-overlay .qp-title {
 	display: none;
 }
 .is-mobile .image-peek-overlay .qp-header .qp-btn {
@@ -436,7 +415,6 @@
 }
 .is-mobile .image-peek-overlay .qp-panel.qp-dismissing .qp-header,
 .is-mobile .image-peek-overlay .qp-panel.qp-dismissing .qp-actions,
-.is-mobile .image-peek-overlay .qp-panel.qp-dismissing .qp-counter,
 .is-mobile .image-peek-overlay .qp-panel.qp-dismissing .qp-sidebar {
 	opacity: 0;
 	transition: opacity 120ms ease;
@@ -464,541 +442,84 @@
 	overflow-x: auto;
 }
 
-/* ===== 第二層：Pinterest 找相似 ===== */
-
-/* 疊在預覽覆層之上 */
-.ip-pin-layer {
-	position: fixed;
-	inset: 0;
-	z-index: calc(var(--layer-modal, 50) + 5);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-}
-
-.ip-pin-layer .ip-pin-backdrop {
-	position: absolute;
-	inset: 0;
-	background: rgba(0, 0, 0, 0.5);
-	backdrop-filter: blur(8px);
-	-webkit-backdrop-filter: blur(8px);
-}
-
-.ip-pin-layer .ip-pin-panel {
-	position: relative;
-	display: flex;
-	flex-direction: column;
-	width: min(92vw, 1100px);
-	height: min(88vh, 900px);
-	border-radius: 14px;
-	overflow: hidden;
-	background: var(--background-primary);
-	box-shadow:
-		0 0 0 0.5px rgba(0, 0, 0, 0.2),
-		0 24px 64px rgba(0, 0, 0, 0.45);
-}
-
-.ip-pin-layer .ip-pin-header {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	height: 46px;
-	padding: 0 10px;
-	flex-shrink: 0;
-	border-bottom: 1px solid var(--background-modifier-border);
-	background: var(--background-primary);
-}
-
-.ip-pin-layer .ip-pin-title {
-	flex: 1;
-	font-size: var(--font-ui-small);
-	font-weight: 600;
-	color: var(--text-normal);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
 
 /* 主體：左＝原圖，中＝分隔桿，右＝結果 */
-.ip-pin-layer .ip-pin-body {
-	display: flex;
-	flex: 1;
-	min-height: 0;
-}
+
 
 /* 左欄：原始查詢圖 */
-.ip-pin-layer .ip-pin-orig {
-	flex: 0 0 220px;
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: flex-start;
-	gap: 8px;
-	min-width: 0;
-	padding: 14px;
-	overflow: hidden;
-}
-.ip-pin-layer .ip-pin-orig-img {
-	max-width: 100%;
-	max-height: 100%;
-	object-fit: contain;
-	border-radius: 10px;
-	background: var(--background-secondary);
-}
-.ip-pin-layer .ip-pin-orig-name {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	text-align: center;
-	word-break: break-word;
-	flex-shrink: 0;
-}
+
 
 /* 可拖曳分隔桿 */
-.ip-pin-layer .ip-pin-splitter {
-	flex: 0 0 5px;
-	cursor: col-resize;
-	background: var(--background-modifier-border);
-	transition: background 120ms ease;
-}
-.ip-pin-layer .ip-pin-splitter:hover {
-	background: var(--interactive-accent);
-}
+
 
 /* 右欄：結果（捲動容器） */
-.ip-pin-layer .ip-pin-scroll {
-	flex: 1;
-	min-width: 0;
-	min-height: 0;
-	overflow-y: auto;
-	padding: 12px 14px calc(24px + env(safe-area-inset-bottom));
-	-webkit-overflow-scrolling: touch;
-}
 
-.ip-pin-layer .ip-pin-status {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	margin-bottom: 10px;
-}
-.ip-pin-layer .ip-pin-status:empty {
-	display: none;
-}
 
 /* 手機：用一個下滑箭頭取代整行說明文字 */
-.ip-pin-layer .ip-pin-scrollhint {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	color: rgba(255, 255, 255, 0.45);
-}
-.ip-pin-layer .ip-pin-scrollhint svg {
-	width: 22px;
-	height: 22px;
-}
+
 
 /* 主題關鍵字 chips */
-.ip-pin-layer .ip-pin-chips {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin-bottom: 12px;
-}
-.ip-pin-layer .ip-pin-chips:empty {
-	display: none;
-}
-.ip-pin-layer .ip-pin-chip {
-	font-size: var(--font-ui-smaller);
-	padding: 3px 10px;
-	border-radius: 99px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-muted);
-	cursor: var(--cursor, pointer);
-	box-shadow: none;
-}
-.ip-pin-layer .ip-pin-chip:hover {
-	background: var(--background-modifier-hover);
-	color: var(--text-normal);
-}
+
 
 /* 瀑布流（高度由 JS 計算，這裡只給外觀） */
-.ip-pin-layer .ip-pin-grid {
-	position: relative;
-	width: 100%;
-}
 
-.ip-pin-layer .ip-pin-cell {
-	border-radius: 10px;
-	overflow: hidden;
-	background: var(--background-secondary);
-	cursor: var(--cursor, pointer);
-	transition: transform 0.12s ease;
-}
-.ip-pin-layer .ip-pin-cell:hover {
-	transform: scale(1.02);
-}
-.ip-pin-layer .ip-pin-cell img {
-	display: block;
-	width: 100%;
-	height: auto;
-}
 
 /* 格子上的動作：暗色遮罩蓋滿整格，兩顆圓鈕置中
    （桌機 hover 浮現；手機點格子後顯示） */
-.ip-pin-layer .ip-pin-actions {
-	position: absolute;
-	inset: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 14px;
-	background: rgba(0, 0, 0, 0.45);
-	opacity: 0;
-	/* 隱藏時不可點：否則手機沒展開也會誤觸到按鈕（opacity:0 仍吃得到點擊） */
-	pointer-events: none;
-	transition: opacity 140ms ease;
-}
-.ip-pin-layer .ip-pin-cell:hover .ip-pin-actions {
-	opacity: 1;
-	pointer-events: auto;
-}
-/* 手機沒有 hover：點格子後才顯示（再點一次收起） */
-.ip-pin-layer .ip-pin-cell-active .ip-pin-actions {
-	opacity: 1;
-	pointer-events: auto;
-}
 
-.ip-pin-layer .ip-pin-act {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 46px;
-	height: 46px;
-	padding: 0;
-	border-radius: 50%;
-	border: none;
-	color: #1a1a1a;
-	background: #fff;
-	cursor: var(--cursor, pointer);
-	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-	transition: transform 120ms ease, background 120ms ease;
-}
-.ip-pin-layer .ip-pin-act:hover {
-	background: #fff;
-	transform: scale(1.08);
-}
-.ip-pin-layer .ip-pin-act svg {
-	width: 20px;
-	height: 20px;
-	stroke-width: 2;
-}
+
+/* 手機沒有 hover：點格子後才顯示（再點一次收起） */
+
+
 /* 手機：加大點擊面積 */
-.is-mobile .ip-pin-layer .ip-pin-act {
-	width: 52px;
-	height: 52px;
-}
-.is-mobile .ip-pin-layer .ip-pin-act svg {
-	width: 22px;
-	height: 22px;
-}
+
 
 /* 無限捲動的載入提示與哨兵 */
-.ip-pin-layer .ip-pin-loading {
-	text-align: center;
-	font-size: var(--font-ui-smaller);
-	color: var(--text-faint);
-	padding: 14px 0 4px;
-}
-.ip-pin-layer .ip-pin-loading:empty {
-	padding: 0;
-}
-.ip-pin-layer .ip-pin-sentinel {
-	height: 1px;
-}
+
 
 /* 手機：第二層同樣滿版，且同樣黑底（與預覽層一致） */
-.is-mobile .ip-pin-layer .ip-pin-panel {
-	width: 100vw;
-	height: 100dvh;
-	max-width: none;
-	max-height: none;
-	border-radius: 0;
-	box-shadow: none;
-	background: #000;
-}
-.is-mobile .ip-pin-layer .ip-pin-header {
-	height: calc(46px + env(safe-area-inset-top));
-	padding-top: env(safe-area-inset-top);
-	background: #000;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-.is-mobile .ip-pin-layer .ip-pin-title {
-	color: rgba(255, 255, 255, 0.9);
-	text-align: center;
-	padding-right: 34px; /* 補償左側返回鈕寬度，讓標題視覺置中 */
-}
-.is-mobile .ip-pin-layer .qp-btn {
-	color: rgba(255, 255, 255, 0.85);
-}
-.is-mobile .ip-pin-layer .qp-btn:hover,
-.is-mobile .ip-pin-layer .qp-btn:active {
-	background: rgba(255, 255, 255, 0.12);
-	color: #fff;
-}
+
 
 /* 黑底上的文字與格子 */
-.is-mobile .ip-pin-layer .ip-pin-status,
-.is-mobile .ip-pin-layer .ip-pin-orig-name,
-.is-mobile .ip-pin-layer .ip-pin-loading {
-	color: rgba(255, 255, 255, 0.6);
-}
-.is-mobile .ip-pin-layer .ip-pin-chip {
-	background: rgba(255, 255, 255, 0.1);
-	border-color: rgba(255, 255, 255, 0.16);
-	color: rgba(255, 255, 255, 0.85);
-}
-.is-mobile .ip-pin-layer .ip-pin-chip:hover {
-	background: rgba(255, 255, 255, 0.18);
-	color: #fff;
-}
-.is-mobile .ip-pin-layer .ip-pin-cell,
-.is-mobile .ip-pin-layer .ip-pin-orig-img {
-	background: rgba(255, 255, 255, 0.06);
-}
+
 
 /* 手機：原圖已被移進捲動區頂端，分隔桿失去意義 */
-.is-mobile .ip-pin-layer .ip-pin-splitter {
-	display: none;
-}
-.is-mobile .ip-pin-layer .ip-pin-orig {
-	flex: none;
-	width: 100%;
-	padding: 0 0 22px;
-	overflow: visible;
-}
-.is-mobile .ip-pin-layer .ip-pin-orig-img {
-	max-height: 30vh;
-}
 
-@media (prefers-reduced-motion: reduce) {
-	.ip-pin-layer .ip-pin-cell,
-	.ip-pin-layer .ip-pin-actions {
-		transition: none;
-	}
-}
 
 /* GIF 角標：探測到原檔 gif 時才出現（與 Gallery Navigator 同步） */
-.ip-pin-layer .ip-pin-gif-badge {
-	position: absolute;
-	top: 6px;
-	left: 6px;
-	z-index: 3;
-	padding: 1px 6px;
-	border-radius: 5px;
-	font-size: 9px;
-	font-weight: 700;
-	letter-spacing: 0.06em;
-	background: rgba(0, 0, 0, 0.68);
-	color: #fff;
-	pointer-events: none;
-}
 
-/* ═══════════════════════════════════════════════════════════════════
-   桌機：與 Gallery Navigator 的「Pinterest 找相似」視窗完全一致
-   （1:1 對照 gallery-navigator/styles.css 的 .gn-pin-* 區塊；
-     用 body:not(.is-mobile) 限定，手機的黑底全螢幕版面不受影響）
-   ═══════════════════════════════════════════════════════════════════ */
 
-/* 面板 = 一個 modal 尺寸的盒子（不再是滿版高度的 app 視窗）
-   底色／圓角／毛玻璃一律吃「主題的 modal 變數」，才會跟 Gallery Navigator 的 modal 長得一模一樣
-   （例如 Velocity 主題：--modal-background 是半透明 oklch + --blur-s 毛玻璃）。
-   主題沒定義這些變數時，fallback 回不透明底，不會破版。 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-panel {
-	width: min(1040px, 94vw);
-	height: auto;
-	max-height: 88vh;
-	padding: 22px 26px 24px;
-	overflow: auto;
-	background: var(--modal-background, var(--background-primary));
-	border-radius: var(--modal-radius, 12px);
-	backdrop-filter: var(--blur-s, none);
-	-webkit-backdrop-filter: var(--blur-s, none);
-	box-shadow: var(--shadow-l, 0 8px 40px rgba(0, 0, 0, 0.35));
-}
 /* 面板本身已是毛玻璃 → 背幕不要再糊一次（會變兩層模糊、整片死灰）。
    濃度對齊 Obsidian 的 .modal-bg：主題（Velocity）把遮罩壓到約 1/4 濃度，
    這裡用 color-mix 減半 alpha 得到同樣的淡遮罩，透過半透明面板看才不會偏暗。 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-backdrop {
-	background: color-mix(
-		in srgb,
-		var(--background-modifier-cover, rgba(0, 0, 0, 0.5)) 50%,
-		transparent
-	);
-	backdrop-filter: none;
-	-webkit-backdrop-filter: none;
-}
+
 
 /* 標題列 → 拆掉 bar 的樣子：關閉鈕移到右上角，標題變成 GN 那顆小灰字 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-header {
-	display: block;
-	height: auto;
-	padding: 0;
-	border-bottom: none;
-	background: none;
-	flex-shrink: 0;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-header .qp-btn {
-	position: absolute;
-	top: 12px;
-	right: 12px;
-	z-index: 2;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-title {
-	flex: none;
-	margin: 0 0 26px;
-	font-size: 13px;
-	font-weight: 600;
-	letter-spacing: 0.04em;
-	color: var(--text-muted);
-}
+
 
 /* 主體：原圖與結果區拉開 26px */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-body {
-	display: flex;
-	gap: 26px;
-	align-items: flex-start;
-	flex: none;
-}
+
 
 /* 左：原圖（186px、隨捲動固定） */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-orig {
-	display: block;
-	flex: 0 0 186px;
-	position: sticky;
-	top: 0;
-	padding: 0;
-	gap: 0;
-	overflow: visible;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-orig-img {
-	width: 100%;
-	height: auto;
-	max-height: none;
-	display: block;
-	object-fit: unset;
-	border-radius: 10px;
-	background: none;
-	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-orig-name {
-	margin-top: 8px;
-	font-size: 12px;
-	text-align: left;
-	color: var(--text-muted);
-	word-break: break-word;
-}
+
 
 /* 中：可拖曳分隔桿 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-splitter {
-	flex: 0 0 10px;
-	align-self: stretch;
-	position: relative;
-	cursor: col-resize;
-	background: none;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-splitter::before {
-	content: "";
-	position: absolute;
-	left: 50%;
-	top: 0;
-	bottom: 0;
-	width: 2px;
-	transform: translateX(-50%);
-	background: var(--background-modifier-border);
-	border-radius: 2px;
-	transition: background 0.15s;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-splitter:hover::before,
-body:not(.is-mobile) .ip-pin-layer .ip-pin-splitter:active::before {
-	background: var(--interactive-accent);
-	width: 3px;
-}
+
 
 /* 右：結果捲動區 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-scroll {
-	flex: 1;
-	min-width: 0;
-	max-height: 72vh;
-	overflow-y: auto;
-	/* padding-right 讓捲軸離開圖片（不然滑桿會貼在卡片邊上） */
-	padding: 0 14px 0 0;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-status {
-	font-size: 12px;
-	color: var(--text-muted);
-	margin: 0 0 8px;
-}
+
 
 /* 主題關鍵字 chips */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-chips {
-	gap: 6px;
-	margin-bottom: 10px;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-chip {
-	font-size: 11px;
-	padding: 3px 10px;
-	border-radius: 999px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-muted);
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-chip:hover {
-	color: var(--text-normal);
-	border-color: var(--interactive-accent);
-	background: var(--background-secondary);
-}
+
 
 /* 結果格子：GN 的格子 hover 不放大，只壓黑跳按鈕 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-cell {
-	border-radius: 10px;
-	background: var(--background-secondary);
-	transition: none;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-cell:hover {
-	transform: none;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-actions {
-	gap: 14px;
-	background: rgba(0, 0, 0, 0.62);
-	transition: opacity 0.15s;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-act {
-	width: 42px;
-	height: 42px;
-	color: #111;
-	background: #fff;
-	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-	transition: transform 0.12s, color 0.12s;
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-act:hover {
-	color: var(--interactive-accent);
-	background: #fff;
-	transform: scale(1.12);
-}
-body:not(.is-mobile) .ip-pin-layer .ip-pin-act svg {
-	width: 20px;
-	height: 20px;
-}
+
 
 /* 無限捲動的載入字 */
-body:not(.is-mobile) .ip-pin-layer .ip-pin-loading {
-	text-align: center;
-	font-size: 12px;
-	color: var(--text-faint);
-	padding: 8px 0;
-}
+
 
 /* ═══════════════════════════════════════════════════════════════════
-   桌機：預覽面板（第一層）也做成半透明毛玻璃，與 modal / Pinterest 面板一致
+   桌機：預覽面板（第一層）也做成半透明毛玻璃，與主題的 modal 一致
    —— 一律吃「主題的 modal 變數」，換主題時三者會一起變，不會又分岔。
    （手機是全螢幕黑底看圖，維持不變。）
    ═══════════════════════════════════════════════════════════════════ */
@@ -1034,31 +555,27 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 
 /* ═══════════════════════════════════════════════════════════════════
    細捲軸（macOS overlay 風）—— 與 Gallery Navigator 完全同一套
-   （.gn-pin-right / .gn-main 等用的規格：9px 寬、圓角滑塊、2px 透明內縮）
+   （.gn-main 等用的規格：9px 寬、圓角滑塊、2px 透明內縮）
    ═══════════════════════════════════════════════════════════════════ */
-.ip-pin-layer .ip-pin-scroll::-webkit-scrollbar,
-.ip-pin-layer .ip-pin-panel::-webkit-scrollbar,
+
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar {
 	width: 9px;
 	height: 9px;
 }
-.ip-pin-layer .ip-pin-scroll::-webkit-scrollbar-thumb,
-.ip-pin-layer .ip-pin-panel::-webkit-scrollbar-thumb,
+
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar-thumb {
 	background: color-mix(in srgb, var(--text-normal) 20%, transparent);
 	border-radius: 8px;
 	border: 2px solid transparent;
 	background-clip: padding-box;
 }
-.ip-pin-layer .ip-pin-scroll::-webkit-scrollbar-thumb:hover,
-.ip-pin-layer .ip-pin-panel::-webkit-scrollbar-thumb:hover,
+
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar-thumb:hover {
 	background: color-mix(in srgb, var(--text-normal) 38%, transparent);
 	background-clip: padding-box;
 }
 /* 軌道透明（不要出現一條灰槽） */
-.ip-pin-layer .ip-pin-scroll::-webkit-scrollbar-track,
-.ip-pin-layer .ip-pin-panel::-webkit-scrollbar-track,
+
 .image-peek-overlay .qp-sidebar::-webkit-scrollbar-track {
 	background: transparent;
 }
@@ -1069,11 +586,23 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
    lightbox-content / lightbox-media / media-wrapper / lightbox-titlebar），
    所以版面與配色直接由 app.css 提供，這裡只負責**關掉原本的視窗式外觀**。
 
-   ⚠️ 特異度：既有規則是 .image-peek-overlay .qp-panel (0,2,0)，
-      這裡一律加上 .lightbox 湊到 (0,3,0) 才蓋得過。
-      （這場對話已經因為特異度踩過三次坑，不再靠「寫在後面」賭。） */
-.image-peek-overlay.lightbox .qp-panel {
-  position: static;
+   ⚠️⚠️ 特異度（2026-08-11 修正，原本這段註解自己算錯了）：
+      對手不是 .image-peek-overlay .qp-panel (0,2,0)，而是本檔案 1005 行起那組
+      **桌機專屬**的玻璃面板樣式 `body:not(.is-mobile) .image-peek-overlay .qp-panel`
+      ＝ **(0,3,1)**（:not() 本身不計，但裡面的 .is-mobile 計一個 class）。
+      只加 .lightbox 湊到 (0,3,0) **少一位、會輸** —— 這就是桌機 Canvas 預覽一直
+      維持淺色玻璃面板、跟筆記內原生 lightbox 的黑底是兩種材質的原因。
+      解法：這些元素同時掛著原生 class（lightbox-content / lightbox-titlebar /
+      lightbox-media / lightbox-bg），把它一起寫進選擇器就有 (0,4,0)，穩穩勝出。
+      沒有原生 class 可用的（側欄、把手）就借父層的 .qp-panel / .qp-main。
+      教訓：**註解裡的特異度數字也會過期**，覆寫前要重新數一次，不要相信上一輪的紀錄。 */
+.image-peek-overlay.lightbox .qp-panel.lightbox-content {
+  /* ⚠️ 這裡**不能寫 position: static**。原生的 .lightbox-content 是 position: relative
+     （已從 obsidian-1.13.6.asar 的 app.css 確認），它是內部絕對定位元素的定位基準 ——
+     底部的動作膠囊 .qp-actions 就靠它。改成 static 之後那些元素
+     會跳去更外層定位、堆疊順序也跟著跑掉 → 頁碼被圖片蓋在後面。
+     視窗式的置中不是靠 position 做的（面板是 flex 子元素），維持 relative 不影響原本版面。 */
+  position: relative;
   width: 100%; height: 100%;
   max-width: none; max-height: none;
   margin: 0; padding: 0;
@@ -1089,16 +618,56 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
   min-width: 0; min-height: 0;
 }
 /* 舞台交給原生的 .lightbox-media；圖片沿用原生的 .media-wrapper img 規則 */
-.image-peek-overlay.lightbox .qp-stage {
+.image-peek-overlay.lightbox .qp-stage.lightbox-media {
   background: transparent;
   border-radius: 0;
   padding: 0;
 }
 /* 標題列改吃原生的 .lightbox-titlebar（absolute、置頂、可被使用者的 snippet 隱藏） */
-.image-peek-overlay.lightbox .qp-header {
+.image-peek-overlay.lightbox .qp-header.lightbox-titlebar {
   background: transparent;
   border: none;
   cursor: default;            /* 不再可拖曳 */
+  /* ⚠️ 必須給 z-index。標題列在 DOM 上排在舞台**之前**，兩者又都是定位元素、
+     z-index 都是 auto → 同一個堆疊脈絡下由 DOM 順序決定，舞台會蓋在標題列上面，
+     關閉鈕與檔名等於藏在圖片後面（透明所以看得到，但點不到）。
+     原生沒這問題是因為它的 .modal-close-button 是 .lightbox 的直接子節點、排在後面。
+     光補 pointer-events 不夠 —— 那只解決「能不能收到事件」，不解決「誰在上層」。 */
+  z-index: 3;
+}
+/* ⚠️ 原生 .lightbox-titlebar 有 `pointer-events: none`（已從 app.css 確認）。
+   它在原生只是一層放檔名的東西，原生的關閉鈕是獨立的 .modal-close-button、
+   掛在 .lightbox 底下、不受影響。但我們把關閉鈕與桌機動作列放在標題列**裡面**，
+   所以要把可點性補回來，否則整排按鈕看得到卻按不動（桌機只能靠 Esc 關）。 */
+.image-peek-overlay.lightbox .qp-header.lightbox-titlebar > * {
+  pointer-events: auto;
+}
+
+/* 底部膠囊裡的按鈕：深底上的白色大鈕，不是標題列上的小灰鈕。
+   膠囊本身的定位／底色來自 gallery.css 的 `.lightbox .gn-lb-actions`（單一來源），
+   這裡只補按鈕本身。
+   ⚠️ 為什麼不直接給按鈕掛 gn-lb-btn：`.lightbox .gn-lb-btn` 與
+      `.image-peek-overlay .qp-btn` **同為 (0,2,0)**，而 build-css.mjs 是先接
+      gallery.css 再接 peek.css → 後者會贏，按鈕會變回 28px 的灰鈕。
+   ⚠️ 為什麼要 body:not(.is-mobile)：不加的話這條 (0,4,0) 會跟上面手機那條
+      `.is-mobile … .qp-actions .qp-btn` (0,4,0) 打平，而本規則寫在後面 → 會贏，
+      手機的觸控目標就從 48px 縮成 38px，破壞 44pt 下限。 */
+body:not(.is-mobile) .image-peek-overlay.lightbox .qp-actions .qp-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, .92);
+}
+body:not(.is-mobile) .image-peek-overlay.lightbox .qp-actions .qp-btn:hover {
+  background: rgba(255, 255, 255, .16);
+  color: #fff;
+}
+body:not(.is-mobile) .image-peek-overlay.lightbox .qp-actions .qp-btn:active {
+  background: rgba(255, 255, 255, .26);
+}
+body:not(.is-mobile) .image-peek-overlay.lightbox .qp-actions .qp-btn svg {
+  width: 20px;
+  height: 20px;
 }
 /* 背景完全對齊原生。原生的做法是兩層疊出來的：
        .lightbox-bg { background-color: var(--lightbox-background) }   ← body 上是 black
@@ -1113,17 +682,18 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 
    另外原生沒有背景模糊，qp-blur 的 backdrop-filter 要關掉，否則透出來的東西糊糊的、
    跟筆記內看起來就是兩種材質。 */
-.image-peek-overlay.lightbox .qp-backdrop {
+.image-peek-overlay.lightbox .qp-backdrop.lightbox-bg {
   background: var(--lightbox-background, black);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-.image-peek-overlay.lightbox.qp-open .qp-backdrop {
+.image-peek-overlay.lightbox.qp-open .qp-backdrop.lightbox-bg {
   opacity: .9;   /* ＝原生 JS 的 bgOpacity */
 }
-/* 視窗式才需要的元件：全部收起來 */
-.image-peek-overlay.lightbox .qp-resize,
-.image-peek-overlay.lightbox .qp-sidebar {
+/* 視窗式才需要的元件：全部收起來。
+   這兩個沒有原生 class 可掛 → 借父層的 .qp-panel / .qp-main 湊到 (0,4,0)。 */
+.image-peek-overlay.lightbox .qp-panel .qp-resize,
+.image-peek-overlay.lightbox .qp-main .qp-sidebar {
   display: none;
 }
 
@@ -1142,13 +712,7 @@ body:not(.is-mobile) .image-peek-overlay .qp-sidebar {
 .is-mobile .image-peek-overlay.qp-blur:not(.lightbox) .qp-backdrop {
   background: rgba(0, 0, 0, .72);
 }
-/* Pinterest 面板：手機幾乎全螢幕，背幕只露出邊緣一圈，
-   卻仍要維護一整層全螢幕模糊 → 改深色實底。 */
-.is-mobile .ip-pin-layer .ip-pin-backdrop {
-  background: rgba(0, 0, 0, .72);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
+
 
 /* 拖曳／縮放進行中 → 暫停背幕模糊（放開就恢復）。
    qp-grabbing 由 peek.ts 同時掛在 <img> 與覆層根節點上。 */

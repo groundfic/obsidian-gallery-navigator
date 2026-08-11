@@ -352,6 +352,10 @@ class VirtualWall {
         el.style.top = t + 'px';
       }
       el._vwL = l; el._vwT = t; el._vwW = w;
+      /* 定位完成才讓卡片現身（2026-08-10）。
+         沒有這個標記的話，卡片在建立到第一次定位之間會全部疊在容器原點，
+         畫面上會閃一下「一疊卡片」。CSS：.gn-card-in 未 placed 時 visibility: hidden。 */
+      el.classList.add('gn-placed');
     }
     if (created) this._scheduleMeasure();
   }
