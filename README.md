@@ -65,6 +65,13 @@ Until this plugin is available in the community store, install manually:
 
 Or use [BRAT](https://github.com/TfTHacker/obsidian42-brat) with this repository.
 
+> [!IMPORTANT]
+> **Coming from Image Peek or Link Card Preview?** Disable them first.
+>
+> Both of my earlier standalone plugins are now built into Gallery Navigator as the **Image peek** and **Link cards** modules. Running either one alongside this plugin means the same work happens twice: two sets of document listeners, two cards rendered for the same URL, and two separate caches for the same downloads.
+>
+> Their settings and caches are **not** carried over — link previews will simply be fetched again on first use. If you prefer, you can keep using the standalone versions and turn the matching module off here (Settings → Gallery Navigator → *Image peek* / *Link cards*).
+
 ## Development
 
 ```bash
