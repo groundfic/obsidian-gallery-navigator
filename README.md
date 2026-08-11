@@ -119,6 +119,19 @@ Source lives in `src/`. **Both `main.js` and `styles.css` in the plugin root are
 
 - **UI strings** — `src/i18n.js`, English text as keys, with a zh-TW dictionary.
 
+### Releasing
+
+```bash
+npm run release 0.2.1      # bumps manifest/package/versions, builds, commits, tags
+git push origin main && git push origin 0.2.1
+```
+
+Pushing the tag triggers `.github/workflows/release.yml`, which rebuilds from source, verifies the tag matches `manifest.json`, attaches [build provenance attestations](https://docs.github.com/actions/security-guides/using-artifact-attestations), and creates the release. Don't run `gh release create` by hand — assets uploaded that way can't be attested.
+
+The version lives in three files (`manifest.json`, `package.json`, `versions.json`) and the release script keeps them in sync. `versions.json` maps each plugin version to its minimum Obsidian version, so users on older Obsidian builds still resolve to a compatible release.
+
+**Never re-tag a published version.** Obsidian decides whether an update exists by comparing version numbers, so quietly replacing the assets of an existing release means installed users never receive the fix. Ship a new patch version instead.
+
 ## License
 
 [MIT](LICENSE)
