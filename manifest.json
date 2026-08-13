@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "minAppVersion": "1.4.0",
   "description": "Visual vault navigator: folder/tag tree with a cover-image card wall, full-text search (including PDFs), image quick-look, and link preview cards.",
-  "author": "Yaoting",
+  "author": "Groundfic",
   "authorUrl": "https://github.com/groundfic",
   "isDesktopOnly": false
 }
