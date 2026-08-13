@@ -499,6 +499,47 @@ class VirtualWall {
   notifyContentChanged() { this._scheduleMeasure(); }
 
   // 縮放滑桿改了最小欄寬 → 欄數與欄寬都會變，等同一次完整重排
+  /** items 裡這個 vault 路徑排在第幾個（找不到回 -1） */
+  indexOfPath(path) {
+    for (let i = 0; i < this.items.length; i++) {
+      const f = this.items[i] && this.items[i].file;
+      if (f && f.path === path) return i;
+    }
+    return -1;
+  }
+
+  /* 捲到某個項目 —— **不需要它已經掛載**（2026-08-11）。
+     這正是虛擬牆做得到、而 el.scrollIntoView() 做不到的事：視窗外的卡片根本不在 DOM 裡，
+     呼叫端拿不到元素就只能放棄（「開筆記自動定位」對大資料夾因此整個失效）。
+     但 top[] 對**每一項**都有值（未量測的是估計值），座標一直都算得出來。
+
+     ⚠️ 未量測項的 top 是估計值 → 捲過去、卡片掛載並量到真高度之後，位置可能微調。
+        呼叫端要在下一幀再校正一次（見 gallery.js 的 setActiveCard）。
+     ⚠️ 語意比照 scrollIntoView({ block: 'nearest' })：已經完整在視窗內就不動，
+        否則捲最小距離讓它進來。每次開筆記都硬置中會讓畫面一直跳。 */
+  scrollToPath(path, opts) {
+    const i = this.indexOfPath(path);
+    if (i < 0) return false;
+    const o = opts || {};
+    const pad = o.pad == null ? 12 : o.pad;
+    const sc = this.scroller;
+    if (!sc) return false;
+    /* gridTop 平常只在 relayout()/measure() 同步（_update 每幀都跑，不能強制版面計算）。
+       這裡是一次性動作，重算一次確保準確。 */
+    this._syncGridTop();
+    const cardTop = this.gridTop + (this.top[i] || 0);
+    const cardBot = cardTop + (this.h[i] || 0);
+    const viewTop = sc.scrollTop;
+    const viewBot = viewTop + sc.clientHeight;
+    if (cardTop >= viewTop + pad && cardBot <= viewBot - pad) return true;   // 已在視窗內
+    const target = cardBot > viewBot
+      ? cardBot - sc.clientHeight + pad      // 在下方 → 貼底
+      : cardTop - pad;                       // 在上方 → 貼頂
+    sc.scrollTop = Math.max(0, target);
+    this._update();   // 立刻掛上新視窗的卡片，不等下一幀（呼叫端下一步就要拿元素）
+    return true;
+  }
+
   setMinCol(w) { this.minCol = w; this._lastW = -1; this.relayout(); }
 
   /* 外部補齊了長寬比（DimPrefetcher）→ 丟掉快取的估計基準、重算尚未量測的項目。

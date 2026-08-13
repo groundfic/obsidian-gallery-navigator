@@ -1176,6 +1176,7 @@ class GalleryView extends ItemView {
     this._masonries = [];
     for (const v of (this._virtuals || [])) { try { v.destroyAll(); } catch (e) {} }
     this._virtuals = [];
+    this._chunkDrawers = [];
     if (this._ogObserver) { this._ogObserver.disconnect(); this._ogObserver = null; }
     if (this._wallIO) { this._wallIO.disconnect(); this._wallIO = null; }
     if (this._paneRO) { this._paneRO.disconnect(); this._paneRO = null; }
@@ -1286,15 +1287,45 @@ class GalleryView extends ItemView {
   }
 
   // 只更新「目前開啟」的卡片外框，不重畫整牆
+  /* 標記「目前開啟」的卡片並捲到它。
+     ⚠️ 不能只靠 el.scrollIntoView() —— 大資料夾裡目標卡**根本不在 DOM**：
+          · 分批渲染：還沒畫到那一批（批量 40 / 120）
+          · 虛擬牆：在掛載視窗之外（>150 / >300 張就走這條）
+        兩種情況 cardElsFor() 都回空陣列，舊版直接靜靜地什麼都不做
+        —— 這就是「開筆記捲不到卡片」的成因（2026-08-11 修，原列為已知限制）。 */
   setActiveCard(path) {
     const prev = this.activePath;
     this.activePath = path;
     if (!this._cardEls) return;
     if (prev && prev !== path) { for (const e of this.cardElsFor(prev)) e.removeClass('gn-card-active'); }
-    this.cardElsFor(path).forEach((el, i) => {
+
+    const mark = (els) => els.forEach((el, i) => {
       el.addClass('gn-card-active');
       if (i === 0) el.scrollIntoView({ block: 'nearest' });
     });
+
+    const els = this.cardElsFor(path);
+    if (els.length) { mark(els); return; }
+
+    // ① 虛擬牆：座標算得出來（未掛載的用估計值），先捲過去
+    for (const vw of (this._virtuals || [])) {
+      if (!vw.scrollToPath || !vw.scrollToPath(path)) continue;
+      /* 捲完卡片才掛載、才量到真高度 → 估計值與真值的差距要再校正一次。
+         scrollToPath 內部已經 _update() 掛好卡片，所以下一幀通常拿得到元素。 */
+      requestAnimationFrame(() => {
+        const again = this.cardElsFor(path);
+        if (again.length) mark(again);
+        else vw.scrollToPath(path);   // 還沒掛上 → 至少把捲動位置修到新的估計值
+      });
+      return;
+    }
+
+    // ② 分批渲染：補畫到目標卡出現，再照一般路徑捲過去
+    for (const draw of (this._chunkDrawers || [])) {
+      if (!draw(path)) continue;
+      const again = this.cardElsFor(path);
+      if (again.length) { mark(again); return; }
+    }
   }
 
   folderAt(path) {
@@ -4260,6 +4291,7 @@ class GalleryView extends ItemView {
     this._masonries = [];
     for (const v of (this._virtuals || [])) { try { v.destroyAll(); } catch (e) {} }
     this._virtuals = [];
+    this._chunkDrawers = [];   // 分批渲染的「補畫到某張卡」函式，與上面兩者同生命週期
 
     /* 換頁/重畫 → 丟掉還沒開工的縮圖任務。
        使用者已經捲走了，繼續做只會排擠新畫面該做的那幾張
@@ -5011,6 +5043,19 @@ class GalleryView extends ItemView {
     this._wallIO = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) drawNext();
     }, { root: container.closest('.gn-main') || null, rootMargin: '600px 0px' });
+
+    /* 供 setActiveCard() 用：目標卡還沒被畫到時，補畫到它出現為止（2026-08-11）。
+       ⚠️ 沒有這條的話，「開筆記自動定位」在超過一批的資料夾裡完全失效 ——
+          卡片不在 DOM，cardElsFor() 回空陣列，scrollIntoView 根本沒有對象。
+          批量是 40（手機）/ 120（桌機），而超過 150 / 300 就走虛擬牆，
+          所以這裡最多補幾批，成本有上限。 */
+    if (!this._chunkDrawers) this._chunkDrawers = [];   // 比照 _virtuals：beginWall 沒跑到也不炸
+    this._chunkDrawers.push((wantPath) => {
+      const idx = notes.findIndex((n) => n.file && n.file.path === wantPath);
+      if (idx < 0) return false;
+      while (drawn <= idx && drawn < notes.length) drawNext();
+      return drawn > idx;
+    });
 
     drawNext();                       // 第一批
     // ⚠️ 資料夾 ≤ 一批的量時，第一批就畫完 → drawNext 已把 _wallIO 收掉設 null，
