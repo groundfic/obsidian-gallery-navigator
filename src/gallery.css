@@ -5,9 +5,14 @@
   /* 2026-08-10：雙欄漸層**移到 .gn-split**（見下方），這裡只留單一底色。
      原因：漸層是整片高度畫的，中間那條 1px 交界線會一路貫穿到最上面、
      把橫跨兩欄的合併工具列切成左右兩半。移到 split 後，線只存在於兩欄的範圍內。 */
-  background: var(--ribbon-background, var(--background-secondary-alt, var(--background-secondary)));
-  /* 左右欄同色＝Obsidian ribbon（快捷按鈕欄）同一顆變數，整塊與主題無縫（2026-07-18）；
-     中間仍夾 1px 分隔線。卡片底色改混 6% 前景色，才不會跟底同色隱形 */
+  /* 底色＝Obsidian ribbon（快捷按鈕欄）同一顆變數，整塊與主題無縫（2026-07-18）。
+     ⚠️ 原本是三層 fallback `var(--ribbon-background, var(--background-secondary-alt, var(--background-secondary)))`
+        —— 後兩層是**死碼**：核心一定會定義 `--ribbon-background: var(--background-secondary)`，
+        變數永遠存在，fallback 永遠輪不到。只留一層給極舊版本保底。
+     ⚠️⚠️ **不要因為某些主題把它設成 transparent 就鋪一層不透明底去蓋掉**（2026-08-14 一度這樣改，錯了）。
+        Velocity 設 transparent 是**刻意的** —— 它要讓自己畫在底下的漸層透上來。
+        鋪不透明底會把主題的設計壓成一片死灰。「透明」在這裡是正確的繼承，不是缺陷。 */
+  background: var(--ribbon-background, var(--background-secondary));
   padding: 0;
   height: 100%;
   flex: 1 1 auto;        /* 父層是 flex 直向時，確實撐滿整個檢視高度（手機底部工具列才會貼底） */
@@ -128,10 +133,11 @@
    ⚠️ 只給桌機：手機用 .is-mobile .gn-root / .gn-tree 的 --gn-mobile-bg 單一底色，
       而且雙欄是平移的，畫在容器上會不跟著滑。 */
 body:not(.is-mobile) .gn-split {
+  /* 同 .gn-root：只留一層 fallback，且不鋪不透明底（主題的 transparent 要尊重）。 */
   background: linear-gradient(to right,
-    var(--ribbon-background, var(--background-secondary-alt, var(--background-secondary))) 0 var(--gn-treew, 232px),
+    var(--ribbon-background, var(--background-secondary)) 0 var(--gn-treew, 232px),
     color-mix(in srgb, var(--background-modifier-border) 60%, transparent) var(--gn-treew, 232px) calc(var(--gn-treew, 232px) + 1px),
-    var(--ribbon-background, var(--background-secondary-alt, var(--background-secondary))) calc(var(--gn-treew, 232px) + 1px));
+    var(--ribbon-background, var(--background-secondary)) calc(var(--gn-treew, 232px) + 1px));
 }
 .gn-tree {
   flex: 0 0 232px;
@@ -1426,6 +1432,24 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
 /* 手機：圖片卡最小比例 1:1（2026-07-19）——寬幅圖不再變成扁扁一小條。
    container query 單位：100cqw = 卡片寬 → min-height 撐到正方形，object-fit: cover 裁切不變形；
    直式圖高於 1:1 → min-height 不作用，維持原比例。書籍卡 img 非直接子元素，不受影響。 */
+/* 手機暗色：卡片要比 view 底**亮**一階（浮起），不能沿用基礎規則（2026-08-14）。
+   ⚠️ 基礎規則是 color-mix(#fff 4%, --background-primary)，在手機暗色會反過來：
+        手機暗色 --background-primary 是純黑 #000（OLED 專用，見原生 .is-mobile.theme-dark）
+        → 卡片 = #0a0a0a
+        而 view 底 --gn-mobile-bg = color-mix(--text-normal 7%, #000) = #121212
+        → **卡片比底色還暗**，看起來像凹陷。亮色沒問題（白卡浮在 7% 灰上）。
+   改成從 view 底再加白，亮暗都保證「卡片比底亮」。
+
+   ⚠️ 為什麼暗色需要**比亮色更大**的填色差距（2026-08-14 調整 9% → 16%）：
+        亮色  底 #ededed(L237) / 卡 #ffffff(L255) → 只差 18 階，卻很清楚
+        暗色  底 #121212(L18)  / 卡 …             → 同樣差 18 階會糊成一片
+      差別在**陰影**：.gn-card 的 box-shadow 是 rgba(0,0,0,.06)，
+      黑影打在近黑的底上等於不存在 → 暗色模式沒有「浮起」的線索，只剩填色。
+      亮色有陰影幫忙，暗色得靠填色自己補回來。
+      想再調：16% ≈ 38 階；20% ≈ 47 階（偏亮、會開始像卡片自己在發光）。 */
+.is-mobile.theme-dark .gn-card {
+  background: color-mix(in srgb, #fff 16%, var(--gn-mobile-bg));
+}
 .is-mobile .gn-card { container-type: inline-size; }
 .is-mobile .gn-card.gn-has-img > img {
   min-height: 100cqw;
@@ -1760,3 +1784,88 @@ body:not(.is-mobile) .gn-iconpick-cell:hover {
 /* 手機：格子放大到 44pt 觸控目標 */
 .is-mobile .gn-iconpick-grid { grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); }
 .is-mobile .gn-iconpick-cell svg { width: 22px; height: 22px; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   手機：抽屜外觀與畫廊統一（2026-08-14）
+   ------------------------------------------------------------------
+   問題：畫廊開在左抽屜，但抽屜的每一層底色都不是我們畫的 ——
+     · 上方一條白帶  ＝ .workspace-drawer-inner 的上內距（安全區），
+                        gn-root 被壓在它下面，永遠留一條沒有內容的空白
+     · 中間灰       ＝ gn-root 自己的 --gn-mobile-bg
+     · 底部膠囊列   ＝ 主題／原生各自的底色
+   三段顏色不同 → 交界處看得到接縫。原生亮色的抽屜是 --background-primary(白)，
+   而畫廊底是「白 + 7% 前景」→ **差距是結構性的，不是主題運氣**。
+
+   ⚠️ 為什麼不反過來（把畫廊改成抽屜的白）：亮色模式的卡片就是
+      color-mix(#fff 4%, --background-primary) ＝ 白，畫廊也白的話卡片會整片消失
+      （2026-07-16 事故的機制）。那層灰是卡片唯一的對比來源，只能讓抽屜配合。
+
+   ⚠️ 全部收斂在 body.gn-drawer-skin 底下，由 JS 在「畫廊是作用中的抽屜分頁」時掛上
+      （見 gallery.js 的 syncDrawerSkin）。三個理由：
+        ① 不能用 :has() —— 上架審查明文禁止（2026-07-31 才全部清掉）
+        ② 這些是**所有側欄分頁共用**的元素，無條件塗會波及檔案總管／搜尋／書籤
+        ③ 切走分頁就自動還原，使用者關掉設定也是拿掉 class 而已
+   ⚠️⚠️ 這裡是**少數 !important 站得住腳的場合**（2026-08-14 修）。
+      第一版只寫 body.gn-drawer-skin.is-mobile（(0,3,1)）就宣稱「蓋得過主題常見的
+      .is-mobile .workspace-* (0,2,0)」—— 那個 (0,2,0) 是**想像出來的選擇器，沒去抓真的**。
+      實際上 Velocity 寫的是
+        .is-mobile .workspace-drawer.mod-left > .workspace-drawer-inner  ＝ (0,4,0)
+      直接把我蓋掉，整組規則一條都沒生效。
+      而第三方主題有幾百個，特異度無從預先得知 → 對「宿主 chrome」的覆寫
+      改用 !important 當保底；對「我們自己的 .gn-* 元素」則不需要（見第 2 段）。
+      這也是原本那份 snippet 24 處 !important 的真正理由，不是作者偷懶。
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── 0）抽屜的每一層都塗成畫廊的底色 ── */
+body.gn-drawer-skin.is-mobile .workspace-drawer,
+body.gn-drawer-skin.is-mobile .workspace-drawer-inner,
+body.gn-drawer-skin.is-mobile .workspace-drawer-active-tab-container {
+  background: var(--gn-mobile-bg) !important;
+}
+/* 底部「分頁膠囊列 + vault 資訊列」自己帶底色 → 透明化，讓抽屜底透上來 */
+body.gn-drawer-skin.is-mobile .workspace-drawer-tab-options,
+body.gn-drawer-skin.is-mobile .workspace-drawer-vault-profile,
+body.gn-drawer-skin.is-mobile .workspace-sidedock-vault-profile {
+  background: transparent !important;
+}
+/* 主題常在內容底部疊一層淡出覆蓋物（例如 Velocity 的 .workspace-leaf-content::before，
+   用 --background-secondary 畫、只有約 66px → 上緣一條硬邊）。
+   畫廊自己有遮罩淡出（見第 2 段），這層是多餘的。 */
+body.gn-drawer-skin.is-mobile .workspace-drawer .workspace-leaf-content::before {
+  display: none;
+}
+
+/* ── 1）消滅頂部白帶 ──
+   ⚠️ 白帶的真正來源是**那個空的 .view-header**，不是內距（2026-08-14 查證）：
+        原生 .view-content { height: calc(100% - var(--header-height)) }
+      標題列即使沒有內容也佔掉 --header-height，畫廊被往下擠，上面就露出抽屜底色。
+      （原生與 Velocity 都**沒有**在手機給 .workspace-drawer-inner 加 safe-area 內距，
+        舊 snippet 註解裡「白塊＝上內距」的診斷對現在的版本已經不成立。）
+   內距歸零仍保留：抽屜若有自己的上緣留白，一併吃掉；安全區由第 2 段在捲動容器內部補回。 */
+body.gn-drawer-skin.is-mobile .workspace-drawer-inner {
+  padding-top: 0 !important;
+}
+body.gn-drawer-skin.is-mobile .workspace-drawer .workspace-leaf-content > .view-header {
+  display: none !important;
+}
+
+/* ── 2）捲動容器：內部補回安全區 + 頂／底遮罩淡出 ──
+   與第 1 段成對：容器頂到螢幕最上緣，這裡再把第一列推回狀態列下方。
+   遮罩讓內容在上下緣自然淡出，不會有硬邊被切斷的感覺。 */
+body.gn-drawer-skin.is-mobile .gn-main,
+body.gn-drawer-skin.is-mobile .gn-tree-scroll {
+  --gn-top-fade: calc(env(safe-area-inset-top) + 40px);
+  --gn-bottom-fade: 60px;
+  padding-top: calc(env(safe-area-inset-top) + 8px);
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0, #000 var(--gn-top-fade),
+    #000 calc(100% - var(--gn-bottom-fade)), transparent 100%);
+  mask-image: linear-gradient(to bottom,
+    transparent 0, #000 var(--gn-top-fade),
+    #000 calc(100% - var(--gn-bottom-fade)), transparent 100%);
+}
+/* 搜尋開啟時，搜尋列自己已經補了安全區 → 這裡不能再補一次（會多一截空白） */
+body.gn-drawer-skin.is-mobile .gn-root.gn-search-on .gn-main,
+body.gn-drawer-skin.is-mobile .gn-root.gn-search-on .gn-tree-scroll {
+  padding-top: 8px;
+}

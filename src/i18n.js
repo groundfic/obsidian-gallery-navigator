@@ -195,6 +195,9 @@ const ZH_TW = {
   'No icons found': '找不到符合的圖示',
   '{{n}} icons': '{{n}} 個圖示',
   '{{n}} of {{total}}': '{{n}} / {{total}}',
+  'Match the mobile drawer to the gallery': '手機：抽屜外觀與畫廊一致',
+  'Mobile only. Paints the sidebar drawer with the gallery background and removes the blank strip above it, so the gallery blends into the drawer instead of sitting in it as a grey block. Only applies while the gallery is the active drawer tab; other tabs are untouched.':
+    '僅手機。把側欄抽屜塗成畫廊的底色、並移除上方那條空白帶，讓畫廊融進抽屜，而不是像一塊灰色方塊卡在裡面。只在畫廊是作用中的抽屜分頁時生效，其他分頁不受影響。',
   'Card corners': '卡片圓角',
   'Image card layout': '圖片卡版面',
   /* 圖片卡版面用場景命名（2026-08-10）。刻意**中英文都用同一個英文名**：

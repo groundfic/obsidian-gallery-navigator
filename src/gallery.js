@@ -1116,15 +1116,35 @@ class GalleryView extends ItemView {
   /* 被藏起來時累積的重畫要求，等真的顯示出來（尺寸重新量得到）才補畫。
      Obsidian 會在 leaf 尺寸變化與顯示時呼叫 onResize。 */
   onResize() {
-    if (this._needsRender && this.contentEl && this.contentEl.clientWidth > 0) {
+    this.plugin.syncDrawerSkin();   // 抽屜開合／轉向 → 重算抽屜外觀（手機）
+    const shown = this.contentEl && this.contentEl.clientWidth > 0;
+    if (this._needsRender && shown) {
       this._needsRender = false;
       this.render();
+    }
+    /* 補做「因為看不見而做不了」的卡片定位（見 anchorActiveCard 的說明）。
+       ⚠️ 先清旗標再執行：anchorActiveCard 在還沒排好版時可能又把它設回來，
+          不先清的話這裡會變成每次 onResize 都重跑。 */
+    if (this._pendingAnchor && shown) {
+      const p = this._pendingAnchor;
+      this._pendingAnchor = null;
+      this.setActiveCard(p);
+      this.settleScroll(() => {
+        for (const el of this.cardElsFor(p)) el.addClass('gn-card-active');
+        return this.anchorActiveCard(p);
+      });
     }
   }
 
   async onOpen() {
-    this._needsRender = false;
-    this.render();
+    /* 同 syncToFile / refreshViews：寬度 0 時建出來的牆沒有排版（見 syncToFile 的說明）。
+       開啟 Obsidian 時若畫廊收在側欄，這裡就會是 0 —— 先記旗標，等 onResize 再畫。 */
+    if (this.contentEl && this.contentEl.clientWidth > 0) {
+      this._needsRender = false;
+      this.render();
+    } else {
+      this._needsRender = true;
+    }
     // 開啟任一筆記時，若同步開著 → 定位到它的資料夾（從日曆開的會設跳過旗標）
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
       // 只跳過「從行事曆開的那個特定檔案」——用路徑比對，不用無差別旗標
@@ -1243,7 +1263,16 @@ class GalleryView extends ItemView {
     const sameWall = curFolder === this.path || this.isInCurrentWall(file);
     if (sameWall && this.activePath === file.path) return;  // 無變化不重繪
     // 同一面牆內換檔 → 只更新 active 卡片，不整頁重畫（避免 PDF 縮圖等重載）
-    if (sameWall) { this.setActiveCard(file.path); return; }
+    if (sameWall) {
+      /* 同一面牆換檔：牆不重畫，但目標卡仍可能在虛擬牆的掛載視窗之外
+         → scrollToPath 掛上之後還要再校正一次（與跨資料夾分支同一套收工條件）。 */
+      this.setActiveCard(file.path);
+      this.settleScroll(() => {
+        for (const el of this.cardElsFor(file.path)) el.addClass('gn-card-active');
+        return this.anchorActiveCard(file.path);
+      });
+      return;
+    }
     const parent = file.parent;
     const folderPath = parent && parent.path !== '/' ? parent.path : '';
     const expanded = new Set(this.plugin.state.expandedFolders || []);
@@ -1261,6 +1290,19 @@ class GalleryView extends ItemView {
     if (this._syncRaf) cancelAnimationFrame(this._syncRaf);
     this._syncRaf = requestAnimationFrame(() => {
       this._syncRaf = 0;
+      /* ⚠️ 看不見就**不要建牆**（2026-08-11）。畫廊開在左側欄，手機讀筆記時抽屜是關的
+         → contentEl 寬度 0。此時 render() 仍會跑完，但：
+             · MasonryLayout / VirtualWall 都是 `if (!W) return`（virtual.js:127）
+               → _pack() 沒跑 → top[] 全 0、grid 沒有高度 → 這面牆等於沒有排版
+             · 之後 onResize 看到 _needsRender 是 false，不會重畫 → 壞牆一直留著
+         本檔案的 refreshViews() 早就有這道判斷（clientWidth > 0 才 render，否則記旗標），
+         syncToFile 卻是無條件 render —— 這就是「跨資料夾切換的第一個不會跳」的成因：
+         跨資料夾要重畫（牆壞掉），同資料夾不重畫（牆是好的）所以又正常。 */
+      if (!this.contentEl || !this.contentEl.clientWidth) {
+        this._needsRender = true;          // 顯示時由 onResize 重畫（此時量得到寬度）
+        this._pendingAnchor = file.path;   // 畫完再定位
+        return;
+      }
       this.render();
       const sel = this.contentEl.querySelector('.gn-tsel');
       // 排在「還原捲動位置」之後一幀執行，否則捲動位置會被還原值覆蓋回去
@@ -1272,10 +1314,13 @@ class GalleryView extends ItemView {
          若該筆記在分批渲染的第一批之外，卡片還沒建出來 → 以前用固定 400ms 再試一次猜，
          現在改成「卡片出現了就定位」（內容長高才會再試，見 settleScroll）。 */
       this.setActiveCard(file.path);
+      /* 內容還在長高（圖片、內文預覽陸續載入）→ 卡片會位移，要一路校正到穩定。
+         ⚠️ 收工條件是 anchorActiveCard() 回 true（「不用再捲了」），
+            不是「卡片已經存在」—— 後者會在內容定案前就停手，見該方法的說明。
+         settleScroll 本身有 3 秒上限，而且使用者一動捲軸就停，不會跟人搶。 */
       this.settleScroll(() => {
-        if (!this.cardElsFor(file.path).length) return false;
-        this.setActiveCard(file.path);
-        return true;
+        for (const el of this.cardElsFor(file.path)) el.addClass('gn-card-active');
+        return this.anchorActiveCard(file.path);
       });
     });
   }
@@ -1287,45 +1332,69 @@ class GalleryView extends ItemView {
   }
 
   // 只更新「目前開啟」的卡片外框，不重畫整牆
-  /* 標記「目前開啟」的卡片並捲到它。
-     ⚠️ 不能只靠 el.scrollIntoView() —— 大資料夾裡目標卡**根本不在 DOM**：
-          · 分批渲染：還沒畫到那一批（批量 40 / 120）
-          · 虛擬牆：在掛載視窗之外（>150 / >300 張就走這條）
-        兩種情況 cardElsFor() 都回空陣列，舊版直接靜靜地什麼都不做
-        —— 這就是「開筆記捲不到卡片」的成因（2026-08-11 修，原列為已知限制）。 */
+  /* 把卡片捲進視窗。回傳「**這次已經不需要再動**」——呼叫端用它當收工條件。
+
+     ⚠️ 不要用 el.scrollIntoView()：大資料夾裡目標卡根本不在 DOM
+        （分批渲染還沒畫到那批／虛擬牆在掛載視窗外），拿不到元素就靜靜地什麼都不做。
+     ⚠️ 也不能「卡片一出現就收工」（2026-08-11 二修）：scrollToPath() 會立刻把卡片掛上，
+        於是校正迴圈第一個 tick 就判定成功而停手；但那時圖片還沒載入、高度仍在收斂，
+        之後卡片位移就沒人再修 → 症狀是「跨資料夾時**有時候**定位不準」。
+        所以收工條件改成「位置已經穩定」，不是「元素已經存在」。
+     語意比照 scrollIntoView({ block: 'nearest' })：已完整在視窗內就不動。 */
+  anchorActiveCard(path) {
+    const main = this._main;
+    if (!main || !main.isConnected) return true;   // 沒有牆可捲 → 沒事可做，讓呼叫端收工
+    /* ⚠️⚠️ 畫廊開在**左側欄**（getLeftLeaf）。手機讀筆記時抽屜是關的、桌機側欄也可能收起
+       → 整個 view 是 display:none：clientHeight 與 getBoundingClientRect() 全是 0、
+         scrollTop 設了不會動、瀑布流連寬度都量不到（top[] 是垃圾）。
+       這時候「嘗試捲動」不只無效，還會讓 settleScroll 以為在正常運作而空轉到逾時。
+       改成記下來，等 onResize（Obsidian 在 leaf 顯示／改變尺寸時呼叫）再補做。
+       —— 本檔案早就有同型機制（_needsRender），只是定位一直沒接上，
+          症狀就是「到得了資料夾、到不了筆記」，而且側欄開著時又正常 → 看起來像時好時壞。 */
+    if (!main.clientHeight || !this.contentEl || !this.contentEl.clientWidth) {
+      this._pendingAnchor = path;
+      return true;   // 讓呼叫端收工，不要空轉
+    }
+    const PAD = 12;
+    const el = this.cardElsFor(path)[0];
+
+    if (el && el.isConnected) {
+      const er = el.getBoundingClientRect();
+      const mr = main.getBoundingClientRect();
+      if (er.height === 0) return false;           // 還沒有版面（圖片未定案）→ 下一輪再說
+      if (er.top >= mr.top + PAD && er.bottom <= mr.bottom - PAD) return true;   // 已在視窗內
+      const delta = er.bottom > mr.bottom
+        ? er.bottom - mr.bottom + PAD              // 在下方 → 貼底
+        : er.top - mr.top - PAD;                   // 在上方 → 貼頂
+      main.scrollTop += delta;
+      /* 這次真的捲了 → 回 false，讓迴圈下一輪再確認一次。
+         高度還在長的話位置會再偏，要等到「不用捲」才算穩定。 */
+      return Math.abs(delta) <= 2;
+    }
+
+    // 卡片不在 DOM：① 虛擬牆用座標捲過去（未掛載也算得出來）② 分批渲染補畫到它出現
+    for (const vw of (this._virtuals || [])) {
+      if (vw.scrollToPath && vw.scrollToPath(path)) return false;   // 掛上了，下一輪再校正
+    }
+    for (const draw of (this._chunkDrawers || [])) {
+      if (draw(path)) return false;
+    }
+    return false;   // 這面牆上沒有這則筆記（例如被標籤篩選擋掉）→ 交給 settleScroll 的逾時收尾
+  }
+
+  /* 標記「目前開啟」的卡片並捲到它。 */
   setActiveCard(path) {
     const prev = this.activePath;
     this.activePath = path;
     if (!this._cardEls) return;
     if (prev && prev !== path) { for (const e of this.cardElsFor(prev)) e.removeClass('gn-card-active'); }
 
-    const mark = (els) => els.forEach((el, i) => {
-      el.addClass('gn-card-active');
-      if (i === 0) el.scrollIntoView({ block: 'nearest' });
-    });
+    /* 先掐掉「還原捲動位置」的迴圈：它每次 grid 高度變動就把 scrollTop 拉回記憶值，
+       不中止的話下面捲多少都會被拉回去（2026-08-11 的「到不了筆記」主因之一）。 */
+    if (this._restoreStop) { try { this._restoreStop(); } catch (e) {} this._restoreStop = null; }
 
-    const els = this.cardElsFor(path);
-    if (els.length) { mark(els); return; }
-
-    // ① 虛擬牆：座標算得出來（未掛載的用估計值），先捲過去
-    for (const vw of (this._virtuals || [])) {
-      if (!vw.scrollToPath || !vw.scrollToPath(path)) continue;
-      /* 捲完卡片才掛載、才量到真高度 → 估計值與真值的差距要再校正一次。
-         scrollToPath 內部已經 _update() 掛好卡片，所以下一幀通常拿得到元素。 */
-      requestAnimationFrame(() => {
-        const again = this.cardElsFor(path);
-        if (again.length) mark(again);
-        else vw.scrollToPath(path);   // 還沒掛上 → 至少把捲動位置修到新的估計值
-      });
-      return;
-    }
-
-    // ② 分批渲染：補畫到目標卡出現，再照一般路徑捲過去
-    for (const draw of (this._chunkDrawers || [])) {
-      if (!draw(path)) continue;
-      const again = this.cardElsFor(path);
-      if (again.length) { mark(again); return; }
-    }
+    for (const el of this.cardElsFor(path)) el.addClass('gn-card-active');
+    this.anchorActiveCard(path);
   }
 
   folderAt(path) {
@@ -1336,6 +1405,7 @@ class GalleryView extends ItemView {
 
   // 切到某個資料夾（根目錄列、最愛捷徑、麵包屑、右鍵「跳到資料夾」都走這裡）
   navigate(path) {
+    this._pendingAnchor = null;   // 使用者自己選了資料夾 → 取消待辦的定位，別等一下亂跳
     this.path = path;
     this.plugin.state.lastPath = path;
     this._tagFilter = new Set();   // 換資料夾 → 清掉上一夾的標籤篩選
@@ -3097,7 +3167,9 @@ class GalleryView extends ItemView {
     // 右欄卡片牆的捲動位置也記下來：同一面牆重畫時還原。
     // 典型場景：拖曳卡片搬到別的資料夾 → rename 事件 → refreshViews 整頁重畫 → 沒這段會跳回頂部。
     if (this._main && this._main.isConnected) {
-      this._mainScrollSaved = { key: this.mainScrollKey(), top: this._main.scrollTop };
+      // ⚠️ 用 _mainWallKey（畫面上那面牆的身分），不要當場算 mainScrollKey()
+      //    —— this.path 可能已經被 syncToFile 改成新資料夾了，見 renderMainContent 的說明
+      this._mainScrollSaved = { key: this._mainWallKey, top: this._main.scrollTop };
     }
     this._layout = this.effectiveLayout();   // 熱路徑（makeCard 等）只讀這個快取
     this._treeScrollLock = true;
@@ -3762,6 +3834,7 @@ class GalleryView extends ItemView {
     } catch (e) {}
     timer = window.setTimeout(stop, opts.timeout || 3000);
     requestAnimationFrame(tick);
+    return stop;   // 呼叫端可以提前中止（例如同步定位要蓋掉還原捲動位置）
   }
 
   // 還原右欄卡片牆的捲動位置（同一面牆重畫時；換牆就不還原，自然從頂部開始）
@@ -3769,7 +3842,9 @@ class GalleryView extends ItemView {
     const saved = this._mainScrollSaved;
     const main = this._main;
     if (!saved || !main || !saved.top || saved.key !== this.mainScrollKey()) return;
-    this.settleScroll(() => {
+    /* 記下 stop：同步定位（setActiveCard）要能把這個還原迴圈掐掉。
+       兩者都在改同一個 scrollTop，同時跑的話後喊的不一定贏 —— 還原迴圈會持續重套。 */
+    this._restoreStop = this.settleScroll(() => {
       main.scrollTop = saved.top;                       // 會被當下 scrollHeight 夾住，
       return Math.abs(main.scrollTop - saved.top) <= 4; // 順勢讓哨兵進視野、觸發補下一批
     });
@@ -3780,9 +3855,18 @@ class GalleryView extends ItemView {
   renderMainContent(main) {
     if (this._barTitle) this._barTitle.empty();   // 各檢視自己填
     const state = this.plugin.state;
-    if (this._searchQ) { this.renderSearchWall(main); return; }
+    /* ⚠️ 記下「**畫面上這面牆**」的身分（2026-08-11）。
+       捲動位置的存檔以前是在 renderInner() 清空前臨時呼叫 mainScrollKey() 算的，
+       但 syncToFile 的跨資料夾分支是**先改 this.path、才 render** →
+       算出來的 key 是「新資料夾」，配上的卻是「舊牆」的 scrollTop
+       → restoreMainScroll() 判定 key 相符，把舊牆的捲動位置還原到新牆上，
+         而且它走 settleScroll，每次 grid 高度變動就重套、最長 3 秒
+         → 同步定位剛捲到卡片就被拉回去，症狀是「到得了資料夾、到不了筆記」。
+       改成在牆畫完的當下把身分存起來，存檔時用它，就不會再張冠李戴。 */
+    if (this._searchQ) { this.renderSearchWall(main); this._mainWallKey = this.mainScrollKey(); return; }
     if (state.leftMode === 'tag') this.renderTagNotes(main);
     else this.renderNoteWall(main, this.folderAt(this.path));
+    this._mainWallKey = this.mainScrollKey();
   }
 
   // 只重繪右欄（打字時用；搜尋列在 gn-root 底下，不會被清掉 → 保持焦點）
@@ -3818,7 +3902,9 @@ class GalleryView extends ItemView {
            會影響工具列或左樹 → 才需要 render() 或另外補 refreshTree()。 */
   rerenderMainKeepScroll() {
     if (!this._main) { this.render(); return; }
-    this._mainScrollSaved = { key: this.mainScrollKey(), top: this._main.scrollTop };
+    // 與 renderInner 一致，一律用 _mainWallKey（畫面上那面牆的身分）。
+    // 這條路徑 this.path 不會變、當場算也對，但兩處寫法一致才不會有人只改一邊。
+    this._mainScrollSaved = { key: this._mainWallKey, top: this._main.scrollTop };
     this.rerenderMain();
     this.restoreMainScroll();
   }
@@ -5115,6 +5201,12 @@ class GallerySettingTab extends PluginSettingTab {
         .onChange((v) => { st.openUnfocused = v; save(); }));
 
     new Setting(containerEl)
+      .setName(t('Match the mobile drawer to the gallery'))
+      .setDesc(t('Mobile only. Paints the sidebar drawer with the gallery background and removes the blank strip above it, so the gallery blends into the drawer instead of sitting in it as a grey block. Only applies while the gallery is the active drawer tab; other tabs are untouched.'))
+      .addToggle((tg) => tg.setValue(st.mobileDrawerSkin !== false)
+        .onChange((v) => { st.mobileDrawerSkin = v; save(); this.plugin.syncDrawerSkin(); }));
+
+    new Setting(containerEl)
       .setName(t('Image lightbox actions'))
       .setDesc(t('Adds a floating action bar (copy, visual search, reveal in Finder) to the image lightbox Obsidian shows when you click an image. Turn this off if a future Obsidian update changes the lightbox and the bar misbehaves.'))
       .addToggle((tg) => tg.setValue(st.enableLightboxActions !== false)
@@ -5751,6 +5843,15 @@ class GalleryPlugin extends Plugin {
 
     this.addRibbonIcon(GN_ICON_ID, 'Gallery Navigator', () => this.activateView());
 
+    /* 抽屜外觀同步：切分頁、開關抽屜、轉螢幕都要重算（見 syncDrawerSkin）。
+       三個事件都掛：layout-change 抓分頁切換、active-leaf-change 抓焦點移動、
+       resize 抓抽屜開合與轉向（抽屜是用寬度變化表現的，只靠前兩個會漏）。 */
+    const syncSkin = () => this.syncDrawerSkin();
+    this.registerEvent(this.app.workspace.on('layout-change', syncSkin));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', syncSkin));
+    this.registerEvent(this.app.workspace.on('resize', syncSkin));
+    this.app.workspace.onLayoutReady(syncSkin);
+
     this.addCommand({
       id: 'open-gallery-navigator',
       name: t('Open Gallery Navigator'),
@@ -6190,6 +6291,22 @@ class GalleryPlugin extends Plugin {
     }, 150);
   }
 
+  /* 手機：畫廊是「作用中的抽屜分頁」時，把抽屜外觀統一成畫廊的底色（2026-08-14）。
+     實際樣式全在 gallery.css 的 body.gn-drawer-skin 區塊，這裡只負責掛/拆 class。
+
+     ⚠️ 用 class 而不是 CSS 的 :has(> .gn-root)：上架審查禁止 :has()（2026-07-31 已全清）。
+     ⚠️ 判定用 contentEl.clientWidth > 0 ——「看得見」比「是不是 active leaf」可靠：
+        抽屜關著、或畫廊在別的分頁後面時都是 0，正好就是不該套用的時機。
+     ⚠️ 只在手機掛。桌機的畫廊不在抽屜裡，套上去只會亂改側欄。 */
+  syncDrawerSkin() {
+    // 這個檔案一律用 body class 判平台（Platform 沒有 import，見檔頭 require）
+    const want = document.body.classList.contains('is-mobile')
+      && this.state.mobileDrawerSkin !== false
+      && this.app.workspace.getLeavesOfType(VIEW_TYPE)
+        .some((l) => l.view && l.view.contentEl && l.view.contentEl.clientWidth > 0);
+    document.body.toggleClass('gn-drawer-skin', !!want);
+  }
+
   // 去抖寫檔：連續操作（釘選/上色/展開…）只寫一次 data.json，減少 iCloud 寫入
   saveState() {
     clearTimeout(this._saveT);
@@ -6525,6 +6642,8 @@ class GalleryPlugin extends Plugin {
   }
 
   async onunload() {
+    // 停用外掛 → 立刻還原抽屜外觀（我們改的是宿主的元素，不能留下痕跡）
+    document.body.removeClass('gn-drawer-skin');
     // 卸載前把尚未寫入的狀態刷出去
     clearTimeout(this._saveT);
     if (this.search) this.search.disposeTimers();   // modify 去抖的待觸發計時器
