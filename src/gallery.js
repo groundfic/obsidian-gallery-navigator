@@ -884,7 +884,10 @@ class FolderSuggest extends FuzzySuggestModal {
   constructor(app, onChoose, excludePath) {
     super(app);
     this.onChoose = onChoose;
-    this.excludePath = excludePath;          // 移動資料夾時，排除自己與子孫，避免移進自己
+    /* 移動資料夾時排除自己與子孫，避免移進自己。
+       可傳單一路徑或路徑陣列（2026-08-18：批次移動要一次排除多個來源）。 */
+    this.excludePaths = !excludePath ? []
+      : (Array.isArray(excludePath) ? excludePath.filter(Boolean) : [excludePath]);
     this.setPlaceholder(t('Move to which folder…'));
   }
   getItems() {
@@ -894,8 +897,9 @@ class FolderSuggest extends FuzzySuggestModal {
       for (const c of f.children) if (c instanceof TFolder) { folders.push(c); walk(c); }
     };
     walk(root);
-    if (!this.excludePath) return folders;
-    return folders.filter((f) => f.path !== this.excludePath && !f.path.startsWith(this.excludePath + '/'));
+    if (!this.excludePaths.length) return folders;
+    return folders.filter((f) =>
+      !this.excludePaths.some((p) => f.path === p || f.path.startsWith(p + '/')));
   }
   getItemText(f) { return f.path === '/' ? '/ (' + t('vault root') + ')' : f.path; }
   onChooseItem(f) { this.onChoose(f); }
@@ -1101,6 +1105,13 @@ class GalleryView extends ItemView {
     this.drag = null;         // { kind: 'note'|'folder', path }
     this.selected = new Set();   // 多選：檔案路徑
     this.selAnchor = null;       // 範圍選的錨點
+    /* 資料夾多選（2026-08-18）—— 跟卡片的 selected 分開放，不共用。
+       兩者的批次操作對象不同（檔案 vs 資料夾），混在一起「移動」會分不清該搬什麼。
+       folderSelMode 是**手機專用**的選取模式：手機沒有 Cmd/Shift，
+       改從長按選單的「選取多個」進入，進入後點整列就是加減選。 */
+    this.selFolders = new Set();     // 多選：資料夾路徑
+    this.folderSelAnchor = null;     // 資料夾範圍選的錨點
+    this.folderSelMode = false;      // 手機：選取模式開關
     this._tagDirty = true;       // 標籤索引快取失效旗標（buildTagIndex 專用，用完會清掉）
     /* 世代編號：標籤相關資料每變動一次就 +1。
        ⚠️ 不能讓多個快取共用 _tagDirty 這個布林——先跑的那個會把旗標清掉，
@@ -1459,19 +1470,37 @@ class GalleryView extends ItemView {
     }
   }
 
-  // 桌機右鍵 + 手機長按 → 同一個選單。build() 需回傳未 show 的 Menu
+  /* 桌機右鍵 + 手機長按 → 同一個選單。build(ctx) 需回傳未 show 的 Menu；
+     **回傳 null 就不開選單**，用來讓「容器上的選單」對子元素讓路。
+
+     ctx.target ＝ 事件落在哪個元素上（2026-08-18 加）。左欄空白處的選單需要它：
+     列（.gn-tnode）自己的 handler 只 preventDefault、不 stopPropagation，事件會
+     一路冒到容器 → 容器得自己認出「這下點在列上」並回傳 null，否則兩個選單一起開。
+     手機長按傳的是 touchstart 當下抓下來的 target（不留整個 event 參照，
+     500ms 後那個 event 早已 dispatch 完畢）。 */
   wireContextMenu(el, build) {
-    const open = (x, y) => { const m = build(); if (m) m.showAtPosition({ x, y }); };
-    el.addEventListener('contextmenu', (e) => { e.preventDefault(); open(e.clientX, e.clientY); });
+    // 回傳 true ＝ 真的開了選單。長按路徑靠這個決定要不要震動 / 攔 click
+    const open = (x, y, ctx) => {
+      const m = build(ctx || {});
+      if (!m) return false;
+      m.showAtPosition({ x, y });
+      return true;
+    };
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); open(e.clientX, e.clientY, e); });
     // 手機長按（自製計時器；移動超過門檻或放開即取消）
     let timer = null, sx = 0, sy = 0;
     el.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) return;
       const t = e.touches[0]; sx = t.clientX; sy = t.clientY;
+      const tgt = e.target;   // 先抓下來：計時器觸發時才讀 e 已經太晚
       timer = setTimeout(() => {
         timer = null;
+        /* ⚠️ 先開選單、再決定震不震（2026-08-18 改）。
+           以前是無條件震動 → 容器與子元素各綁一份時（左欄的空白選單 vs 列的選單），
+           在列上長按會冒泡觸發兩份計時器，震兩下、還多掛一個攔 click 的 listener
+           把下一次點擊吃掉。讓路的那一份 build() 回 null，就該完全不作聲。 */
+        if (!open(sx, sy, { target: tgt, touch: true })) return;
         if (navigator.vibrate) { try { navigator.vibrate(15); } catch (er) {} }
-        open(sx, sy);
         // 攔掉這次長按後緊接的 click，避免同時觸發開啟/導覽
         const kill = (ev) => { ev.stopPropagation(); ev.preventDefault(); el.removeEventListener('click', kill, true); };
         el.addEventListener('click', kill, true);
@@ -1878,12 +1907,26 @@ class GalleryView extends ItemView {
     const newPath = parent + name;
     if (this.app.vault.getAbstractFileByPath(newPath)) { new Notice(t('A folder with that name already exists')); this.render(); return; }
     const oldPath = folder.path;
+    /* 改名不重新排序（2026-08-18）：先把這一層目前的顯示順序抄下來。
+       一定要在 renameFile 之前算 —— 之後 subFolders() 回的是新路徑，
+       跟既有 savedOrder 對不上，抄到的順序就已經是錯的了。 */
+    const frozen = this.currentFolderOrder(folder.parent);
+    const remap = (p) => (p === oldPath || p.startsWith(oldPath + '/')) ? newPath + p.slice(oldPath.length) : p;
     try {
       await this.app.fileManager.renameFile(folder, newPath);
-      // 沿用選取 / 展開狀態：把舊路徑前綴換成新路徑
-      const remap = (p) => (p === oldPath || p.startsWith(oldPath + '/')) ? newPath + p.slice(oldPath.length) : p;
-      this.plugin.state.expandedFolders = (this.plugin.state.expandedFolders || []).map(remap);
-      if (this.path === oldPath || this.path.startsWith(oldPath + '/')) this.path = remap(this.path);
+      /* ⚠️ 寫入時就換成新路徑，不要指望後面的 remap 幫忙。
+         vault 的 rename 事件（見 plugin onload）也會呼叫 remapPathState，而它可能在
+         上面這個 await 期間就跑完了 —— 那時 frozen.list 還沒寫進去，等於沒被 remap 到。
+         事後才寫入一串舊路徑，orderFolders 全查不到 → 整層順序反而更亂。 */
+      if (frozen) {
+        const orders = Object.assign({}, this.plugin.state.folderOrder);
+        orders[frozen.key] = frozen.list.map(remap);
+        this.plugin.state.folderOrder = orders;
+      }
+      /* 這兩行對「畫廊自己觸發的改名」其實多半已由 rename 事件做完，是 no-op；
+         留著是保險 —— 事件若因故沒到（版本差異、事件被吞），這裡仍能自己收尾。 */
+      this.plugin.remapPathState(oldPath, newPath);
+      this.remapViewPaths(oldPath, newPath);
       this.plugin.state.lastPath = this.path;
       this.plugin.saveState();
       this.render();
@@ -2074,32 +2117,87 @@ class GalleryView extends ItemView {
       el.removeClass(cls);
       const d = this.drag;
       if (!d) return;
-      const item = this.app.vault.getAbstractFileByPath(d.path);
       const target = this.folderAt(targetPath);
-      if (item && target) this.moveItem(item, target);
+      if (!target) return;
+      // 整批（卡片或資料夾）拖到這裡 → 一起搬，不能只搬被抓的那一個
+      if (this.dropInto(target)) return;
+      const item = this.app.vault.getAbstractFileByPath(d.path);
+      if (item) this.moveItem(item, target);
     });
   }
 
-  // 用 fileManager.renameFile 搬移：會自動更新所有 [[wiki-link]]
-  async moveItem(item, targetFolder) {
+  /* 路徑改變後，連 view 自己記著的路徑一起搬（state 的部分交給 plugin.remapPathState）。
+     這些是 view 的暫態，不進 data.json，但漏掉一樣會壞：
+       • this.path        ＝ 目前開著的資料夾。不換 → folderAt() 查不到而 fallback 回 root，
+                            右欄突然變成整個 vault 的牆，左樹卻沒有任何一列是選取狀態。
+       • selFolders       ＝ 多選中的資料夾。不換 → 批次移動時 getAbstractFileByPath 撲空，
+                            靜默漏搬，提示卻只報實際搬成的數量，使用者不會發現少了。
+       • folderSelAnchor  ＝ Shift 範圍選的錨點。不換 → indexOf 回 -1，Shift+點完全沒反應。
+     ⚠️ this.path 用 '' 代表 root，跟 TFolder 的 '/' 是兩套；'' 不會命中 hit()，安全。 */
+  remapViewPaths(oldPath, newPath) {
+    if (!oldPath || !newPath || oldPath === newPath) return;
+    const hit = (p) => typeof p === 'string' && (p === oldPath || p.startsWith(oldPath + '/'));
+    const remap = (p) => (hit(p) ? newPath + p.slice(oldPath.length) : p);
+    if (hit(this.path)) this.path = remap(this.path);
+    if (this.selFolders && this.selFolders.size) this.selFolders = new Set([...this.selFolders].map(remap));
+    if (hit(this.folderSelAnchor)) this.folderSelAnchor = remap(this.folderSelAnchor);
+  }
+
+  /* 算出某一層「目前畫面上的顯示順序」（路徑陣列），但**不寫入** state。
+     給改名用：使用者要的是「改名不要讓資料夾跳位置」，可是沒拖拉過的層本來就是
+     依名稱自動排的 —— 光 remap 路徑還不夠，改完名字照樣會依新名字跑掉。
+     所以改名前先把當下順序抄下來，成功後寫進 folderOrder 定住。
+
+     必須在 renameFile 之前呼叫：那時 folder.path 還是舊值，才對得上既有的 savedOrder。
+     回傳 null ＝ 這層沒有順序可談（0 或 1 個子資料夾），不必寫入。 */
+  currentFolderOrder(parentFolder) {
+    if (!(parentFolder instanceof TFolder)) return null;
+    const items = subFolders(parentFolder).map((sub) => ({ folder: sub, name: sub.name }));
+    if (items.length < 2) return null;
+    const key = parentFolder.path || '/';
+    const saved = (this.plugin.state.folderOrder || {})[key];
+    return { key, list: orderFolders(items, saved).map((it) => it.folder.path) };
+  }
+
+  /* 用 fileManager.renameFile 搬移：會自動更新所有 [[wiki-link]]。
+     silent ＝ 批次模式：**可預期的略過**（已在此層／同名衝突／移進自己）都不出聲，
+     由呼叫端用 reportBatchMove 彙總報一次。
+     ⚠️ 真正的例外（catch 那條）不受 silent 影響 —— 那是使用者一定要知道的事。
+
+     為什麼略過也要吃掉：從 P 底下選 5 個、又拖回 P，5 次都在「已經在這個資料夾了」
+     早退 —— 沒吃掉就是 5 條 Notice 疊滿畫面，再加一條彙總共 6 條。
+     回傳 true/false 讓批次端能算出成功與略過各幾個。 */
+  async moveItem(item, targetFolder, silent) {
     // 防止把資料夾移進自己或自己的子孫
     if (item instanceof TFolder &&
         (targetFolder.path === item.path || targetFolder.path.startsWith(item.path + '/'))) {
-      new Notice(t('Cannot move a folder into itself'));
-      return;
+      if (!silent) new Notice(t('Cannot move a folder into itself'));
+      return false;
     }
     const dir = targetFolder.path === '/' ? '' : targetFolder.path + '/';
     const newPath = dir + item.name;
-    if (newPath === item.path) { new Notice(t('Already in this folder')); return; }
+    if (newPath === item.path) { if (!silent) new Notice(t('Already in this folder')); return false; }
     if (this.app.vault.getAbstractFileByPath(newPath)) {
-      new Notice(t('Target already has an item with the same name — move cancelled'));
-      return;
+      if (!silent) new Notice(t('Target already has an item with the same name — move cancelled'));
+      return false;
     }
+    const oldPath = item.path;
     try {
       await this.app.fileManager.renameFile(item, newPath);
-      new Notice(t('Moved to {{dest}}', { dest: targetFolder.path === '/' ? t('vault root') : targetFolder.path }));
+      /* 搬移一樣是換路徑 → 設定與 view 暫態都要跟著搬（2026-08-18 補）。
+         在此之前搬一次資料夾，它的顏色、圖示、隱藏、最愛、排序、展開狀態與夾內卡片底色
+         全部掉光；而且 this.path / lastPath 還停在舊路徑，folderAt() 查不到就 fallback
+         回 root —— 右欄突然變成整個 vault 的牆，左樹卻沒有任何一列是選取的。
+         多半已由 vault 的 rename 事件做完，這裡是保險（no-op 安全）。 */
+      this.plugin.remapPathState(oldPath, newPath);
+      this.remapViewPaths(oldPath, newPath);
+      this.plugin.state.lastPath = this.path;
+      this.plugin.saveState();
+      if (!silent) new Notice(t('Moved to {{dest}}', { dest: targetFolder.path === '/' ? t('vault root') : targetFolder.path }));
+      return true;
     } catch (e) {
       new Notice(t('Move failed: {{msg}}', { msg: e && e.message ? e.message : e }));
+      return false;
     }
   }
 
@@ -2803,23 +2901,52 @@ class GalleryView extends ItemView {
     this.contentEl.findAll('.gn-tnode').forEach((el) => el.removeClass('gn-tmove', 'gn-tbefore', 'gn-tafter'));
   }
 
-  // 樹狀落點：into＝移進資料夾；before/after＝同層排序
-  handleTreeDrop(targetFolder, zone) {
+  /* 「把拖曳中的東西放進 targetFolder」——**所有**落點共用這一支。
+     回傳 true ＝ 這是批次、已經處理掉了；false ＝ 不是批次，呼叫端自己走單一邏輯。
+
+     為什麼要抽出來：以前 handleTreeDrop（資料夾列）自己有批次分支，
+     wireMoveTarget（根目錄列）卻沒有 —— 多選 10 張卡片拖到資料夾列會全部搬走，
+     拖到最上面的 vault 名稱列只搬走被抓的那一張，其餘 9 張留在原地且毫無提示。
+     同一個動作兩種結果，只因為落在不同的列上。 */
+  dropInto(targetFolder) {
     const d = this.drag;
-    if (!d) return;
+    if (!d || !targetFolder) return false;
     // 拖曳的是「已選取的筆記」且有多選 → 批次移動全部選取
     if (d.kind === 'note' && this.selected.size > 1 && this.selected.has(d.path)) {
       const paths = [...this.selected];
       (async () => {
+        let ok = 0, skipped = 0;
         for (const p of paths) {
           const f = asFile(this.app, p);
-          if (f) await this.moveItem(f, targetFolder);
+          // silent：逐一報會洗版（搬 20 張就 20 條），統一在最後彙總
+          if (f && await this.moveItem(f, targetFolder, true)) ok++; else skipped++;
         }
         this.selected.clear();
         this.render();
+        this.reportBatchMove(ok, skipped);
       })();
-      return;
+      return true;
     }
+    // 拖曳的是「已選取的資料夾」且有多選 → 同上，資料夾版
+    if (d.kind === 'folder' && d.paths && d.paths.length > 1) {
+      this.moveFolderBatch(d.paths, targetFolder);
+      return true;
+    }
+    return false;
+  }
+
+  // 批次搬移的收尾提示：一次講完搬了幾個、略過幾個
+  reportBatchMove(ok, skipped) {
+    if (ok && skipped) new Notice(t('Moved {{n}}, skipped {{k}}', { n: ok, k: skipped }));
+    else if (ok) new Notice(t('Moved {{n}} items', { n: ok }));
+    else new Notice(t('Nothing was moved'));
+  }
+
+  // 樹狀落點：into＝移進資料夾；before/after＝同層排序
+  handleTreeDrop(targetFolder, zone) {
+    const d = this.drag;
+    if (!d) return;
+    if (this.dropInto(targetFolder)) return;
     const item = this.app.vault.getAbstractFileByPath(d.path);
     if (!item) return;
     if (d.kind === 'note' || zone === 'into') { this.moveItem(item, targetFolder); return; }
@@ -3265,6 +3392,29 @@ class GalleryView extends ItemView {
     const tree = split.createDiv('gn-tree');             // 左欄容器（flex 直向）
     tree.style.flex = '0 0 ' + (state.treeWidth || 232) + 'px';
     const treeScroll = tree.createDiv('gn-tree-scroll');  // 可捲動的資料夾/標籤區
+    /* 資料夾多選的操作條：擺在捲動區「之後」＝固定貼左欄底部，不隨樹捲動。
+       預設 display:none，updateFolderSelBar() 有選取時才打開。 */
+    this._folderSelBar = tree.createDiv('gn-tselbar');
+    this._folderSelBar.style.display = 'none';
+
+    /* 左欄空白處右鍵／長按 → 新增資料夾（2026-08-18）。
+       建在**根目錄**：空白處在空間語意上就是樹的最外層。要建子資料夾的路徑已經有了
+       —— 在目標資料夾列上右鍵 → Create here → Folder，兩條路徑不重疊。
+
+       ⚠️ 這是綁在容器上的選單，而列（.gn-tnode）自己的 handler 只 preventDefault、
+          不 stopPropagation，事件照樣冒泡到這裡。所以要認出「這下點在列上」並回傳
+          null 讓路，否則右鍵資料夾會同時彈出兩個選單。 */
+    this.wireContextMenu(tree, (ctx) => {
+      if (this.plugin.state.leftMode === 'tag') return null;   // 標籤模式沒有「新增資料夾」可言
+      const el = ctx && ctx.target;
+      // 涵蓋所有列：資料夾列、root 列、最愛列（都是 .gn-tnode）＋ 最愛標題 ＋ 操作條
+      if (el && el.closest && el.closest('.gn-tnode, .gn-fav-head, .gn-tselbar')) return null;
+      const menu = new Menu();
+      menu.addItem((i) => i.setTitle(t('New folder')).setIcon('folder-plus')
+        .onClick(() => this.newFolder(this.app.vault.getRoot())));
+      return menu;
+    });
+
     const splitter = split.createDiv('gn-split-handle');
     const main = split.createDiv('gn-main');
     this._split = split; this._main = main;   // 供手機「點資料夾 → 跳右欄」使用
@@ -3618,6 +3768,7 @@ class GalleryView extends ItemView {
         row.style.setProperty('--gn-depth', String(depth));
         if (depth > 1) row.addClass('gn-tchild');   // 巢狀 → 畫左側引導線
         row.dataset.path = it.folder.path;
+        row.dataset.gnFolder = '1';   // 多選只認資料夾列（標籤列同樣有 data-path，見 folderRowEls）
         if (this.path === it.folder.path) {
           row.addClass('gn-tsel');
           // 剛用點擊選到這個資料夾 → 選後給它焦點，這樣按 Enter 就能改名
@@ -3628,6 +3779,8 @@ class GalleryView extends ItemView {
         }
         if (isHidden) row.addClass('gn-thidden');
         if (hasKids && isOpen) row.addClass('gn-topen');
+        // 多選中的列：重畫後要還原勾選樣式，否則展開/收合一次選取就「看起來」消失了
+        if (this.selFolders.has(it.folder.path)) row.addClass('gn-tmulti');
 
         // 圖示欄：平常是資料夾圖示，hover 時換成箭頭（可展開的話）
         const { thumb, caret } = makeIconSlot(row);
@@ -3651,11 +3804,32 @@ class GalleryView extends ItemView {
 
         // 選取此資料夾後按 Enter → 原地變輸入框改名（macOS Finder 風格）
         row.onkeydown = (e) => {
-          if (e.key === 'Enter' && !nameEl._editing) { e.preventDefault(); this.inlineRenameFolder(it.folder, nameEl); }
+          if (e.key !== 'Enter' || nameEl._editing) return;
+          e.preventDefault();
+          /* 選取模式下 Enter ＝ 加減選，不是改名。點列已經是 toggle 了，
+             鍵盤卻跑去改名會前後不一 —— 而且點一下列就會 focus 它，很容易誤按。 */
+          if (this.folderSelMode) { this.toggleFolderSel(it.folder.path); return; }
+          this.inlineRenameFolder(it.folder, nameEl);
         };
 
         // 點整列 = 只選取（右欄載入）；展開/收合交給箭頭
         row.onclick = (e) => {
+          /* ── 多選優先（2026-08-18）──
+             桌機用修飾鍵，手機用 folderSelMode（長按選單進入）。擺在最前面：
+             一旦在多選，這一下就不該再導覽或觸發改名。 */
+          if (this.folderSelMode || e.metaKey || e.ctrlKey) {
+            e.preventDefault();
+            this.toggleFolderSel(it.folder.path);
+            return;
+          }
+          if (e.shiftKey && this.folderSelAnchor) {
+            e.preventDefault();
+            this.rangeFolderSel(this.folderSelAnchor, it.folder.path);
+            return;
+          }
+          // 沒按修飾鍵的普通點擊 → 離開多選，回到單選導覽（比照 Finder）
+          if (this.selFolders.size) this.clearFolderSel();
+
           /* 已選取的資料夾，再點一次「名稱」→ 原地改名（2026-08-01）。
              照 Finder 的慢速雙擊邏輯：第一下先選取，第二下才進編輯，
              所以不會犧牲「點名稱＝選取」這個最常用的動作。
@@ -3679,10 +3853,26 @@ class GalleryView extends ItemView {
 
         this.wireContextMenu(row, () => {
           const menu = new Menu();
+          /* ── 多選中：整個選單換成「對這批」的操作（2026-08-18）──
+             選了 5 個資料夾卻跳出單一資料夾的改名/配色，會讓人搞不清楚要對誰動手。
+             只有在這一列**確實在選取集裡**才切換；右鍵一個沒選到的列＝一般單選選單。 */
+          if (this.selFolders.size > 1 && this.selFolders.has(it.folder.path)) {
+            const n = this.selFolders.size;
+            menu.addItem((i) => i.setTitle(t('Move {{n}} folders to…', { n })).setIcon('folder-input')
+              .onClick(() => this.moveSelectedFolders()));
+            menu.addSeparator();
+            menu.addItem((i) => i.setTitle(t('Clear selection')).setIcon('x')
+              .onClick(() => this.clearFolderSel()));
+            return menu;
+          }
           if (hasKids) {
             menu.addItem((i) => i.setTitle(isOpen ? t('Collapse') : t('Expand')).setIcon(isOpen ? 'chevron-down' : 'chevron-right')
               .onClick(() => this.toggleExpand(it.folder.path)));
           }
+          /* 手機的多選入口。手機沒有 Cmd/Shift，不給這一項就完全進不了多選；
+             桌機用修飾鍵更快，但也留著 —— 有人就是不想記快捷鍵。 */
+          menu.addItem((i) => i.setTitle(t('Select multiple')).setIcon('check-check')
+            .onClick(() => this.enterFolderSelMode(it.folder.path)));
           menu.addItem((i) => {
             i.setTitle(t('Create here')).setIcon('file-plus');
             const sub = i.setSubmenu();
@@ -3744,12 +3934,29 @@ class GalleryView extends ItemView {
         // 拖曳：可拖；作為落點時分三區（上緣＝排前面、下緣＝排後面、中間＝移進去）
         row.setAttr('draggable', 'true');
         row.addEventListener('dragstart', (e) => {
-          this.drag = { kind: 'folder', path: it.folder.path };
-          row.addClass('gn-tdragging');
+          /* 拖的是「多選中的其中一個」→ 整批一起走（2026-08-18）。
+             卡片牆早就這樣了（見 handleTreeDrop 開頭的 note 批次分支），
+             資料夾卻只搬被拖的那一個 —— 選了一批卻不能直接拖走，多選等於半殘。
+             paths 只在批次時存在，既有讀 d.path 的地方照舊運作。 */
+          /* ⚠️ 條件要看 tops 的數量，不能看 selFolders.size —— 兩者常常不一樣。
+             選了 A 和 A/b（Shift 範圍選很容易一次圈到父子），size 是 2 但 tops 只剩 [A]，
+             那其實只是「搬一個資料夾」，卻會被當成批次而失去同層 before/after 排序，
+             使用者只會看到插入線莫名其妙不出現了。 */
+          const tops = this.selFolders.has(it.folder.path) ? this.topSelectedFolders() : [];
+          const batch = tops.length > 1 ? tops : null;
+          this.drag = { kind: 'folder', path: it.folder.path, paths: batch };
+          if (batch) {
+            // 整批都要看起來在動，只有被抓的那列變淡會像沒選到其他的
+            for (const el of this.folderRowEls()) {
+              if (this.selFolders.has(el.dataset.path)) el.addClass('gn-tdragging');
+            }
+          } else row.addClass('gn-tdragging');
           if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
         });
         row.addEventListener('dragend', () => {
           this.drag = null;
+          // 批次拖曳會把 class 灑在多列上 → 一次清乾淨，不能只清自己這列
+          for (const el of this.folderRowEls()) el.removeClass('gn-tdragging');
           row.removeClass('gn-tdragging');
           this.clearDropHints();
         });
@@ -3758,9 +3965,21 @@ class GalleryView extends ItemView {
           const d = this.drag;
           if (!d || d.path === it.folder.path) return;   // 拖自己不處理
           if (d.kind === 'fav') return;                  // 最愛排序只在最愛區內，不當搬移落點
+          /* 整批拖曳時，落點若是「某個來源自己或它的子孫」→ 不能放。
+             ⚠️ 不能只查 selFolders：落點可能是某個來源**底下沒被選取**的子資料夾。
+                選 A（內含 A/x）和 C、拖到 A/x —— A/x 不在 selFolders，舊寫法會放行，
+                結果 A 搬不進自己的子孫（被 moveItem 擋）、C 卻搬走了，
+                一半如願一半沒動，還跳一條錯誤提示。改用前綴比對就同時涵蓋兩種。 */
+          if (d.paths && d.paths.some((p) => it.folder.path === p || it.folder.path.startsWith(p + '/'))) return;
+          /* 整批的來源全都已經在這一層了（例如從 P 底下選一批、又拖回 P）→
+             放下去一件事也不會發生，不如連落點提示都不要亮。 */
+          if (d.paths && d.paths.every((p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '') === it.folder.path)) return;
           e.preventDefault();
           clearHints();
           if (d.kind === 'note') { row.addClass('gn-tmove'); return; }   // 筆記只能移入
+          /* 整批只做「移入」，不做同層排序 —— 一次搬 5 個「排到第 3 個後面」
+             沒有明確語意；只給 gn-tmove，使用者也就不會期待上下緣有插入線。 */
+          if (d.paths) { row.addClass('gn-tmove'); return; }
           const r = row.getBoundingClientRect();
           const y = e.clientY - r.top;
           if (y < r.height * 0.30) row.addClass('gn-tbefore');
@@ -3781,6 +4000,14 @@ class GalleryView extends ItemView {
     };
     buildLevel(this.app.vault.getRoot(), 1);
     }
+    /* 資料夾多選的收尾（2026-08-18）。標籤模式沒有資料夾列可選 → 整組清掉，
+       否則切去標籤模式再切回來，操作條會掛著一批看不見的選取。
+       ⚠️ 條件要連 folderSelMode 一起看，不能只看 selFolders.size：
+          「進了選取模式又把選取一個個點掉」時 size 是 0 但模式還開著，
+          走到 else 就會把 gn-tree-selmode 掛在標籤樹上 —— 每一列標籤右側長出選取圈、
+          標籤筆數還被 CSS 藏掉。 */
+    if (state.leftMode === 'tag' && (this.selFolders.size || this.folderSelMode)) this.clearFolderSel();
+    else { this.syncFolderSelMarks(); this.updateFolderSelBar(); }
     this.restoreTreeScroll();   // 內容畫完 → 還原捲動位置（並解除上鎖）
     };
     this._buildTree();
@@ -4314,6 +4541,111 @@ class GalleryView extends ItemView {
     mk(t('Move to…'), 'folder-input', () => this.moveSelected());
     mk(t('Delete'), 'trash', () => this.deleteSelected(), true);
     mk(t('Clear selection'), 'x', () => this.clearSel());
+  }
+
+  /* ===== 資料夾多選（2026-08-18）=====
+     進入方式分兩套，因為手機沒有輔助鍵：
+       桌機：Cmd/Ctrl+點列 ＝ 加減選，Shift+點列 ＝ 從錨點到這裡整段選
+       手機：長按選單 →「選取多個」進入 folderSelMode，之後點整列就是加減選
+     兩套共用同一組 selFolders 與同一條底部操作條。 */
+
+  /* 樹上所有「資料夾列」的元素。
+     ⚠️ 不能用 [data-path] 認 —— **標籤列也有 data-path**（值是 'tag:' + 標籤路徑），
+        會被一起抓進來，範圍選的順序因此混入標籤列。最愛列則是沒有 data-path 才逃過。
+        改用 buildLevel 專門掛的 data-gn-folder，意圖明確也不必去猜前綴。 */
+  folderRowEls() {
+    return this._treeScroll ? this._treeScroll.querySelectorAll('.gn-tnode[data-gn-folder]') : [];
+  }
+  // 依 selFolders 重刷列的選取樣式（不重畫整棵樹）
+  syncFolderSelMarks() {
+    for (const el of this.folderRowEls()) {
+      el.toggleClass('gn-tmulti', this.selFolders.has(el.dataset.path));
+    }
+    // 選取模式的勾選圈是 CSS 靠這個 class 開的（手機）
+    if (this._tree) this._tree.toggleClass('gn-tree-selmode', this.folderSelMode);
+  }
+  toggleFolderSel(path) {
+    if (this.selFolders.has(path)) this.selFolders.delete(path);
+    else { this.selFolders.add(path); this.folderSelAnchor = path; }
+    this.syncFolderSelMarks();
+    this.updateFolderSelBar();
+  }
+  /* 範圍選：照「畫面上看到的順序」，也就是 buildLevel 遞迴展開後的實際列序。
+     用 DOM 現況當順序來源，就不必另外維護一份跟展開/隱藏狀態同步的陣列。 */
+  rangeFolderSel(a, b) {
+    const order = [...this.folderRowEls()].map((el) => el.dataset.path);
+    let ia = order.indexOf(a), ib = order.indexOf(b);
+    if (ia < 0 || ib < 0) return;
+    if (ia > ib) { const tmp = ia; ia = ib; ib = tmp; }
+    for (let i = ia; i <= ib; i++) this.selFolders.add(order[i]);
+    this.syncFolderSelMarks();
+    this.updateFolderSelBar();
+  }
+  clearFolderSel() {
+    this.selFolders.clear();
+    this.folderSelAnchor = null;
+    this.folderSelMode = false;
+    this.syncFolderSelMarks();
+    this.updateFolderSelBar();
+  }
+  // 手機：從長按選單進入選取模式，並把被長按的那個先選起來
+  enterFolderSelMode(path) {
+    this.folderSelMode = true;
+    if (path) { this.selFolders.add(path); this.folderSelAnchor = path; }
+    this.syncFolderSelMarks();
+    this.updateFolderSelBar();
+  }
+  /* 只留「最上層」的選取項：選了 a 又選了 a/b 時，搬走 a 之後 a/b 早就跟著走了，
+     再對 a/b 動手只會找不到檔案而報錯。 */
+  topSelectedFolders() {
+    const paths = [...this.selFolders];
+    return paths.filter((p) => !paths.some((q) => q !== p && p.startsWith(q + '/')));
+  }
+  /* 把一批資料夾搬進 targetFolder。選單的「移動到…」與**整批拖曳**共用同一條路。 */
+  async moveFolderBatch(paths, targetFolder) {
+    let ok = 0, skipped = 0;
+    for (const p of paths) {
+      const f = this.app.vault.getAbstractFileByPath(p);
+      // silent：逐一報會洗版，搬成幾個、略過幾個統一在最後彙總
+      if (f instanceof TFolder && await this.moveItem(f, targetFolder, true)) ok++; else skipped++;
+    }
+    this.clearFolderSel();
+    this.render();
+    this.reportBatchMove(ok, skipped);
+    return ok;
+  }
+  moveSelectedFolders() {
+    const tops = this.topSelectedFolders();
+    if (!tops.length) return;
+    // 目的地不能是被搬的任何一夾自己或其子孫 → 一次排除全部來源
+    new FolderSuggest(this.app, (target) => this.moveFolderBatch(tops, target), tops).open();
+  }
+  /* 左欄底部的操作條。桌機手機共用同一條 —— 手機沒有 hover，
+     選取狀態必須有常駐的表達方式，不能只靠列的樣式。 */
+  updateFolderSelBar() {
+    const bar = this._folderSelBar;
+    if (!bar) return;
+    bar.empty();
+    const n = this.selFolders.size;
+    /* ⚠️ 選取模式下就算一個都沒選也要留著這條（2026-08-18）。
+       手機是從長按選單進入選取模式的，退出的唯一出口就在這條上 ——
+       照「沒選就隱藏」處理的話，使用者把選取一個個點掉之後，
+       畫面還停在選取模式（每列都掛著圈），卻再也找不到地方離開。 */
+    if (!n && !this.folderSelMode) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    bar.createSpan('gn-tselbar-count').setText(t('{{n}} selected', { n }));
+    const mk = (label, icon, fn) => {
+      const b = bar.createDiv('gn-tselbar-btn');
+      setIcon(b, icon);
+      b.setAttr('title', label);
+      b.setAttr('aria-label', label);
+      b.onclick = (e) => { e.stopPropagation(); fn(e); };
+    };
+    if (n) mk(t('Move to…'), 'folder-input', () => this.moveSelectedFolders());
+    // 選取模式下這顆是「完成」（退出模式），一般多選下是「清除選取」——同一顆鈕，語意隨情境
+    mk(this.folderSelMode ? t('Done') : t('Clear selection'),
+      this.folderSelMode ? 'check' : 'x',
+      () => this.clearFolderSel());
   }
 
   // 批次選取 → 複製成 wiki 連結清單，一行一個 [[連結]]
@@ -5948,6 +6280,20 @@ class GalleryPlugin extends Plugin {
        以前兩份索引都以路徑為 key、卻沒人在檔案消失時清掉 → 圖檔與索引項永久成為孤兒。 */
     this.registerEvent(this.app.vault.on('delete', (f) => { this.forgetCachedFor(f && f.path); onVaultChange(); }));
     this.registerEvent(this.app.vault.on('rename', (f, oldPath) => { this.renameCachedFor(f && f.path, oldPath); onVaultChange(); }));
+    /* 任何來源的改名／搬移都要保住設定（2026-08-18）。
+       外掛自己的改名路徑（_commitFolderRename / moveItem）本來就會呼叫，但那只涵蓋
+       「從畫廊操作」。使用者在**原生檔案總管**改名、其他外掛搬檔、或 iCloud/Sync 同步
+       進來的變動都走不到那裡 —— 少了這條監聽，那些情況照樣會把資料夾丟到該層最後面。
+       對已 remap 過的路徑是 no-op（探測不到命中就直接 return），重複呼叫安全。 */
+    this.registerEvent(this.app.vault.on('rename', (f, oldPath) => {
+      if (!f || !oldPath) return;
+      if (!this.remapPathState(oldPath, f.path)) return;
+      // view 的暫態（目前資料夾、多選、錨點）不在 state 裡，要各自搬
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
+        const view = leaf.view;
+        if (view instanceof GalleryView) view.remapViewPaths(oldPath, f.path);
+      });
+    }));
 
     /* 啟動後排一次閒置清掃（只做一次，不常駐）：
        og-cache 是整個外掛唯一「只會一直長大」的快取，thumb-cache 的 prune 以前也只有
@@ -6308,6 +6654,77 @@ class GalleryPlugin extends Plugin {
   }
 
   // 去抖寫檔：連續操作（釘選/上色/展開…）只寫一次 data.json，減少 iCloud 寫入
+  /* 路徑改變（改名／搬移）後，把所有「拿路徑當 key」的設定一起搬到新路徑。
+     （2026-08-18）在此之前只有 _commitFolderRename 手動 remap expandedFolders，
+     moveItem 連那個都沒做 —— 改名或拖拉搬移一次，該資料夾的顏色、自訂圖示、隱藏狀態、
+     最愛、版型、手動排序全部掉回預設，夾內筆記的卡片底色與置頂也一起消失。
+
+     放在 plugin 而不是 view，因為 vault 的 rename 事件必須能無條件呼叫它 ——
+     使用者在**原生檔案總管**改名時，畫廊檢視可能根本沒開著，掛在 view 上就漏了。
+
+     prefix 比對一次涵蓋三種對象：
+       • 資料夾自己          p === oldPath
+       • 所有子孫資料夾      p 以 oldPath + '/' 開頭
+       • 夾內所有檔案        同上（cardColors / pinnedCards 記的是檔案路徑）
+     用 oldPath + '/' 而不是純字串開頭，Design 改名才不會誤傷 DesignX。
+
+     ⚠️ 新增「以路徑當 key」的 state 時，記得回來把欄位名加進下面的清單。
+     回傳 true ＝ 真的動到東西（呼叫端據此決定要不要存檔／重畫）。 */
+  remapPathState(oldPath, newPath) {
+    if (!oldPath || !newPath || oldPath === newPath) return false;
+    const st = this.state;
+    const hit = (p) => typeof p === 'string' && (p === oldPath || p.startsWith(oldPath + '/'));
+    const remap = (p) => (hit(p) ? newPath + p.slice(oldPath.length) : p);
+
+    /* 先探一次有沒有命中再動手。這支現在掛在 vault 的 rename 事件上，
+       任何一個檔案改名都會進來 —— 絕大多數跟本外掛的設定無關，
+       不先擋掉就變成每次改名都白重建七八個物件、還多寫一次 data.json。 */
+    const dicts = ['folderColors', 'folderIcons', 'folderLayouts', 'cardColors'];
+    const lists = ['expandedFolders', 'hiddenFolders', 'noPreviewFolders', 'pinnedCards'];
+    let touched = hit(st.lastPath);
+    if (!touched) for (const k of dicts) { const s = st[k]; if (s && typeof s === 'object' && Object.keys(s).some(hit)) { touched = true; break; } }
+    if (!touched) for (const k of lists) { if (Array.isArray(st[k]) && st[k].some(hit)) { touched = true; break; } }
+    if (!touched && Array.isArray(st.favorites)) touched = st.favorites.some((f) => f && hit(f.path));
+    if (!touched && st.folderOrder && typeof st.folderOrder === 'object') {
+      touched = Object.keys(st.folderOrder).some((par) =>
+        hit(par) || (Array.isArray(st.folderOrder[par]) && st.folderOrder[par].some(hit)));
+    }
+    if (!touched) return false;
+
+    // ① key 是路徑的字典
+    for (const k of dicts) {
+      const src = st[k];
+      if (!src || typeof src !== 'object') continue;
+      const out = {};
+      for (const p of Object.keys(src)) out[remap(p)] = src[p];
+      st[k] = out;
+    }
+    // ② 純路徑清單
+    for (const k of lists) {
+      if (Array.isArray(st[k])) st[k] = st[k].map(remap);
+    }
+    // ③ 最愛：物件陣列，只換 path，type 不動（複製一份，別改到原物件）
+    if (Array.isArray(st.favorites)) {
+      st.favorites = st.favorites.map((f) =>
+        (f && hit(f.path) ? Object.assign({}, f, { path: remap(f.path) }) : f));
+    }
+    /* ④ folderOrder 最麻煩：key 是「父層路徑」、value 是「子資料夾路徑清單」，
+          兩邊都藏著舊路徑。少換任何一邊，orderFolders() 就查不到索引而回 Infinity，
+          那個資料夾會被扔到該層的最後面 —— 這正是「改名後跳位置」的原因。 */
+    if (st.folderOrder && typeof st.folderOrder === 'object') {
+      const out = {};
+      for (const par of Object.keys(st.folderOrder)) {
+        const list = st.folderOrder[par];
+        out[remap(par)] = Array.isArray(list) ? list.map(remap) : list;
+      }
+      st.folderOrder = out;
+    }
+    // ⑤ 上次開著的資料夾：漏了它，重開 Obsidian 會落回 root
+    if (hit(st.lastPath)) st.lastPath = remap(st.lastPath);
+    this.saveState();
+    return true;
+  }
+
   saveState() {
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => { this.saveData(this.state); }, 400);

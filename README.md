@@ -37,6 +37,9 @@ Three layouts, switchable any time from the toolbar's **⋯ More** panel — the
 
 ### Navigation
 - Folder tree with drag-to-reorder, custom colors, hide/unhide, favorites, and inline rename
+- Right-click empty space in the folder pane to create a new top-level folder
+- Multi-select folders for batch moves — `Cmd`/`Ctrl`-click to add, `Shift`-click for a range, or **Select multiple** from the long-press menu on mobile. Drag any selected folder to move the whole batch
+- Renaming or moving a folder keeps its position in the tree, along with its color, icon, hidden state, favorite status, and layout
 - Bear-style nested tag tree with an "untagged" node
 - Follow mode: opening a note reveals it in the tree and card wall
 - Mobile: side-by-side panes with finger-following swipe navigation

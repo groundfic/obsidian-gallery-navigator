@@ -151,6 +151,61 @@ body:not(.is-mobile) .gn-split {
   overflow-y: auto; overflow-x: hidden;
   padding: 8px 10px 8px 6px;
 }
+
+/* ═══ 資料夾多選的操作條（2026-08-18）═══
+   擺在 .gn-tree-scroll 之後、又是 flex 直向的最後一項 → 自然固定在左欄底部，
+   不隨樹捲動。桌機手機共用一條：手機沒有 hover，選取狀態需要常駐的表達方式。 */
+.gn-tselbar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 4px;
+  margin: 0 8px; padding: 5px 6px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 4px 16px rgba(0,0,0,.16);
+}
+.gn-tselbar-count {
+  font-size: 12px; font-weight: 600; color: var(--text-normal);
+  padding: 0 4px 0 6px;
+  flex: 1; min-width: 0;                                   /* 左欄很窄 → 數字區可壓縮 */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gn-tselbar-btn {
+  width: 30px; height: 30px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 999px; cursor: pointer; color: var(--text-muted);
+}
+.gn-tselbar-btn svg { width: 17px; height: 17px; }
+/* hover 只給桌機：觸控點過會把 :hover 黏住，手機看起來就像有顆鈕永遠亮著 */
+body:not(.is-mobile) .gn-tselbar-btn:hover {
+  background: var(--background-modifier-hover); color: var(--text-normal);
+}
+
+/* 選取模式：每列右側一顆圈，已選填成主題色。
+   主要是為手機做的（沒有 Cmd/Shift 也沒有 hover，得靠常駐的圈說明「點列＝加減選」），
+   但長按選單的「選取多個」桌機也進得來，所以這裡不限平台 —— 桌機同樣會看到圈。
+
+   ⚠️ 用 ::before 不是 ::after。拖曳排序的落點線是 .gn-tbefore::after / .gn-tafter::after
+      （見下方），兩者搶同一個偽元素：圈的 width/height/border-radius 會把那條貫穿線
+      壓成左上角一顆 16px 圓點，看不出要插在哪一列之間。
+   ⚠️ 只認資料夾列（data-gn-folder）。標籤列同樣是 .gn-tnode 且有 data-path，
+      用 [data-path] 會讓整棵標籤樹也長出圈。 */
+.gn-tree-selmode .gn-tcount { display: none; }             /* 讓位給圈，避免右側擠成一團 */
+.gn-tree-selmode .gn-tnode[data-gn-folder]::before {
+  content: '';
+  flex: 0 0 auto;
+  order: 99;                                               /* flex 排序：擠到整列最右，不必動 DOM 順序 */
+  width: 16px; height: 16px; margin-left: auto;
+  border-radius: 999px;
+  border: 1.5px solid var(--text-faint);
+  transition: background .12s, border-color .12s;
+}
+.gn-tree-selmode .gn-tnode.gn-tmulti::before {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  /* 內縮的白點＝勾的簡化版；純 CSS 畫真勾要多一層偽元素，這裡夠讀了 */
+  box-shadow: inset 0 0 0 2px var(--background-secondary);
+}
 /* 可拖曳分隔桿：平常只露細線，hover 變主題色 */
 /* ═══ 左欄收合／展開的動畫（2026-08-10）═══
    ⚠️ 要動的是**兩樣東西**，不同步就會露餡：
@@ -406,6 +461,20 @@ body:not(.is-mobile) .gn-bar-merged .nav-header.gn-cluster-open > .nav-buttons-c
 }
 .gn-tnode:focus, .gn-tnode:focus-visible { outline: none; }   /* 選取以 gn-tsel 呈現，不要預設焦點框 */
 .gn-tsel .gn-tname { font-weight: 600; }
+/* 資料夾多選（2026-08-18）：淡底 + 左緣一條主題色實線。
+   為什麼不只用淡底 —— 一個資料夾可以「同時是目前選取(gn-tsel)又在多選裡」，
+   只換底色深淺根本分不出來；左緣那條線是 gn-tsel 沒有的，一眼就能區隔。
+
+   ⚠️ 位置有講究，而且**不要**再多寫一條 :hover。
+      這條是 (0,2,0)，排在 .gn-tnode:hover(0,2,0) 與 .gn-tsel:hover(0,2,0) 之後，
+      同特異度後者勝 —— 滑過去本來就蓋得住，寫 .gn-tmulti:hover 只是把特異度抬到 (0,3,0)，
+      反而贏過下面的 .gn-tmove(0,2,0)，害拖曳落點色蓋不掉多選色。
+      也必須排在 .gn-tmove 之前 —— 拖曳落點色本來就該蓋過多選色。 */
+.gn-tnode.gn-tmulti {
+  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+  box-shadow: inset 3px 0 0 0 var(--interactive-accent);
+}
+.gn-tmulti .gn-tname { font-weight: 600; }
 /* 巢狀左側引導線：已移除（2026-07-18 使用者要求，靠縮排即可辨識層級）。
    想要回來 → 還原 .gn-tchild::before（1px 直線，left 依 --gn-depth 縮排定位）。 */
 .gn-thidden { opacity: .5; }

@@ -59,7 +59,7 @@ const ZH_TW = {
   'Hide hidden folders': '收起被隱藏的資料夾',
   'Show hidden folders': '顯示被隱藏的資料夾',
   'Create here (folder / note / canvas / base)': '在此新建（資料夾 / 筆記 / Canvas / Base）',
-  'More (sort / card size / flatten)': '更多（排序 / 卡片大小 / 攤平）',
+  'More (card layout / size / corners)': '更多（卡片版型 / 大小 / 圓角）',
   'Search full text…': '搜尋全文…',
 
   // ── 設定頁 ──
@@ -114,6 +114,13 @@ const ZH_TW = {
   'Flatten: include all subfolders': '攤平：含所有子資料夾',
   // ── 資料夾操作 ──
   'New folder': '新增資料夾',
+  // 資料夾多選（2026-08-18）
+  'Select multiple': '選取多個',
+  'Move {{n}} folders to…': '將 {{n}} 個資料夾移動到…',
+  'Moved {{n}} items': '已移動 {{n}} 個項目',
+  'Moved {{n}}, skipped {{k}}': '已移動 {{n}} 個，略過 {{k}} 個',
+  'Nothing was moved': '沒有任何項目被移動',
+  'Done': '完成',
   'A folder with that name already exists': '已有同名資料夾',
   'Failed to create folder: {{msg}}': '建立資料夾失敗：{{msg}}',
   'Name contains forbidden characters': '名稱含不允許的字元',
