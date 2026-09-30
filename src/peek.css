@@ -198,7 +198,7 @@
 	flex-shrink: 0;
 	transition: background 120ms ease, color 120ms ease;
 }
-.image-peek-overlay .qp-btn:hover {
+:where(body:not(.is-mobile)) .image-peek-overlay .qp-btn:hover {
 	background: var(--background-modifier-hover);
 	color: var(--text-normal);
 }
@@ -354,7 +354,7 @@
 .is-mobile .image-peek-overlay .qp-header .qp-btn {
 	color: rgba(255, 255, 255, 0.85);
 }
-.is-mobile .image-peek-overlay .qp-header .qp-btn:hover {
+.is-mobile .image-peek-overlay .qp-header .qp-btn:active {
 	background: rgba(255, 255, 255, 0.12);
 	color: #fff;
 }
@@ -396,7 +396,6 @@
 	border-radius: 999px;
 	color: rgba(255, 255, 255, 0.92);
 }
-.is-mobile .image-peek-overlay .qp-actions .qp-btn:hover,
 .is-mobile .image-peek-overlay .qp-actions .qp-btn:active {
 	background: rgba(255, 255, 255, 0.16);
 	color: #fff;

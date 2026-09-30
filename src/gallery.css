@@ -88,8 +88,9 @@
   color: var(--text-muted);
   transition: background .12s, color .12s;
 }
-.is-mobile .gn-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-.is-mobile .gn-btn:active { transform: scale(.94); }
+/* 按壓回饋只在「按著的時候」出現（2026-09-30）。以前底色寫在 :hover 上 ——
+   觸控沒有「滑鼠移開」，點過的那顆會一直亮著灰底，直到點了別的地方。 */
+.is-mobile .gn-btn:active { transform: scale(.94); background: var(--background-modifier-hover); color: var(--text-normal); }
 .is-mobile .gn-btn svg { width: 24px; height: 24px; }   /* 手機工具列圖示加大（2026-07-19 20→24） */
 /* 表頭「含子資料夾」小標 */
 .gn-head-flat {
@@ -114,7 +115,7 @@
   background: color-mix(in srgb, var(--text-normal) 10%, transparent);
   color: var(--text-normal);
 }
-.is-mobile .gn-btn-on:hover { background: color-mix(in srgb, var(--text-normal) 15%, transparent); color: var(--text-normal); }
+.is-mobile .gn-btn-on:active { background: color-mix(in srgb, var(--text-normal) 15%, transparent); color: var(--text-normal); }
 .gn-zoom { width: 90px; margin-right: 12px; accent-color: var(--interactive-accent); cursor: pointer; }
 
 /* 兩欄容器：左資料夾樹 + 可拖曳分隔桿 + 右筆記牆 */
@@ -526,7 +527,18 @@ body:not(.is-mobile) .gn-bar-merged .nav-header.gn-cluster-open > .nav-buttons-c
   user-select: none;
   transition: background .12s, box-shadow .12s, transform .12s cubic-bezier(.2,.7,.2,1);
 }
-.gn-tnode:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
+/* ── hover 只給桌機（2026-09-30 全面清查）──
+   觸控裝置點一下就會進入 :hover，而且沒有「移開」這回事，樣式會一直黏到點別的地方為止：
+   點箭頭展開的那列一直灰著（還和真正選取的列並存）、取消的標籤看起來還像選中……
+   所以凡是「hover 才有的視覺變化」都要排除手機。
+
+   寫法用 :where(body:not(.is-mobile))，不是直接寫 body:not(.is-mobile)：
+   :where() 的特異度是 0，加上去之後整條規則的特異度和原本一模一樣。
+   這個檔案有好幾組規則是靠「同特異度、後寫的贏」在排先後的（見下面 .gn-tsel:hover、
+   .gn-tmulti、.gn-tmove 的註解），直接加 body:not(.is-mobile) 會多出 (0,1,1)，
+   hover 色就反過來蓋掉選取色與拖曳落點色。用 :where() 桌機的結果完全不變。
+   需要按壓回饋的按鈕另外補 :active（只在按著的時候出現，不會黏）。 */
+:where(body:not(.is-mobile)) .gn-tnode:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
 /* 按壓回饋：整列微縮。克制到只有「手感」、看不出在動（2026-07-30） */
 .gn-tnode:active { transform: scale(.99); }
 /* 選取：主題色淡底圓角膠囊（透明側欄也清楚） */
@@ -553,7 +565,7 @@ body:not(.is-mobile) .gn-bar-merged .nav-header.gn-cluster-open > .nav-buttons-c
 /* 巢狀左側引導線：已移除（2026-07-18 使用者要求，靠縮排即可辨識層級）。
    想要回來 → 還原 .gn-tchild::before（1px 直線，left 依 --gn-depth 縮排定位）。 */
 .gn-thidden { opacity: .5; }
-.gn-thidden:hover { opacity: 1; }
+:where(body:not(.is-mobile)) .gn-thidden:hover { opacity: 1; }
 .gn-tdragging { opacity: .4; }
 /* (0,2,0) 且定義在 .gn-tsel:hover 之後 → 拖曳落點色能蓋過選取色，不必 !important */
 .gn-tnode.gn-tmove { background: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--interactive-accent); }
@@ -790,9 +802,9 @@ body:not(.is-mobile) .gn-card:hover {
   width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
   border-radius: 999px; cursor: pointer; color: var(--text-muted);
 }
-.gn-selbar-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+:where(body:not(.is-mobile)) .gn-selbar-btn:hover, .gn-selbar-btn:active { background: var(--background-modifier-hover); color: var(--text-normal); }
 .gn-selbar-btn svg { width: 18px; height: 18px; }
-.gn-selbar-warn:hover { background: var(--background-modifier-error, rgba(220,60,60,.15)); color: var(--text-error); }
+:where(body:not(.is-mobile)) .gn-selbar-warn:hover, .gn-selbar-warn:active { background: var(--background-modifier-error, rgba(220,60,60,.15)); color: var(--text-error); }
 .gn-card img { width: 100%; height: auto; display: block; pointer-events: none; }
 .gn-card img.gn-pdf-thumb { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }   /* PDF 頁面：白底 + 細邊 */
 /* 縮圖還在背景產生中（首次瀏覽該圖時）。此時 <img> 沒有 src、高度會是 0，
@@ -918,7 +930,7 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
   transition: background .12s, transform .12s;
 }
 /* hover：黑底白圖（用 --text-normal，深色主題會自動反轉、不會黑到看不見） */
-.gn-card-pin:hover {
+:where(body:not(.is-mobile)) .gn-card-pin:hover {
   background: var(--text-normal);
   color: var(--background-primary);
   transform: scale(1.08);
@@ -937,7 +949,7 @@ body:not(.is-mobile) .gn-card.gn-has-img .gn-fileicon { min-height: 56.25cqw; } 
 /* 最愛標題列版位與資料夾樹對齊（2026-07-20）：padding 同 .gn-tnode（6px 8px / 左 6px＝根列同級），
    箭頭色同 .gn-tcaret（text-muted）。 */
 .gn-fav-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; padding-left: 6px; cursor: pointer; border-radius: 8px; }
-.gn-fav-head:hover { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
+:where(body:not(.is-mobile)) .gn-fav-head:hover, .gn-fav-head:active { background: color-mix(in srgb, var(--text-normal) 6%, transparent); }
 /* 2026-07-31：.gn-fav-caret / .gn-fav-star 已移除，改用共用的 .gn-tslot
    （星星平常顯示、hover 換箭頭），縮排才跟下面的資料夾列對齊。
    標題列的圖示欄要明確設 display:flex —— 蓋掉 .gn-tthumb-folder 那條若日後又把圖示藏起來的規則。 */
@@ -1176,7 +1188,7 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
   cursor: pointer;
   color: var(--text-muted);
 }
-.gn-search-clear:hover { background: color-mix(in srgb, var(--text-normal) 8%, transparent); }
+:where(body:not(.is-mobile)) .gn-search-clear:hover, .gn-search-clear:active { background: color-mix(in srgb, var(--text-normal) 8%, transparent); }
 
 /* 手機：.gn-root 已頂到螢幕最上緣（見 phone-sidebar-no-white-top.css），
    所以搜尋列自己要避開狀態列 */
@@ -1231,7 +1243,7 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
   background: var(--background-secondary); color: var(--text-muted);
   transition: background .12s, color .12s, border-color .12s;
 }
-.gn-more-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
+:where(body:not(.is-mobile)) .gn-more-chip:hover { color: var(--text-normal); border-color: var(--interactive-accent); }
 .gn-more-chip-on {
   background: var(--interactive-accent); border-color: var(--interactive-accent);
   color: var(--text-on-accent);
@@ -1248,7 +1260,7 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
   padding: 7px 8px; border-radius: 7px; cursor: pointer;
   color: var(--text-normal); font-size: 13px;
 }
-.gn-more-row:hover, .gn-more-row:active { background: var(--background-modifier-hover); }
+:where(body:not(.is-mobile)) .gn-more-row:hover, .gn-more-row:active { background: var(--background-modifier-hover); }
 .gn-more-icon { display: flex; align-items: center; color: var(--text-muted); }
 .gn-more-icon svg { width: 16px; height: 16px; }
 .gn-more-text { flex: 1; }
@@ -1266,7 +1278,7 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
   font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none;
   color: var(--text-faint); cursor: pointer; padding: 0 2px;
 }
-.gn-more-clear:hover { color: var(--interactive-accent); }
+:where(body:not(.is-mobile)) .gn-more-clear:hover { color: var(--interactive-accent); }
 /* 卡片大小的即時回饋（欄數 × 實際欄寬）：靠右、跟 label 同一行 */
 .gn-more-hint {
   float: right;
@@ -1283,7 +1295,7 @@ body:not(.is-mobile) .gn-swap-cell:hover { transform: scale(1.03); box-shadow: 0
   cursor: pointer;
   background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
 }
-.gn-head-tag:hover { background: color-mix(in srgb, var(--interactive-accent) 34%, transparent); }
+:where(body:not(.is-mobile)) .gn-head-tag:hover { background: color-mix(in srgb, var(--interactive-accent) 34%, transparent); }
 
 /* 「更多」面板：標籤膠囊區 —— 標籤多時限高 + 捲動（沿用細捲軸樣式）
    上下各一條灰線：明確標出「這是一個被裁切的捲動區」，膠囊切一半時才不會像壞掉 */
@@ -1805,7 +1817,7 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
   cursor: pointer;
   transition: background var(--anim-duration-superfast, 70ms) ease;
 }
-.lightbox .gn-lb-btn:hover { background: rgba(255, 255, 255, .16); }
+:where(body:not(.is-mobile)) .lightbox .gn-lb-btn:hover, .lightbox .gn-lb-btn:active { background: rgba(255, 255, 255, .16); }
 .lightbox .gn-lb-btn:active { background: rgba(255, 255, 255, .26); }
 .lightbox .gn-lb-btn svg { width: 20px; height: 20px; }
 
@@ -1888,7 +1900,7 @@ body:not(.is-mobile) .gn-card:not(.gn-has-img) .gn-date { margin-top: auto; padd
   font-size: 11px; color: var(--text-muted); cursor: pointer;
   padding: 4px 6px; border-radius: 999px;
 }
-.gn-tagbar-clear:hover { color: var(--interactive-accent); }
+:where(body:not(.is-mobile)) .gn-tagbar-clear:hover { color: var(--interactive-accent); }
 
 /* ═══ 資料夾自訂圖示的選擇器（2026-08-11）═══
    對話框結構沿用原生（.modal-title / .modal-button-container，見 InputModal

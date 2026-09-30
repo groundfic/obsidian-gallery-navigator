@@ -13,7 +13,10 @@
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
-.lcp-card:hover {
+/* hover 只給桌機：觸控點過會黏住，點過的卡片底色會一直比別張深。
+   :where() 特異度為 0，規則的先後順序與原本完全相同（說明見 gallery.css 的 .gn-tnode:hover）。
+   按壓回饋由下面的 :active 負責。 */
+:where(body:not(.is-mobile)) .lcp-card:hover {
   background: var(--background-secondary);
 }
 .lcp-card:active {
@@ -232,7 +235,7 @@
   background-color: rgba(var(--lcp-tint), 0.12);
   border-color: rgba(var(--lcp-tint), 0.30);
 }
-.lcp-card--tinted:hover {
+:where(body:not(.is-mobile)) .lcp-card--tinted:hover {
   background-color: rgba(var(--lcp-tint), 0.18);
 }
 .lcp-card--tinted:active {
@@ -402,10 +405,11 @@
   cursor: pointer;
   z-index: 2;
 }
-.lcp-lp-inner:hover .lcp-open-btn {
+:where(body:not(.is-mobile)) .lcp-lp-inner:hover .lcp-open-btn {
   opacity: 1;
 }
-.lcp-open-btn:hover {
+:where(body:not(.is-mobile)) .lcp-open-btn:hover,
+.lcp-open-btn:active {
   background-color: var(--background-modifier-hover);
 }
 .lcp-open-btn svg {
