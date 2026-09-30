@@ -72,7 +72,14 @@ function entryTtl(entry) {
   if (!m.image && !hasLocalImage(m) && isEmptyTitle(m.title, m.hostname)) return 0;
   return m.poor ? failTtl(entry.fail) : META_TTL;
 }
-const MAX_CACHE_ENTRIES = 500; // 快取項目上限，超過時淘汰最舊的
+/* 快取項目上限（2026-09-30 從 500 調到 3000）。
+   實測這個 vault 有 1,903 條會變成卡片的網址，500 只裝得下 26%：快取永遠是滿的，
+   每看一條新連結就擠掉一條舊的（連圖檔一起刪），回頭開舊筆記又得整個重抓。
+   每筆約 0.8KB，3000 筆的快取檔約 2.3MB。 */
+const MAX_CACHE_ENTRIES = 3000;
+/* 過期的快取先拿來顯示、背景再重抓（見 fetchMeta）。重抓失敗時不把原本好的資料蓋掉，
+   而是隔這麼久再試一次。 */
+const REFRESH_RETRY = 24 * 60 * 60 * 1000;
 const MAX_IMAGE_BYTES = 300 * 1024;
 const DOWNSCALE_WIDTH = 640;
 
@@ -486,21 +493,26 @@ async function fetchMetaPlatform(url) {
     description: '', image: '', hostname: hostOf(url), showDesc: true,
   };
 
-  try {
-    // Threads 與 Instagram 的 oEmbed 都由 Meta 後端提供
-    const oembedUrl = ig
-      ? 'https://www.instagram.com/api/v1/oembed/?url=' + encodeURIComponent(url)
-      : 'https://www.threads.net/oembed/?url=' + encodeURIComponent(url);
-    const res = await requestUrl({ url: oembedUrl, headers: { 'Accept': 'application/json' }, throw: false });
-    if (res && res.status === 200) {
-      const data = JSON.parse(res.text);
-      if (data.author_name) base.title = '@' + data.author_name;
-      if (data.html) base.description = extractTextFromHtml(data.html);
-      if (data.title) base.description = base.description || data.title;
-      if (data.thumbnail_url) base.image = data.thumbnail_url;
+  /* oEmbed 只剩 Instagram 在用（2026-09-30）。
+     Threads 的 oEmbed 已經失效：threads.net/oembed 會 301 到 threads.com/oembed，
+     回來的是一整頁 HTML（實測 279KB）而不是 JSON，JSON.parse 必定丟錯；
+     /api/v1/oembed 雖然回 JSON，但 Threads 貼文的欄位全是空字串。
+     也就是每條 Threads 連結都白打一次請求、白下載幾百 KB，然後才掉到下面的 HTML 退路
+     （Threads 卡片的標題與內文其實一直都是退路抓到的）。直接跳過。 */
+  if (ig) {
+    try {
+      const oembedUrl = 'https://www.instagram.com/api/v1/oembed/?url=' + encodeURIComponent(url);
+      const res = await requestUrl({ url: oembedUrl, headers: { 'Accept': 'application/json' }, throw: false });
+      if (res && res.status === 200) {
+        const data = JSON.parse(res.text);
+        if (data.author_name) base.title = '@' + data.author_name;
+        if (data.html) base.description = extractTextFromHtml(data.html);
+        if (data.title) base.description = base.description || data.title;
+        if (data.thumbnail_url) base.image = data.thumbnail_url;
+      }
+    } catch (e) {
+      console.warn('[LCP] oEmbed failed:', e.message);
     }
-  } catch (e) {
-    console.warn('[LCP] oEmbed failed:', e.message);
   }
 
   if (base.image) return base;
@@ -568,31 +580,28 @@ async function migrateBase64Cache() {
   return done;
 }
 
+/* 記下「最後一次被用到」的時間，淘汰時看它而不是看抓取時間。
+   以前只看 ts（抓取時間）：有本地圖的項目永不過期、ts 也就永不更新，
+   結果最常看的舊卡片反而最先被擠掉。
+   只改記憶體、不觸發寫檔（一天內也只更新一次）——瀏覽不該變成寫入，
+   下次有別的變更要存檔時會順便帶出去。 */
+function touchEntry(entry) {
+  const now = Date.now();
+  if (now - (entry.at || entry.ts || 0) > 24 * 60 * 60 * 1000) entry.at = now;
+}
+const lastUsed = (entry) => Math.max((entry && entry.at) || 0, (entry && entry.ts) || 0);
+
 function pruneCache() {
   const keys = Object.keys(state.cache);
   if (keys.length <= MAX_CACHE_ENTRIES) return;
   keys
-    .sort((a, b) => (state.cache[a].ts || 0) - (state.cache[b].ts || 0))
+    .sort((a, b) => lastUsed(state.cache[a]) - lastUsed(state.cache[b]))
     .slice(0, keys.length - MAX_CACHE_ENTRIES)
     .forEach((k) => {
       const fname = state.cache[k]?.meta?.img;
       delete state.cache[k];
       if (fname) removeImageFile(fname);   // 連圖片檔一起刪，不然會變孤兒檔案
     });
-}
-
-/** 同步查詢快取是否命中且仍有效（不發任何請求）。
- *  命中回傳 meta，未命中或過期回傳 null。
- *  用於渲染時判斷可否跳過骨架、直接畫卡片。 */
-function getCachedMeta(url) {
-  const key = cacheKeyOf(url);
-  const entry = state.cache[key];
-  if (!entry || !entry.meta) return null;
-  const ttl = entryTtl(entry);
-  if (Date.now() - (entry.ts || 0) < ttl || hasLocalImage(entry.meta)) {
-    return entry.meta;
-  }
-  return null;
 }
 
 /* ============ 抓取節流：去重 + 並發上限 + 逾時 ============
@@ -615,18 +624,28 @@ const inflight = new Map();      // url → 進行中的 meta promise
 const imgInflight = new Map();   // url → 進行中的圖片下載 promise（同畫面同 URL 不重抓）
 const MAX_CONCURRENT = 4;
 const NET_TIMEOUT = 12000;
-let running = 0;
-const waiters = [];
 
-function acquireSlot() {
-  if (running < MAX_CONCURRENT) { running++; return Promise.resolve(); }
-  return new Promise((res) => waiters.push(res));
+function makeSlots(max) {
+  let running = 0;
+  const waiters = [];
+  return {
+    acquire() {
+      if (running < max) { running++; return Promise.resolve(); }
+      return new Promise((res) => waiters.push(res));
+    },
+    release() {
+      const next = waiters.shift();
+      if (next) next();   // 名額直接轉交給下一位，running 不變
+      else running--;
+    },
+  };
 }
-function releaseSlot() {
-  const next = waiters.shift();
-  if (next) next();   // 名額直接轉交給下一位，running 不變
-  else running--;
-}
+/* meta 與圖片各用一組名額（2026-09-30）。
+   以前共用同一組、而且先到先排：一則筆記有 20 條新連結時，第 1 張卡的 meta 回來後
+   要下載圖片，卻得排在第 5～20 條的 meta 後面 —— 等於全部 meta 抓完，第一張卡才出得來。
+   分開之後圖片不必等別張卡的 meta。手機頻寬與記憶體較緊，圖片少開一個。 */
+const metaSlots = makeSlots(MAX_CONCURRENT);
+const imgSlots = makeSlots(Platform.isMobile ? 3 : MAX_CONCURRENT);
 
 function withTimeout(p, ms) {
   let tm;
@@ -636,28 +655,55 @@ function withTimeout(p, ms) {
   return Promise.race([p, timer]).finally(() => clearTimeout(tm));
 }
 
-async function fetchMeta(url) {
-  // Meta 系網址先正規化，讓「手機帶 igsh」與「電腦乾淨網址」共用同一筆快取
-  url = cacheKeyOf(url);
-  const entry = state.cache[url];
-  if (entry && entry.meta) {
-    if (Date.now() - (entry.ts || 0) < entryTtl(entry) || hasLocalImage(entry.meta)) {
-      return entry.meta;
-    }
-  }
+/* 卡片上看得到的內容有沒有變（決定背景重抓完要不要重畫）。 */
+function metaDiffers(a, b) {
+  return a.title !== b.title
+    || (a.image || '') !== (b.image || '')
+    || (a.description || '') !== (b.description || '')
+    || !!a.poor !== !!b.poor;
+}
 
-  // 已經有人在抓同一個 URL → 共用那一次的結果，不重複發請求
+// 同一個 URL 同時只抓一次：已經有人在抓就共用那一次的結果
+function startFetch(url, entry) {
   const dup = inflight.get(url);
   if (dup) return dup;
-
   const job = fetchMetaUncached(url, entry).finally(() => inflight.delete(url));
   inflight.set(url, job);
   return job;
 }
 
+/* onRefresh(meta)：選填。回傳的是「過期的舊資料」時，背景重抓完若內容有變就會呼叫它，
+   讓呼叫端把卡片重畫成新的。 */
+async function fetchMeta(url, onRefresh) {
+  // Meta 系網址先正規化，讓「手機帶 igsh」與「電腦乾淨網址」共用同一筆快取
+  url = cacheKeyOf(url);
+  const entry = state.cache[url];
+  if (entry && entry.meta) {
+    touchEntry(entry);
+    const ttl = entryTtl(entry);
+    if (Date.now() - (entry.ts || 0) < ttl || hasLocalImage(entry.meta)) {
+      return entry.meta;
+    }
+    /* 過期了，但手上有東西可以看 → 先回舊的，背景重抓（2026-09-30）。
+       以前過期就當沒快取：卡片退回骨架、等整頁重抓完才出現。沒有本地圖的項目
+       （一般網站幾乎都是）每 7 天過期一次，實測 500 筆裡有 190 筆處於過期狀態，
+       也就是四成的卡片下次打開都要重等一輪。網頁標題很少變，沒理由讓人等。
+       ttl 為 0 的是「空殼標題」那種沒有顯示價值的舊資料，照舊走骨架重抓。 */
+    if (ttl > 0) {
+      const stale = entry.meta;
+      const job = startFetch(url, entry);
+      if (onRefresh) {
+        job.then((fresh) => { if (fresh !== stale && metaDiffers(stale, fresh)) onRefresh(fresh); }, () => {});
+      }
+      return stale;
+    }
+  }
+  return startFetch(url, entry);
+}
+
 async function fetchMetaUncached(url, entry) {
   let meta;
-  await acquireSlot();
+  await metaSlots.acquire();
   try {
     meta = isMetaUrl(url)
       ? await withTimeout(fetchMetaPlatform(url))
@@ -666,13 +712,18 @@ async function fetchMetaUncached(url, entry) {
     const hostname = hostOf(url);
     meta = { title: hostname, description: '', image: '', hostname };
   } finally {
-    releaseSlot();
+    metaSlots.release();
   }
 
   if (hasLocalImage(entry?.meta) && !hasLocalImage(meta)) {
     if (entry.meta.img) meta.img = entry.meta.img;
     else meta.imageData = entry.meta.imageData;
     meta.layout = entry.meta.layout;
+  } else if (entry?.meta?.image && entry.meta.image === meta.image) {
+    /* 重抓回來圖片網址沒變 → 尺寸與主色沿用，不必把同一張圖再下載一次來量。
+       少了這段，每次重抓都會掉進 renderCard 的慢路徑（載圖量尺寸＋取主色）。 */
+    if (entry.meta.dims) meta.dims = entry.meta.dims;
+    if (entry.meta.tint !== undefined) meta.tint = entry.meta.tint;
   }
 
   // 品質判定：沒抓到圖也沒抓到實質標題／描述 → 視為失敗，走短 TTL
@@ -688,6 +739,17 @@ async function fetchMetaUncached(url, entry) {
     || isEmptyTitle(meta.title, hostname)
     || (!meta.description && (meta.title === 'Threads' || meta.title === 'Instagram'))
   );
+
+  /* 重抓失敗，但手上原本是好的 → 不要拿「只剩網域」的結果把它蓋掉（2026-09-30）。
+     網站暫時掛掉、被擋、逾時都會走到這裡；以前是直接覆寫，那張卡就從有標題有圖
+     退化成一行網域，要等對方恢復、快取又過期才救得回來。
+     改成保留舊內容，把時間戳調到「一天後再過期」，到時再試。 */
+  if (meta.poor && entry && entry.meta && !entry.meta.poor && entryTtl(entry) > 0) {
+    entry.ts = Date.now() - META_TTL + REFRESH_RETRY;
+    state.cache[url] = entry;   // 抓取期間可能被淘汰掉了，放回去
+    state.save();
+    return entry.meta;
+  }
 
   /* 失敗次數：連續失敗才累加，成功一次就歸零（退避見 failTtl）。 */
   const prevFail = (entry && entry.fail) || 0;
@@ -880,20 +942,20 @@ async function resolveImage(pageUrl, meta) {
 
   /* 下載回來 → 存成檔案 → 用檔案的 app:// 網址顯示。
      ⚠️ 兩個保護沿用既有機制、不另起爐灶：
-       • acquireSlot/releaseSlot：跟 meta 抓取共用同一組 4 併發名額。
-         以前 meta 被限流、但 meta 陸續回來之後的圖片下載可以同時發射數十個。
+       • imgSlots：圖片下載有自己的併發上限（與 meta 分開，理由見 makeSlots 下方）。
+         沒有上限的話，meta 陸續回來之後的圖片下載可以同時發射數十個。
        • imgInflight：同一張圖同時被多張卡片要時共用一次下載（比照 meta 的 inflight）。 */
   const download = () => {
     const key = cacheKeyOf(pageUrl);
     const dup = imgInflight.get(key);
     if (dup) return dup;
     const job = (async () => {
-      await acquireSlot();
+      await imgSlots.acquire();
       let got;
       try {
         got = await fetchImageBytes(meta.image, pageUrl);
       } finally {
-        releaseSlot();
+        imgSlots.release();
       }
       if (!got) {
         // 記下失敗時間，短期內不再重發（成功時會 delete）
@@ -1094,7 +1156,31 @@ async function applyCleanToSource(url, cleaned, opts) {
   }
 }
 
+/* 骨架階段就先把標題放上去（2026-09-30）。
+   meta 回來之後還要等圖片下載、量尺寸、取主色，以前這段期間卡片一直是空的骨架；
+   但標題這時早就有了。先顯示標題，圖片好了再換成正式卡片。
+   骨架本來就是緊湊卡的高度，換掉一條灰線不會讓版面多跳一次。 */
+function showEarlyTitle(wrap, meta) {
+  if (!wrap.classList.contains('lcp-skeleton')) return;
+  if (!meta.title || meta.title === meta.hostname) return;   // 只有網域 → 骨架上已經有了
+  const line = wrap.querySelector('.lcp-skeleton-line--title');
+  if (line) line.replaceWith(buildTitle(meta));
+}
+
+/* 抓 meta → 畫成卡片。三種卡片（編輯模式、閱讀模式、Canvas）共用。
+   拿到的若是過期的舊資料，背景重抓完內容有變會就地重畫一次（見 fetchMeta）。 */
+function mountCard(wrap, url, opts) {
+  const paint = (meta) => renderCard(wrap, url, meta, opts);
+  return fetchMeta(url, (fresh) => {
+    if (wrap.isConnected) paint(fresh).catch(() => {});
+  }).then(paint);
+}
+
 async function renderCard(wrap, url, meta, opts = {}) {
+  /* 同一張卡可能被畫第二次（背景重抓完的重畫），而慢路徑中間有 await：
+     用序號認「我是不是最新的那一次」，舊的那次 await 回來後就不要再動畫面。 */
+  const token = (wrap._lcpRender = (wrap._lcpRender || 0) + 1);
+
   /* 快速路徑（同步、不閃骨架）只在「能安全直接顯示」時啟用：
      A. 已有本地 base64 圖 + 尺寸 → 直接用，最安全
      B. 確定無圖的純文字卡 → 無需載圖
@@ -1115,6 +1201,7 @@ async function renderCard(wrap, url, meta, opts = {}) {
     src = meta.image; dims = meta.dims; tint = meta.tint || null;
   } else {
     // 慢但可靠：處理防盜連代理、補尺寸、補主色
+    showEarlyTitle(wrap, meta);
     ({ src, dims } = await resolveImage(url, meta));
     tint = null;
     if (src) {
@@ -1125,6 +1212,7 @@ async function renderCard(wrap, url, meta, opts = {}) {
         state.save();
       }
     }
+    if (wrap._lcpRender !== token) return;   // 等圖的期間已經有更新的一次接手
   }
 
   /* icon 類圖片：尺寸偏小（apple-touch-icon、favicon、小縮圖） */
@@ -1284,7 +1372,17 @@ async function renderCard(wrap, url, meta, opts = {}) {
     if (!wrap.classList.contains('lcp-card--solid')) {
       wrap.classList.add('lcp-card--tinted');
     }
+  } else {
+    wrap.style.removeProperty('--lcp-tint');   // 重畫時別留著上一輪的主色
   }
+
+  // 行動端 Canvas：觸控雙點不可靠，補一顆常駐開啟按鈕（內容每次重畫都清空 → 每次都要補）
+  if (opts.canvas && Platform.isMobile) wrap.appendChild(buildOpenButton(url));
+
+  /* 掛在 wrap 本身的監聽只綁一次。重畫（背景重抓完）用的是同一個元素，
+     再綁一輪的話點一下會開兩個分頁、右鍵會疊兩個選單。 */
+  if (wrap._lcpWired) return;
+  wrap._lcpWired = true;
 
   // 右鍵：淨化連結（Canvas 例外——節點網址存在 .canvas 的 JSON 裡，改寫方式不同）
   if (!opts.canvas) attachCleanMenu(wrap, url, opts);
@@ -1296,10 +1394,6 @@ async function renderCard(wrap, url, meta, opts = {}) {
       e.stopPropagation();
       handler();
     });
-    // 行動端：觸控雙點不可靠，補一顆常駐開啟按鈕
-    if (Platform.isMobile) {
-      wrap.appendChild(buildOpenButton(url));
-    }
   } else if (!opts.editor) {
     // Live Preview（editor）的互動由 widget 容器統一管理：單擊選取、⌘+單擊開啟
     wrap.addEventListener('click', handler);
@@ -1356,10 +1450,8 @@ function buildLivePreviewExtension() {
 
       const skeleton = createSkeleton(this.url);
       inner.appendChild(skeleton);
-      fetchMeta(this.url).then((meta) =>
-        // lpView / lpContainer：右鍵「淨化連結」用來定位這張卡在文件中的哪一行
-        renderCard(skeleton, this.url, meta, { editor: true, lpView: view, lpContainer: container })
-      );
+      // lpView / lpContainer：右鍵「淨化連結」用來定位這張卡在文件中的哪一行
+      mountCard(skeleton, this.url, { editor: true, lpView: view, lpContainer: container });
 
       // 編輯按鈕（鉛筆）：還原並反白裸網址供編輯
       // 桌面 hover 浮現；行動端常駐（觸控沒有 hover 也沒有 ⌘）
@@ -1685,7 +1777,7 @@ class LinkCardModule {
         const skeleton = createSkeleton(url);
         p.replaceWith(skeleton);
         // sourcePath：右鍵「淨化連結」要靠它知道該改哪個檔案
-        fetchMeta(url).then((meta) => renderCard(skeleton, url, meta, { sourcePath: ctx?.sourcePath }));
+        mountCard(skeleton, url, { sourcePath: ctx?.sourcePath });
       });
     });
 
@@ -1921,10 +2013,7 @@ class LinkCardModule {
         // renderCard 是就地改寫 sk（骨架直接變成卡片）→ 記這個參照就能認出「已處理」
         this._canvasCards.set(contentEl, sk);
 
-        const cached = getCachedMeta(url);
-        const metaPromise = cached ? Promise.resolve(cached) : fetchMeta(url);
-        metaPromise
-          .then((meta) => renderCard(sk, url, meta, { canvas: true }))
+        mountCard(sk, url, { canvas: true })
           .catch((e) => {
             // renderCard 失敗也不留空白：退回最基本的網域卡
             try {
@@ -1967,6 +2056,6 @@ function renderLinkCardSettings(containerEl, plugin) {
       }));
 }
 
-/* downscaleBytes 也給 gallery.js 的 og-cache 用（同一套縮圖邏輯只維護一份）。
-   它是純函式，不碰本模組的 state，可以安全外借。 */
-module.exports = { LinkCardModule, renderLinkCardSettings, downscaleBytes };
+/* downscaleBytes、withTimeout 也給 gallery.js 的 og-cache 用（同一套邏輯只維護一份）。
+   兩者都是純函式，不碰本模組的 state，可以安全外借。 */
+module.exports = { LinkCardModule, renderLinkCardSettings, downscaleBytes, withTimeout };
