@@ -121,6 +121,9 @@ const ZH_TW = {
   'Moved {{n}}, skipped {{k}}': '已移動 {{n}} 個，略過 {{k}} 個',
   'Nothing was moved': '沒有任何項目被移動',
   'Done': '完成',
+  // 手機的資料夾排序模式（2026-09-30）
+  'Reorder folders': '調整順序',
+  'Drag to reorder': '拖曳排序',
   'A folder with that name already exists': '已有同名資料夾',
   'Failed to create folder: {{msg}}': '建立資料夾失敗：{{msg}}',
   'Name contains forbidden characters': '名稱含不允許的字元',

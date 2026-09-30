@@ -1256,7 +1256,10 @@ class PeekOverlay {
 /* 設定區塊：由 src/main.js 的統一設定頁呼叫 */
 export function renderPeekSettings(containerEl: HTMLElement, plugin: any) {
 	const st = plugin.state;
-	st.peek = Object.assign({}, DEFAULT_SETTINGS, st.peek);
+	/* 就地補預設值，不要換掉物件（2026-09-30）。
+	   PeekModule.settings 握著 st.peek 的參照；這裡以前每開一次設定頁就換成新物件，
+	   設定頁改的是新的、執行中讀的是舊的 → 改了要重載外掛才生效。 */
+	st.peek = Object.assign(st.peek || {}, Object.assign({}, DEFAULT_SETTINGS, st.peek));
 	const s = st.peek;
 	const save = () => plugin.saveState();
 

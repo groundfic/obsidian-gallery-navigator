@@ -37,12 +37,14 @@ Three layouts, switchable any time from the toolbar's **⋯ More** panel — the
 
 ### Navigation
 - Folder tree with drag-to-reorder, custom colors, hide/unhide, favorites, and inline rename
+- Reordering on mobile: long-press a folder → **Reorder folders**, then drag the handle on the right of each row. The order is the same one the desktop uses, so it follows you across devices
 - Right-click empty space in the folder pane to create a new top-level folder
 - Multi-select folders for batch moves — `Cmd`/`Ctrl`-click to add, `Shift`-click for a range, or **Select multiple** from the long-press menu on mobile. Drag any selected folder to move the whole batch
 - Renaming or moving a folder keeps its position in the tree, along with its color, icon, hidden state, favorite status, and layout
 - Bear-style nested tag tree with an "untagged" node
 - Follow mode: opening a note reveals it in the tree and card wall
 - Mobile: side-by-side panes with finger-following swipe navigation
+- Multi-device friendly: shared settings (folder order, colors, icons, pins, favorites…) are merged with whatever another device has written instead of overwriting it, and are picked up without restarting Obsidian. Per-device view state (current folder, expanded folders, pane width, card size) stays on each device
 
 ### Full-text search
 - Built-in BM25 index over all notes **and PDFs** (Chinese word segmentation + bigram fallback)
@@ -63,7 +65,7 @@ This plugin makes network requests only for the features below. Nothing is colle
 |---|---|---|
 | Link previews / link cards | GET requests for URLs found in your notes, to read `og:image`/metadata | The sites your notes link to |
 | Site icons on link cards | The domain name of each linked site | Google favicon service (`www.google.com/s2/favicons`) |
-| Link cards for Threads / Instagram posts | The post URL being previewed, to read the author name and post text | Meta's oEmbed endpoints (`instagram.com`, `threads.net`) |
+| Link cards for Instagram posts | The post URL being previewed, to read the author name and post text | Instagram's oEmbed endpoint (`instagram.com`) |
 | Clean links — short link expansion (on by default, can be turned off) | A GET request for the `threads.com/share/…` or `instagram.com/share/…` link being expanded, to read its `canonical` URL | Threads / Instagram |
 
 **About User-Agent headers.** Metadata requests are sent with the User-Agent of a common browser or of a link-preview bot (`facebookexternalhit`, `Slackbot-LinkExpanding`), trying them in that order until one returns usable metadata. Some sites return `403` to a default User-Agent but serve `og:` tags to link-preview bots, so without this most cards would come back empty. This is the same mechanism chat apps such as Slack and iMessage use to render link previews, and only public metadata is read — no login, no credentials, no user data.
@@ -78,7 +80,7 @@ All caches (link previews, PDF thumbnails) are stored locally in the plugin fold
 | **Reading files** (`cachedRead`) | To resolve a note's cover image, render the text excerpt on a card, and build the search index. |
 | **Writing files** (`create`, `modify`, `rename`, `delete`) | Only in response to an explicit action: creating a note, renaming, moving, batch delete, and the "convert Canvas image to note" command. |
 | **Clipboard** | Only for the copy actions you invoke — copy image, copy wiki-links for the selected cards, and cleaning a pasted URL. |
-| **`localStorage`** | Read-only, and only Obsidian's own `language` key, to follow the interface language. The plugin's own settings are stored through Obsidian's plugin data API (`data.json`) — it never writes to `localStorage`. |
+| **`localStorage`** | Obsidian's own `language` key is read to follow the interface language. Per-device view state (current folder, expanded folders, pane width, card size…) is stored through Obsidian's vault-scoped `App.saveLocalStorage` API, so it stays on the device and does not travel with sync; on Obsidian versions without that API it falls back to `data.json`. Everything else is stored through Obsidian's plugin data API (`data.json`). |
 
 ## Install
 

@@ -77,8 +77,13 @@ const HOST_EXTRA = [
    • CDN 圖床 —— 那些 query 是簽章（_nc_oh、oe、Expires、Signature…），刪一個圖就掛掉 */
 const SKIP_HOST = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$|(^|\.)(fbcdn\.net|cdninstagram\.com|akamaized\.net|cloudfront\.net|licdn\.com|twimg\.com|pinimg\.com|ggpht\.com|googleusercontent\.com|blob\.core\.windows\.net|amazonaws\.com)$/i;
 
-/* 抓網址：不含空白與明顯的 markdown 邊界字元；尾端標點另外修掉 */
-const URL_RE = /https?:\/\/[^\s<>"'`\\|]+/gi;
+/* 抓網址：不含空白與明顯的 markdown 邊界字元；尾端標點另外修掉。
+   ⚠️ 全形標點也要當邊界（2026-09-30）。中文裡網址後面常常直接接標點、不空格：
+        請看https://a.com/post?fbclid=abc，這篇很好。
+      以前會一路吃到下一個空白，「，這篇很好」整段變成 fbclid 的值，淨化時跟著參數一起被刪掉
+      （後面若還有別的網址也一起陪葬）。中文字本身不排除 —— 網址路徑裡直接寫中文是合法的
+      （維基百科就是）。 */
+const URL_RE = /https?:\/\/[^\s<>"'`\\|，。、；：！？（）「」『』【】《》〈〉]+/gi;
 
 /* ────────────────────────── 純函式區（好測試、無 Obsidian 依賴） ────────────────────────── */
 
@@ -150,7 +155,15 @@ function cleanText(text, opt) {
   const o = normalizeOpt(opt);
   let count = 0;
   const out = String(text).replace(URL_RE, (m) => {
-    const [url, tail] = splitTrailing(m);
+    let [url, tail] = splitTrailing(m);
+    /* query 裡出現非 ASCII 字元 → 從那裡切開，後面原樣接回去、不參與淨化。
+       網址後面直接接中文又沒有標點時（…?utm_source=ig這篇很好），那段中文會被當成參數值；
+       切開之後最壞的情況只是「該刪的參數沒刪到」，不會把內文刪掉。 */
+    const q = url.indexOf('?');
+    if (q >= 0) {
+      const rel = url.slice(q).search(/[^\x00-\x7F]/);
+      if (rel >= 0) { tail = url.slice(q + rel) + tail; url = url.slice(0, q + rel); }
+    }
     const cleaned = cleanUrl(url, o);
     if (cleaned !== url) count++;
     return cleaned + tail;

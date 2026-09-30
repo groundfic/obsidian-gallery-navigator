@@ -12,7 +12,12 @@ const { ThumbCache } = require('./thumbs.js');
 const { DimPrefetcher } = require('./dims.js');
 const { setupCanvasImageToNote } = require('./canvasnote.js');
 const { VirtualWall } = require('./virtual.js');
-const { downscaleBytes } = require('./linkcard.js');   // og-cache 的縮圖沿用同一支
+const { downscaleBytes, withTimeout } = require('./linkcard.js');   // og-cache 的縮圖與逾時沿用同一支
+const { splitState, mergeShared, deepEqual, isPlainObject, clone: cloneState } = require('./statesync.js');
+const { startReorderDrag } = require('./treereorder.js');
+
+// 這台裝置的檢視狀態存在 Obsidian 的本機儲存空間時用的 key（見 statesync.js）
+const LOCAL_STATE_KEY = 'gallery-navigator-view-state';
 
 /* og-cache 治理（2026-08-12）：
    • 網路失敗的負記錄有效期 15 分鐘（「確定沒有 og:image」則是永久，兩者分開記）
@@ -126,6 +131,15 @@ class TaskGate {
       item.resolve(GATE_DROPPED);
     }
   }
+}
+
+/* 輸入法正在組字嗎（2026-09-30）。
+   注音／倉頡選字時按 Enter 是「確認這個字」、按 Esc 是「取消選字」，那一下 keydown 照樣會送到
+   輸入框上。不擋的話：新資料夾打到一半按 Enter 選字就直接建立、改名時按 Esc 取消選字
+   卻把整個改名取消、搜尋打到一半按 Esc 直接關掉搜尋。
+   keyCode 229 是舊版 WebKit 的表示法（那時還沒有 isComposing）。 */
+function isImeKey(e) {
+  return !!(e && (e.isComposing || e.keyCode === 229));
 }
 
 // 穩健複製：優先 clipboard API，失敗退回 textarea+execCommand（手機 webview 常需要），並給提示
@@ -971,7 +985,7 @@ class InputModal extends Modal {
     ok.addClass('mod-cta');
     const submit = () => { const v = input.value.trim(); if (v) { this._submitted = true; this.close(); this.onSubmit(v); } };
     ok.onclick = submit;
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !isImeKey(e)) submit(); });
     setTimeout(() => { input.focus(); input.select(); }, 0);
   }
   onClose() {
@@ -1112,6 +1126,10 @@ class GalleryView extends ItemView {
     this.selFolders = new Set();     // 多選：資料夾路徑
     this.folderSelAnchor = null;     // 資料夾範圍選的錨點
     this.folderSelMode = false;      // 手機：選取模式開關
+    /* 手機的資料夾排序模式（2026-09-30）：長按選單「調整順序」進入，
+       每列右側出現把手，按住上下拖即可排序（見 treereorder.js）。
+       與選取模式互斥 —— 兩者都佔用列的右側，也都改寫「點一下列」的意思。 */
+    this.folderReorderMode = false;
     this._tagDirty = true;       // 標籤索引快取失效旗標（buildTagIndex 專用，用完會清掉）
     /* 世代編號：標籤相關資料每變動一次就 +1。
        ⚠️ 不能讓多個快取共用 _tagDirty 這個布林——先跑的那個會把旗標清掉，
@@ -1186,6 +1204,10 @@ class GalleryView extends ItemView {
     this.registerDomEvent(document, 'keydown', (e) => {
       const tag = (e.target && e.target.tagName) || '';
       if (/^(input|textarea)$/i.test(tag)) return;
+      /* 筆記編輯器是 contenteditable 的 div，上面那條擋不到（2026-09-30）。
+         以前：游標停在畫廊上、焦點在筆記裡按 Cmd+A → 被這裡 preventDefault，
+         筆記沒有全選，反而整面牆的卡片被選起來（之後拖任一張就是整批搬移）。 */
+      if (e.target && e.target.isContentEditable) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) {
         if (this._hover && this._cardOrder && this._cardOrder.length) {
           e.preventDefault();
@@ -1963,10 +1985,15 @@ class GalleryView extends ItemView {
       }
     };
     input.addEventListener('keydown', (e) => {
+      if (isImeKey(e)) return;   // 組字中的 Enter／Esc 是給輸入法的
       if (e.key === 'Enter') { e.preventDefault(); finish(true); }
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
-    input.addEventListener('blur', () => finish(true));
+    /* 失焦＝提交，但只限輸入框還在畫面上的時候（2026-09-30）。
+       改名途中整棵樹被重畫（同步進檔、別台裝置的設定進來…）會把輸入框從 DOM 拔掉，
+       Chromium 拔掉聚焦中的元素時可能補發一次 blur —— 不擋的話，打到一半的名字
+       就這樣被當成新名稱送出去，連結也跟著改。 */
+    input.addEventListener('blur', () => { if (input.isConnected) finish(true); });
     input.focus();
     input.select();
   }
@@ -2634,7 +2661,19 @@ class GalleryView extends ItemView {
       const c = this.app.metadataCache.getFileCache(file);
       const content = await this.app.vault.cachedRead(file);
       const url = firstExternalUrl(c && c.frontmatter, content);
-      if (!url) { idx[file.path] = { url: null, file: null }; plugin.saveOgIndex(); dropLateFlag(); return; }
+      if (!url) {
+        /* 沒有外部連結。記錄已經是這個結果就不要再存一次（2026-09-30）：
+           以前每張純文字筆記卡捲進視野都無條件重寫這一筆並觸發存檔，
+           捲一面沒有連結的筆記牆＝每停 0.8 秒把 129KB 的索引整檔重寫、同步一次，
+           內容卻一個位元都沒變（索引 1,094 筆裡有 633 筆是這種）。 */
+        const prev = idx[file.path];
+        if (!prev || prev.url !== null || prev.file) {
+          idx[file.path] = { url: null, file: null };
+          plugin.saveOgIndex();
+        }
+        dropLateFlag();
+        return;
+      }
       // 快取命中（同筆記、同來源網址）
       const rec = idx[file.path];
       if (rec && rec.url === url) {
@@ -2673,8 +2712,12 @@ class GalleryView extends ItemView {
     // 網路失敗 → 記時間戳，短期內不重試（與「確定無圖」的永久負記錄區分開）
     const fail = () => { idx[file.path] = { url, file: null, failTs: Date.now() }; plugin.saveOgIndex(); return null; };
     try {
-      // 抓網頁 HTML → 解析 og:image
-      const res = await requestUrl({ url, method: 'GET', throw: false });
+      /* 抓網頁 HTML → 解析 og:image。
+         兩個請求都要設等待上限（2026-09-30）：requestUrl 不能中止，對方不回應時 promise
+         會一直掛著、佔住併發閘的名額（桌機 3／手機 2），直到底層連線自己放棄為止。
+         名額被佔滿的那段時間，整面牆的連結預覽圖都出不來。
+         逾時會丟例外 → 落到下面的 catch 記成網路失敗。 */
+      const res = await withTimeout(requestUrl({ url, method: 'GET', throw: false }));
       if (!res || res.status >= 400) return fail();
       let imgUrl = ogImageFrom(res.text, url);
       // Meta 系（Threads/IG）og:image 過濾：-19/ 是作者頭像、rsrc.php 是 logo 佔位圖，
@@ -2682,7 +2725,7 @@ class GalleryView extends ItemView {
       if (imgUrl && (/rsrc\.php|static\.cdninstagram/.test(imgUrl) || /\/t\d+[\d.-]*-19\//.test(imgUrl))) imgUrl = null;
       if (!imgUrl) { idx[file.path] = { url, file: null }; plugin.saveOgIndex(); return null; }
       // 下載圖片位元組 → 存進 og-cache/
-      const ir = await requestUrl({ url: imgUrl, method: 'GET', throw: false });
+      const ir = await withTimeout(requestUrl({ url: imgUrl, method: 'GET', throw: false }));
       if (!ir || !ir.arrayBuffer || ir.arrayBuffer.byteLength < 64) return fail();
 
       let bytes = ir.arrayBuffer;
@@ -3245,7 +3288,7 @@ class GalleryView extends ItemView {
       this.rerenderMain();
     };
     input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 150); });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.exitBarSearch(); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !isImeKey(e)) this.exitBarSearch(); });
     setTimeout(() => input.focus(), 0);
   }
 
@@ -3277,7 +3320,7 @@ class GalleryView extends ItemView {
       this.rerenderMain();
     };
     sinput.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 150); });
-    sinput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    sinput.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !isImeKey(e)) close(); });
     setTimeout(() => sinput.focus(), 0);
   }
 
@@ -3409,9 +3452,14 @@ class GalleryView extends ItemView {
       const el = ctx && ctx.target;
       // 涵蓋所有列：資料夾列、root 列、最愛列（都是 .gn-tnode）＋ 最愛標題 ＋ 操作條
       if (el && el.closest && el.closest('.gn-tnode, .gn-fav-head, .gn-tselbar')) return null;
+      if (this.folderReorderMode) return null;   // 排序模式中長按不開選單（出口在底部操作條）
       const menu = new Menu();
       menu.addItem((i) => i.setTitle(t('New folder')).setIcon('folder-plus')
         .onClick(() => this.newFolder(this.app.vault.getRoot())));
+      if (document.body.classList.contains('is-mobile')) {
+        menu.addItem((i) => i.setTitle(t('Reorder folders')).setIcon('arrow-up-down')
+          .onClick(() => this.enterFolderReorderMode()));
+      }
       return menu;
     });
 
@@ -3801,6 +3849,8 @@ class GalleryView extends ItemView {
         const nameEl = row.createSpan('gn-tname');
         nameEl.setText(it.name);
         row.createSpan('gn-tcount').setText(String(it.count));
+        // 排序模式：右側放把手。這一層只有它一個就不放 —— 沒有順序可調
+        if (this.folderReorderMode && visible.length > 1) this.addReorderGrip(row);
 
         // 選取此資料夾後按 Enter → 原地變輸入框改名（macOS Finder 風格）
         row.onkeydown = (e) => {
@@ -3814,6 +3864,10 @@ class GalleryView extends ItemView {
 
         // 點整列 = 只選取（右欄載入）；展開/收合交給箭頭
         row.onclick = (e) => {
+          /* 排序模式：點列不做事。手指在把手附近放開很容易被當成點了這一列，
+             手機上那會直接滑去右邊的卡片牆，排到一半畫面就跑了。
+             （展開／收合的箭頭有自己的 onclick 且 stopPropagation，不受影響。） */
+          if (this.folderReorderMode) { e.preventDefault(); return; }
           /* ── 多選優先（2026-08-18）──
              桌機用修飾鍵，手機用 folderSelMode（長按選單進入）。擺在最前面：
              一旦在多選，這一下就不該再導覽或觸發改名。 */
@@ -3852,6 +3906,7 @@ class GalleryView extends ItemView {
         };
 
         this.wireContextMenu(row, () => {
+          if (this.folderReorderMode) return null;   // 排序模式中長按不開選單
           const menu = new Menu();
           /* ── 多選中：整個選單換成「對這批」的操作（2026-08-18）──
              選了 5 個資料夾卻跳出單一資料夾的改名/配色，會讓人搞不清楚要對誰動手。
@@ -3873,6 +3928,12 @@ class GalleryView extends ItemView {
              桌機用修飾鍵更快，但也留著 —— 有人就是不想記快捷鍵。 */
           menu.addItem((i) => i.setTitle(t('Select multiple')).setIcon('check-check')
             .onClick(() => this.enterFolderSelMode(it.folder.path)));
+          /* 手機的排序入口（2026-09-30）。桌機直接拖列就能排，不需要這一項；
+             手機沒有拖放事件，得先進排序模式、用把手拖。 */
+          if (document.body.classList.contains('is-mobile')) {
+            menu.addItem((i) => i.setTitle(t('Reorder folders')).setIcon('arrow-up-down')
+              .onClick(() => this.enterFolderReorderMode()));
+          }
           menu.addItem((i) => {
             i.setTitle(t('Create here')).setIcon('file-plus');
             const sub = i.setSubmenu();
@@ -4006,6 +4067,7 @@ class GalleryView extends ItemView {
           「進了選取模式又把選取一個個點掉」時 size 是 0 但模式還開著，
           走到 else 就會把 gn-tree-selmode 掛在標籤樹上 —— 每一列標籤右側長出選取圈、
           標籤筆數還被 CSS 藏掉。 */
+    if (state.leftMode === 'tag') this.folderReorderMode = false;   // 標籤樹沒有資料夾可排
     if (state.leftMode === 'tag' && (this.selFolders.size || this.folderSelMode)) this.clearFolderSel();
     else { this.syncFolderSelMarks(); this.updateFolderSelBar(); }
     this.restoreTreeScroll();   // 內容畫完 → 還原捲動位置（並解除上鎖）
@@ -4562,7 +4624,10 @@ class GalleryView extends ItemView {
       el.toggleClass('gn-tmulti', this.selFolders.has(el.dataset.path));
     }
     // 選取模式的勾選圈是 CSS 靠這個 class 開的（手機）
-    if (this._tree) this._tree.toggleClass('gn-tree-selmode', this.folderSelMode);
+    if (this._tree) {
+      this._tree.toggleClass('gn-tree-selmode', this.folderSelMode);
+      this._tree.toggleClass('gn-tree-reorder', this.folderReorderMode);
+    }
   }
   toggleFolderSel(path) {
     if (this.selFolders.has(path)) this.selFolders.delete(path);
@@ -4590,10 +4655,87 @@ class GalleryView extends ItemView {
   }
   // 手機：從長按選單進入選取模式，並把被長按的那個先選起來
   enterFolderSelMode(path) {
+    // 與排序模式互斥；把手是建樹時才放的，所以要重畫左樹把它們收掉
+    const wasReorder = this.folderReorderMode;
+    this.folderReorderMode = false;
     this.folderSelMode = true;
     if (path) { this.selFolders.add(path); this.folderSelAnchor = path; }
+    if (wasReorder) { this.refreshTree(); return; }   // 建樹收尾會同步樣式與操作條
     this.syncFolderSelMarks();
     this.updateFolderSelBar();
+  }
+
+  /* ===== 手機：資料夾排序模式（2026-09-30）=====
+     順序存在 state.folderOrder，和桌機拖放排序是同一份（reorderSibling 共用），
+     經 data.json 同步到其他裝置（合併規則見 statesync.js）。 */
+  enterFolderReorderMode() {
+    if (this.plugin.state.leftMode === 'tag') return;
+    this.selFolders.clear();
+    this.folderSelAnchor = null;
+    this.folderSelMode = false;
+    this.folderReorderMode = true;
+    this.refreshTree();   // 把手在建樹時才放上去
+  }
+  exitFolderReorderMode() {
+    if (!this.folderReorderMode) return;
+    this.folderReorderMode = false;
+    this.refreshTree();
+  }
+  // 在資料夾列右側放一顆把手，按住就開始拖這一列
+  addReorderGrip(row) {
+    const grip = row.createSpan('gn-tgrip');
+    setIconCached(grip, 'menu');   // 三條橫線：iOS 清單排序的慣用把手
+    grip.setAttr('aria-label', t('Drag to reorder'));
+    /* 觸控事件到此為止，不往上冒：
+         • 列的長按計時器（wireContextMenu）不會啟動
+         • 手機左右滑換欄的手勢（掛在外層 split 上）不會把這次拖曳當成橫滑
+       真正的拖曳走 pointer 事件，與這裡互不影響。 */
+    const stop = (e) => e.stopPropagation();
+    grip.addEventListener('touchstart', stop, { passive: true });
+    grip.addEventListener('touchmove', stop, { passive: true });
+    grip.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+    grip.addEventListener('contextmenu', (e) => { e.stopPropagation(); e.preventDefault(); });
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.button) return;   // 只認主鍵／觸控
+      e.preventDefault();
+      e.stopPropagation();
+      const started = startReorderDrag({
+        event: e,
+        row,
+        scroller: this._treeScroll,
+        rows: () => this.folderRowEls(),
+        onDrop: (dragged, target, zone) => this.commitReorderDrop(row, dragged, target, zone),
+      });
+      if (started && navigator.vibrate) { try { navigator.vibrate(10); } catch (er) {} }
+    });
+  }
+  /* 把手放開 → 寫入新順序。
+     reorderSibling 會重畫整棵樹，treePlay 再讓每一列「從重畫前的版面位置」滑到新位置。
+     但拖曳途中的位置全是靠 transform 做出來的（被拖的浮在手指底下、其他列已經讓好位），
+     版面位置其實都沒變 —— 照一般動畫播，整批會先跳回原位再滑一次。
+     所以：取消這一輪的滑動（其他列本來就已經在新位置上了），
+     只讓被拖的那一組從手指放開的地方滑進它的新位置。 */
+  commitReorderDrop(row, draggedPath, targetPath, zone) {
+    const item = this.app.vault.getAbstractFileByPath(draggedPath);
+    const target = this.app.vault.getAbstractFileByPath(targetPath);
+    if (!(item instanceof TFolder) || !(target instanceof TFolder)) return;
+    const parent = item.parent || this.app.vault.getRoot();
+    // 只做同層排序；兩者不同層就不動（樹在拖曳途中被別的事件重畫過才會發生）
+    if ((target.parent || this.app.vault.getRoot()) !== parent) return;
+    const fromTop = row.getBoundingClientRect().top;   // 含 transform：它「看起來」在哪
+    this.reorderSibling(parent, parent.path || '/', draggedPath, targetPath, zone);
+    const rows = [...this.folderRowEls()];
+    for (const el of rows) for (const a of el.getAnimations()) a.cancel();
+    if (!this.motionOk()) return;
+    const now = rows.find((el) => el.dataset.path === draggedPath);
+    if (!now) return;
+    const dy = fromTop - now.getBoundingClientRect().top;
+    if (!dy) return;
+    for (const el of rows) {
+      if (el !== now && !el.dataset.path.startsWith(draggedPath + '/')) continue;   // 展開的子列一起
+      el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+        { duration: 170, easing: 'cubic-bezier(.2,.7,.2,1)' });
+    }
   }
   /* 只留「最上層」的選取項：選了 a 又選了 a/b 時，搬走 a 之後 a/b 早就跟著走了，
      再對 a/b 動手只會找不到檔案而報錯。 */
@@ -4626,6 +4768,18 @@ class GalleryView extends ItemView {
     const bar = this._folderSelBar;
     if (!bar) return;
     bar.empty();
+    /* 排序模式共用這一條，但只放一顆「完成」（使用者要求不要提示文字，2026-09-30）。
+       列上的把手已經說明了怎麼操作；這裡只需要給模式一個常駐的出口。
+       gn-tselbar-solo：按鈕撐滿整條，寬度同左欄。 */
+    bar.toggleClass('gn-tselbar-solo', this.folderReorderMode);
+    if (this.folderReorderMode) {
+      bar.style.display = '';
+      // 寫出「完成」兩個字，不用圖示：這是離開模式的唯一出口，要一眼認得出來
+      const done = bar.createDiv('gn-tselbar-btn gn-tselbar-done');
+      done.setText(t('Done'));
+      done.onclick = (e) => { e.stopPropagation(); this.exitFolderReorderMode(); };
+      return;
+    }
     const n = this.selFolders.size;
     /* ⚠️ 選取模式下就算一個都沒選也要留著這條（2026-08-18）。
        手機是從長按選單進入選取模式的，退出的唯一出口就在這條上 ——
@@ -6165,7 +6319,31 @@ class GnSearchIndex {
 
 class GalleryPlugin extends Plugin {
   async onload() {
-    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], folderLayouts: {}, favorites: [], pinnedCards: [], lang: '', openUnfocused: true, imageCardLayout: 'stacked', autoCardColor: false }, await this.loadData());
+    /* 狀態分兩處存（2026-09-30，完整說明見 statesync.js）：
+         • data.json      ＝共用設定（資料夾順序、顏色、釘選…），跟著 vault 同步到每台裝置
+         • 本機儲存空間   ＝這台裝置的檢視狀態（目前資料夾、展開了哪些、欄寬…）
+       本機那份優先；升級後第一次執行還沒有 → 沿用 data.json 裡的（以前都存在那裡）。 */
+    const disk = (await this.loadData()) || {};
+    const localSaved = this.loadLocalState();
+    this.state = Object.assign({ lastPath: '', cardWidth: 120, sort: 'new', folderOrder: {}, hiddenFolders: [], folderColors: {}, expandedFolders: [], treeWidth: 232, treeCollapsed: false, syncActive: true, leftMode: 'folder', activeTag: '', expandedTags: [], cardColors: {}, noPreviewFolders: [], folderLayouts: {}, favorites: [], pinnedCards: [], lang: '', openUnfocused: true, imageCardLayout: 'stacked', autoCardColor: false }, disk, localSaved ? splitState(localSaved).local : null);
+    // 三方合併的基準：上次看到的磁碟內容（只含共用設定）
+    this._syncBase = splitState(disk).shared;
+
+    /* 回到前景 → 看一下 data.json 有沒有被別台裝置改過；退到背景 → 把還沒寫的先寫掉。
+       Obsidian 偵測到外部變更時也會呼叫 onExternalSettingsChange()，但手機上 iCloud
+       把新檔送達的時間點不一定會觸發它，所以自己再補看。
+       iCloud 常常在 App 回到前景之後幾秒才送達 → 隔一下再看兩次。
+       每次只是讀一個十幾 KB 的檔案，內容沒變就什麼都不做。 */
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') { this.flushState(); return; }
+      this.pullExternalState();
+      clearTimeout(this._pullT1); clearTimeout(this._pullT2);
+      this._pullT1 = setTimeout(() => this.pullExternalState(), 4000);
+      this._pullT2 = setTimeout(() => this.pullExternalState(), 15000);
+    };
+    this.registerDomEvent(document, 'visibilitychange', onVisibility);
+    this.registerDomEvent(window, 'focus', onVisibility);
+    this.register(() => { clearTimeout(this._pullT1); clearTimeout(this._pullT2); });
     setLang(this.state.lang || '');   // i18n：''=跟隨 Obsidian 介面語言
 
     // 註冊外掛專屬圖示（必須在 registerView / addRibbonIcon 之前）
@@ -6727,8 +6905,110 @@ class GalleryPlugin extends Plugin {
 
   saveState() {
     clearTimeout(this._saveT);
-    this._saveT = setTimeout(() => { this.saveData(this.state); }, 400);
+    this._saveT = setTimeout(() => { this._saveT = null; this.persistState(); }, 400);
     return Promise.resolve();
+  }
+
+  /* ===== 狀態的實際讀寫（2026-09-30，說明見 statesync.js）===== */
+
+  // 這台裝置自己的儲存空間（Obsidian 1.8.7 起提供；舊版沒有 → 退回全部寫進 data.json）
+  hasLocalStore() {
+    return typeof this.app.loadLocalStorage === 'function' && typeof this.app.saveLocalStorage === 'function';
+  }
+  loadLocalState() {
+    if (!this.hasLocalStore()) return null;
+    try {
+      let v = this.app.loadLocalStorage(LOCAL_STATE_KEY);
+      if (typeof v === 'string') v = JSON.parse(v);
+      return isPlainObject(v) ? v : null;
+    } catch (e) { return null; }
+  }
+  saveLocalState(local) {
+    if (!this.hasLocalStore()) return false;
+    try { this.app.saveLocalStorage(LOCAL_STATE_KEY, local); return true; } catch (e) { return false; }
+  }
+
+  // 讀寫 data.json 的工作排成一列，避免「存檔」與「拉取外部變更」交錯時互相踩到
+  queueState(fn) {
+    this._stateQ = (this._stateQ || Promise.resolve()).then(fn)
+      .catch((e) => console.error('[Gallery Navigator] state sync failed', e));
+    return this._stateQ;
+  }
+
+  persistState() { return this.queueState(() => this._persistNow()); }
+
+  // 去抖窗裡還有沒寫的 → 立刻寫（退到背景、卸載時用）
+  flushState() {
+    if (!this._saveT) return Promise.resolve();
+    clearTimeout(this._saveT);
+    this._saveT = null;
+    return this.persistState();
+  }
+
+  async _persistNow() {
+    const { shared, local } = splitState(this.state);
+    const canLocal = this.saveLocalState(local);
+    /* 共用設定沒動 → 完全不碰 data.json。
+       換資料夾、展開收合、捲左欄都只改檢視狀態，以前每一次都整檔重寫、觸發一次同步。 */
+    if (canLocal && deepEqual(shared, this._syncBase)) return;
+
+    // 寫之前先看磁碟：別台裝置可能已經改過，不能拿記憶體裡的舊值整包蓋回去
+    let disk = null;
+    try { disk = await this.loadData(); } catch (e) {}
+    const remote = disk ? splitState(disk) : null;
+    const m = mergeShared(this._syncBase, shared, remote && remote.shared);
+    const applied = m.fromRemote && this.applySharedState(m.merged, shared);
+    if (m.needsWrite || !canLocal) {
+      /* data.json 裡舊的檢視狀態欄位原樣留著、不再更新：
+         萬一退回舊版外掛，至少不會整個變回預設值。 */
+      await this.saveData(canLocal
+        ? Object.assign({}, remote ? remote.local : local, m.merged)
+        : Object.assign({}, m.merged, local));
+    }
+    this._syncBase = m.merged;
+    if (applied) this.refreshViews();
+  }
+
+  /* data.json 被別台裝置（或同步服務）改過 → 把對方的變更合併進來並重畫。 */
+  pullExternalState() {
+    return this.queueState(async () => {
+      let disk = null;
+      try { disk = await this.loadData(); } catch (e) { return; }
+      if (!disk) return;
+      const remote = splitState(disk).shared;
+      if (deepEqual(remote, this._syncBase)) return;   // 磁碟上沒有新東西
+      const { shared } = splitState(this.state);
+      const m = mergeShared(this._syncBase, shared, remote);
+      this._syncBase = remote;
+      if (m.fromRemote && this.applySharedState(m.merged, shared)) this.refreshViews();
+      if (m.needsWrite) this.saveState();              // 本機還有沒寫出去的變更 → 補寫
+    });
+  }
+  // Obsidian 偵測到 data.json 被外部修改時會呼叫（沒定義這個方法就不會通知）
+  onExternalSettingsChange() { return this.pullExternalState(); }
+
+  /* 把合併結果套回記憶體裡的狀態。snapshot ＝合併當下拍的本機快照。
+     只動「合併後和快照不同」的欄位；而且該欄位現在的值若已經不是快照那時的樣子
+     （等磁碟 I/O 的那幾毫秒使用者又改了）就不蓋，留給下一輪合併處理。
+     物件型欄位就地更新、不換掉物件本身：Peek / Link Cards 模組手上握著
+     state.peek / state.linkcard 的參照，整個換掉它們就讀不到新值了。
+     回傳 true ＝真的有東西變了。 */
+  applySharedState(merged, snapshot) {
+    let changed = false;
+    for (const k of Object.keys(merged)) {
+      if (deepEqual(merged[k], snapshot[k])) continue;
+      const cur = this.state[k];
+      if (!deepEqual(cur, snapshot[k])) continue;
+      const next = cloneState(merged[k]);
+      if (isPlainObject(cur) && isPlainObject(next)) {
+        for (const kk of Object.keys(cur)) delete cur[kk];
+        Object.assign(cur, next);
+      } else {
+        this.state[k] = next;
+      }
+      changed = true;
+    }
+    return changed;
   }
 
   /* 圖片長寬比索引：去查詢字串的資源路徑 → [w, h]。
@@ -7042,7 +7322,10 @@ class GalleryPlugin extends Plugin {
       const list = await a.list(dir);
       const files = (list.files || []).filter((f) => {
         const name = f.split('/').pop();
-        return name !== 'index.json' && name !== 'dims.json';          // 索引檔本身
+        /* 索引檔本身。card-heights.json 也放在這個資料夾（見 cardHeightsPath），
+           以前漏列 → 每次啟動的閒置清掃都把它當孤兒刪掉，卡片高度索引等於從來沒存住。
+           用「.json 一律不刪」而不是再補一個檔名：之後再放新的索引檔進來也不會重演。 */
+        return !name.endsWith('.json');
       });
       const keep = new Set();                                          // ③
       for (const rec of Object.values(this._ogIndex || {})) {
@@ -7061,8 +7344,12 @@ class GalleryPlugin extends Plugin {
   async onunload() {
     // 停用外掛 → 立刻還原抽屜外觀（我們改的是宿主的元素，不能留下痕跡）
     document.body.removeClass('gn-drawer-skin');
-    // 卸載前把尚未寫入的狀態刷出去
+    /* 卸載前把尚未寫入的狀態刷出去。
+       狀態最先送：它最小也最重要，以前排在四個索引後面，前面任何一個慢了就輪不到它。
+       Obsidian 不會等 async 的 onunload 跑完，所以順序就是優先權。 */
     clearTimeout(this._saveT);
+    this._saveT = null;
+    const stateSaved = this.persistState();
     if (this.search) this.search.disposeTimers();   // modify 去抖的待觸發計時器
     await this.flushDimIndex();                     // 長寬比索引改成閒置才寫 → 這裡要補刷
     await this.flushCardHeights();                  // 卡片高度索引同理
@@ -7070,7 +7357,7 @@ class GalleryPlugin extends Plugin {
        下次啟動索引對不上 → 重抓重做、舊檔成孤兒。兩者都要補刷。 */
     await this.flushOgIndex();
     if (this.thumbs) { try { await this.thumbs.flush(); } catch (e) {} }
-    await this.saveData(this.state);
+    await stateSaved;
   }
 
   async activateView() {

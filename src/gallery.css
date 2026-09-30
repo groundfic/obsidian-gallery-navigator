@@ -180,6 +180,20 @@ body:not(.is-mobile) .gn-split {
 body:not(.is-mobile) .gn-tselbar-btn:hover {
   background: var(--background-modifier-hover); color: var(--text-normal);
 }
+/* 排序模式的「完成」：文字鈕（同為 (0,1,0)，排在 .gn-tselbar-btn 之後才蓋得過寬度與顏色） */
+.gn-tselbar-done {
+  width: auto; padding: 0 12px;
+  font-size: 13px; font-weight: 600;
+  color: var(--interactive-accent);
+}
+.is-mobile .gn-tselbar-done { height: 36px; font-size: 15px; }
+/* 只有一顆「完成」時：整條就是按鈕，寬度同左欄（2026-09-30 使用者要求大一點、滿寬）。
+   操作條本來就撐滿左欄（左右各留 8px），讓按鈕 flex: 1 填滿它即可。
+   特異度：.is-mobile .gn-tselbar-done 是 (0,2,0)，手機那條要寫到 (0,3,0) 才蓋得過高度。 */
+.gn-tselbar-solo { padding: 4px; }
+.gn-tselbar-solo .gn-tselbar-done { flex: 1 1 auto; height: 38px; font-size: 14px; }
+.is-mobile .gn-tselbar-solo .gn-tselbar-done { height: 44px; font-size: 16px; }
+.is-mobile .gn-tselbar-count { font-size: 13px; }
 
 /* 選取模式：每列右側一顆圈，已選填成主題色。
    主要是為手機做的（沒有 Cmd/Shift 也沒有 hover，得靠常駐的圈說明「點列＝加減選」），
@@ -206,6 +220,67 @@ body:not(.is-mobile) .gn-tselbar-btn:hover {
   /* 內縮的白點＝勾的簡化版；純 CSS 畫真勾要多一層偽元素，這裡夠讀了 */
   box-shadow: inset 0 0 0 2px var(--background-secondary);
 }
+/* ═══ 手機：資料夾排序模式（2026-09-30）═══
+   長按選單「調整順序」進入。每列右側一顆把手，按住上下拖（邏輯在 treereorder.js）。
+   把手只在這個模式下才被放進 DOM，所以這裡不需要「平常隱藏」的規則。 */
+.gn-tree-reorder .gn-tcount { display: none; }   /* 讓位給把手（同選取模式的做法） */
+.gn-tgrip {
+  flex: 0 0 auto;
+  order: 99;                         /* 永遠在整列最右 */
+  margin-left: auto;
+  /* 觸控目標 44px 寬、吃滿整列高度；用負 margin 把列的內距也算進來
+     （數值＝ .gn-tnode 的 padding：上下 6px、右 8px），列本身的高度不會因為多了把手而改變。 */
+  width: 44px;
+  align-self: stretch;
+  margin-top: -6px; margin-bottom: -6px; margin-right: -8px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint);
+  cursor: grab;
+  /* 這塊區域的觸控不交給瀏覽器捲動：少了它，手指一動瀏覽器就接手去捲左欄，
+     pointer 事件隨即被取消，拖曳根本開始不了。把手以外的地方照常可以捲。 */
+  touch-action: none;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
+.is-mobile .gn-tgrip { margin-top: -9px; margin-bottom: -9px; }   /* 手機的列上下內距是 9px */
+/* ⚠️ 手機的展開箭頭本來就絕對定位在整列右緣（見下方「手機版」那段的 .gn-tcaret，
+      right: 4px、34px 寬），而且每一列都有這個元素（不能展開的列只是裡面沒圖示）。
+      把手也放右緣的話兩者完全重疊，箭頭是定位元素、疊在上面，觸控全被它吃掉 →
+      把手按不到。排序模式下把箭頭往左讓一格，兩個都按得到：
+        右緣 ← [把手 44px][箭頭 34px] ← 名稱
+      特異度：原規則 .is-mobile .gn-tslot > .gn-tcaret 是 (0,3,0)，這裡 (0,4,0)。 */
+.is-mobile .gn-tree-reorder .gn-tslot > .gn-tcaret { right: 46px; }
+/* 可展開的列原本用 padding-right: 42px 幫箭頭留位（.is-mobile .gn-thaskids，(0,2,0)）。
+   排序模式下右緣改由把手佔用 → 內距還原成一般列的 8px，把手才會每一列都貼齊右緣；
+   箭頭的位置改用把手的左外距留出來（36px ≈ 箭頭 34px＋一點間隔）。 */
+.is-mobile .gn-tree-reorder .gn-tnode[data-gn-folder] { padding-right: 8px; }
+.is-mobile .gn-tree-reorder .gn-thaskids > .gn-tgrip { margin-left: 36px; }
+.gn-tgrip svg { width: 18px; height: 18px; pointer-events: none; }
+/* 被拖起來的列：浮在其他列上面，有底色與陰影，才看得出「拿起來了」。
+   底色用不透明的，否則疊在別的列上會透出底下的字。
+   ⚠️ 特異度刻意寫到 (0,3,0)：下面的 .gn-tnode:hover、.gn-tsel:hover、.gn-tnode.gn-tmulti
+      都是 (0,2,0) 而且排在這條之後，同分的話它們會贏 —— 觸控按著的列正好處於 :hover，
+      底色就會被換回半透明的 hover 色、陰影被 .gn-tsel 的 box-shadow: none 拿掉。 */
+.gn-tree-reorder .gn-tnode.gn-treorder-drag {
+  z-index: 5;
+  background: var(--background-secondary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+  transition: none;                  /* 位移要即時跟手，不能吃到列本身的 transform 過渡 */
+  cursor: grabbing;
+}
+.gn-treorder-drag .gn-tgrip { color: var(--text-normal); }
+/* 拖曳中其他列讓位：沿用 .gn-tnode 本來就有的 transform 過渡，但拉長一點、
+   讓「讓開」看得出來是滑過去的（基底的 .12s 是給按壓回饋用的，太短）。 */
+.gn-treorder-active .gn-tnode { transition: transform .16s cubic-bezier(.2,.7,.2,1); }
+/* 這條是 (0,2,0)，會蓋過檔尾「減少動態」那段的 .gn-tnode { transition: none }（(0,1,0)）→ 自己補一條 */
+@media (prefers-reduced-motion: reduce) {
+  .gn-treorder-active .gn-tnode { transition: none; }
+}
+/* 拖曳中：關掉左欄的慣性捲動與回彈，自動捲動才不會和系統的捲動打架 */
+.gn-tree-scroll.gn-treorder-active { overflow-anchor: none; overscroll-behavior: contain; }
+/* 排序模式下，按壓列不要有微縮回饋 —— 列不是拿來點的，縮一下反而像可以點 */
+.gn-tree-reorder .gn-tnode:active { transform: none; }
+
 /* 可拖曳分隔桿：平常只露細線，hover 變主題色 */
 /* ═══ 左欄收合／展開的動畫（2026-08-10）═══
    ⚠️ 要動的是**兩樣東西**，不同步就會露餡：
@@ -1000,6 +1075,12 @@ body.is-mobile {
 /* 內容底部留白 ＝ 工具列高 + 安全區。以前寫死 70px 與實際高度（66px）各走各的，
    工具列一改高就會被擋住或多留一截；改成吃同一個變數。 */
 .is-mobile .gn-tree-scroll, .is-mobile .gn-main { padding-top: 2px; padding-bottom: calc(var(--gn-bar-h) + env(safe-area-inset-bottom)); }
+/* 左欄底部的操作條（資料夾多選／排序模式的提示與「完成」）要墊高到工具列上方（2026-09-30）。
+   手機的工具列是絕對定位釘在 gn-root 底部（z-index: 5、實色底、高 --gn-bar-h），
+   而操作條是左欄 flex 直向的最後一項、貼在同一個底邊 → 整條被工具列蓋住，
+   進了模式卻看不到提示、也找不到「完成」可以離開（08-18 的多選模式在手機上也一直是這樣）。
+   兩者都以 gn-root 的底邊為基準，所以墊一個工具列的高度就剛好落在它正上方。 */
+.is-mobile .gn-tselbar { margin-bottom: calc(var(--gn-bar-h) + 8px); }
 
 /* 手機：牆內表頭的麵包屑置中 + 放大（2026-07-20 使用者要求）。
    桌機同樣走 .gn-main-head（2026-08-10 麵包屑移回右欄），但只吃上面那組基礎樣式，
