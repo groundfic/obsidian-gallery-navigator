@@ -6,7 +6,7 @@
 
 A visual way to browse your Obsidian vault: a folder/tag tree on the left, a **masonry wall of cover-image cards** on the right. Designed as a visual alternative to list-based file explorers.
 
-Interface available in **English**, **繁體中文** and **简体中文** (follows your Obsidian language setting, with a manual override in settings). The Simplified Chinese interface is contributed from the [youli42 fork](https://github.com/youli42/obsidian-gallery-navigator); a Simplified Chinese translation of this document lives in [README_CN.md](README_CN.md).
+Interface available in **English**, **繁體中文** and **简体中文** (follows your Obsidian language setting, with a manual override in settings). See [README_CN.md](README_CN.md) for the Simplified Chinese version of this document.
 
 ## Screenshots
 
