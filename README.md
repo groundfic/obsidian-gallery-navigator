@@ -2,9 +2,11 @@
 
 # Gallery Navigator
 
+**English | [简体中文](README_CN.md)**
+
 A visual way to browse your Obsidian vault: a folder/tag tree on the left, a **masonry wall of cover-image cards** on the right. Designed as a visual alternative to list-based file explorers.
 
-Interface available in **English** and **繁體中文** (follows your Obsidian language setting, with a manual override in settings).
+Interface available in **English**, **繁體中文** and **简体中文** (follows your Obsidian language setting, with a manual override in settings). The Simplified Chinese interface is contributed from the [youli42 fork](https://github.com/youli42/obsidian-gallery-navigator); a Simplified Chinese translation of this document lives in [README_CN.md](README_CN.md).
 
 ## Screenshots
 
@@ -122,7 +124,7 @@ Source lives in `src/`. **Both `main.js` and `styles.css` in the plugin root are
 
   Order matters (later parts can override earlier ones). The build refuses to write `styles.css` if braces are unbalanced, so a truncated part fails loudly instead of silently breaking the stylesheet.
 
-- **UI strings** — `src/i18n.js`, English text as keys, with a zh-TW dictionary.
+- **UI strings** — `src/i18n.js`, English text as keys, with zh-TW and zh-CN dictionaries.
 
 ### Releasing
 
