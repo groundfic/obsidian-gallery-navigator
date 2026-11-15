@@ -5663,6 +5663,7 @@ class GallerySettingTab extends PluginSettingTab {
         d.addOption('', t('Auto'));
         d.addOption('en', 'English');
         d.addOption('zh-TW', '繁體中文');
+        d.addOption('zh-CN', '简体中文');
         d.setValue(st.lang || '');
         d.onChange((v) => { st.lang = v; setLang(v); save(); this.display(); this.plugin.refreshViews(); });
       });
